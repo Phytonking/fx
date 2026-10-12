@@ -7,9 +7,8 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 | Spelling | Opens | Status |
 |---|---|---|
 | `fx -c`, `fx --continue` | The session you last worked in interactively | Keep |
-| `fx -r` | A picker | Keep |
-| `fx --resume [last\|<id>]` | The newest saved session (also with no value), or an exact one | Keep |
-| `fx session resume [last\|<id>]` | Same, as the full command | Keep |
+| `fx -r [last\|<id>]`, `fx --resume [last\|<id>]` | One flag in short and long form. With no value, the session picker, the same list as `/resume`. `last` opens the newest saved session, and an ID opens that one | Keep. The single meaning is planned: today `-r` takes no value, and a bare `--resume` opens the newest session |
+| `fx session resume [last\|<id>]` | The newest saved session (also with no value), or an exact one | Keep |
 | `fx ask --resume <last\|id>` | Same, for one-shot runs | Keep |
 | `/resume` | Inside a session | Keep |
 | `fx --resume-last`, `fx --resume-<id>`, hidden `fx resume`, the `--id <id>` forms, `fx ask --resume-id`, `--resume --last` | Duplicates of the above | Removed. Each fails with exit 2 and names its replacement. `fx resume <id> --upgrade-relaunch` stays as the internal restart after an upgrade |
@@ -47,7 +46,7 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 | Experiments | `experimental.<name>`, for example `experimental.sessions_v2` |
 | Home | `FX_HOME` (planned; default `~/.fx`) |
 | Test hooks | `FX_TEST_*` |
-| Release channel | `update_channel`; `fx upgrade --channel` will apply to one upgrade only, once `fx config` can save the channel |
+| Release channel | `update_channel`; `fx upgrade --channel <name>` saves it, the way a setter command does |
 | Save a default model | Today `/model` in a session saves it to the profile. Planned: `fx config set model <id>` |
 | User aliases | `alias.<name>` (planned) |
 

@@ -62,7 +62,7 @@ Highest first:
 6. The project's `.fx.json`, project-safe keys only.
 7. The built-in default.
 
-Flags and env vars never save. Every effective value should be able to report its layer. Today `fx status --json` reports `model_origin`; the target is `fx config list --show-origin` for every setting.
+Run flags and env vars never save; setter commands do (see Flags). Every effective value should be able to report its layer. Today `fx status --json` reports `model_origin`; the target is `fx config list --show-origin` for every setting.
 
 ## Commands
 
@@ -77,13 +77,13 @@ Flags and env vars never save. Every effective value should be able to report it
 
 ## Flags
 
-- Long flags are kebab-case. Short flags are scarce and keep one meaning: `-h` help, `-v` version, `-c` continue, `-r` resume picker. Because `-c` is taken, git's `-c key=value` can't be copied.
+- Long flags are kebab-case. Short flags are scarce and keep one meaning: `-h` help, `-v` version, `-c` continue, `-r` resume. A short flag means the same as its long form, so `-r` is the short form of `--resume`: with no value both open the session picker, `last` opens the newest session, and an ID opens that one. That isn't built yet; today `-r` takes no value and a bare `--resume` opens the newest session. Because `-c` is taken, git's `-c key=value` can't be copied.
 - `--x value` and `--x=value` both work on every command. The shared parser in `src/core/cli/cli_flags.zig` provides both.
 - A boolean pairs `--x` with `--no-x`.
 - When a flag repeats or conflicts, the last one wins, on every command. `--fast --no-fast` means Fast mode off; `--fast --ultrafast` means Ultra mode. Every command follows this.
 - An enum is one flag that takes the value: `--permission-mode <ask|auto|full-access>`. Shortcut aliases stay: `--auto`, `--full-access`, `--yolo`, plus `--ask`. Plain `fx` and `fx ask` take the whole set; `fx acp` doesn't yet, and `fx pr` and `fx issue` take only `--auto`.
 - No flag carries a value in its name. `--resume-<id>` was removed and fails with a hint naming `--resume <id>`.
-- A flag affects only the run it's on and never saves anything. Today `fx upgrade --channel` saves the channel; the target makes it apply to that upgrade only. That change waits for `fx config set update_channel` and a rule for one-off channels, because auto-upgrade reinstalls whenever the running build's channel differs from the saved one.
+- A flag that shapes a run affects only that run and never saves anything. A setter command saves what it changes, and its flags name what to save: `fx upgrade --channel dev` switches the channel for later upgrades too. Keep it that way rather than making `--channel` one-time: auto-upgrade reinstalls whenever the running build's channel differs from the saved one. A setter should print one line naming the value and the file; `fx upgrade --channel` doesn't yet.
 - Agent-run flags form one shared set: `--model`, `--provider`, `--effort`, `--fast`/`--no-fast`, `--ultrafast`/`--no-ultrafast`, `--provider-order`, `--provider-strict`/`--no-provider-strict`, and `--permission-mode` with its shortcuts. Every command that runs the agent accepts the whole set after the subcommand: `fx ask`, `fx acp`, `fx pr`, `fx issue`, `fx session resume`. Plain `fx` takes them directly, as do `fx -c`, `fx -r`, and `fx --resume`. Today `fx acp` lacks most of the set.
 - Before the subcommand go only launch-wide flags: `--add-dir`, `--no-additional-dirs`, `--context-limit`. Agent-run flags before a subcommand stay an error whose message shows the corrected command.
 - An unknown or invalid flag fails with a message naming it. Every accepted flag appears in help unless its spec marks it internal. CI's `scripts/check_cli_shape.py` checks this for `fx ask` and the global launch flags; other commands aren't checked yet.
