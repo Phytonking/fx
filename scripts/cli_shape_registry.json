@@ -1,0 +1,371 @@
+{
+  "_about": "Registry for scripts/check_cli_shape.py. env lists every FX_* environment variable fx reads, with its job and stability (shape rule S-7). external_env lists the non-fx variables fx reads by name. not_env lists FX_* string literals that are not environment variables. exceptions maps known shape violations to the reason and the finding that removes them; delete an entry when its finding lands.",
+  "env": {
+    "FX_AUTH_MODE": {
+      "job": "internal",
+      "stability": "internal"
+    },
+    "FX_AUTO_COMPACT_PERCENT": {
+      "job": "setting-override",
+      "stability": "internal"
+    },
+    "FX_AUTO_UPGRADE": {
+      "job": "setting-override",
+      "stability": "stable"
+    },
+    "FX_BENCH": {
+      "job": "diagnostics",
+      "stability": "internal"
+    },
+    "FX_COMMAND_TEST_INDETERMINATE_AFTER_EXIT": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_COMMAND_TEST_OUTPUT_INCOMPLETE_AFTER_EXIT": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_CONFIGURED_PROVIDERS": {
+      "job": "setting-override",
+      "stability": "internal"
+    },
+    "FX_DEBUG_RECORD": {
+      "job": "diagnostics",
+      "stability": "stable"
+    },
+    "FX_DEBUG_RECORD_SILENT_BANNER": {
+      "job": "diagnostics",
+      "stability": "stable"
+    },
+    "FX_DISABLE_KEYCHAIN": {
+      "job": "credentials",
+      "stability": "stable"
+    },
+    "FX_E2E_ACP_PROMPT_REAP_READY": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_ACP_PROMPT_RELEASE": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_ACP_PROMPT_TERMINAL_READY": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_AUTH_LOCK_CONTENTION": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_CHATGPT_ISSUER_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_CHATGPT_ORIGIN": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_CHATGPT_TOKEN_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_CODEX_CLIENT_VERSION": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_CODEX_VERSION_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_FAIL_ON_DURABLE_MUTATION": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_GATEWAY_CHAT_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_GATEWAY_CREDITS_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_GATEWAY_MODELS_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_GROK_CLIENT_VERSION": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_GROK_ISSUER_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_GROK_ORIGIN": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_GROK_REVOKE_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_GROK_TOKEN_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_GROK_USERINFO_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_GROK_VERSION_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_MCP_AUTH_AUTOMATE": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_OAUTH_ISSUER_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_OPENAI_CODEX_MODELS_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_OPENAI_CODEX_RESPONSES_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_SLACK_ORIGIN": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_UPGRADE_BASE_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_USAGE_CLOCK_FILE": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_XAI_GROK_MODALITIES_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_XAI_GROK_MODELS_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_E2E_XAI_GROK_RESPONSES_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_EFFORT": {
+      "job": "setting-override",
+      "stability": "internal"
+    },
+    "FX_FAST": {
+      "job": "setting-override",
+      "stability": "internal"
+    },
+    "FX_GATEWAY_BASE_URL": {
+      "job": "internal",
+      "stability": "internal"
+    },
+    "FX_GATEWAY_CHAT_URL": {
+      "job": "internal",
+      "stability": "internal"
+    },
+    "FX_HERDR": {
+      "job": "integration",
+      "stability": "stable"
+    },
+    "FX_MAX_AGENT_STEPS": {
+      "job": "setting-override",
+      "stability": "stable"
+    },
+    "FX_MCP_ENGINE": {
+      "job": "experimental",
+      "stability": "experimental"
+    },
+    "FX_MCP_PROTOCOL_VERSION": {
+      "job": "internal",
+      "stability": "internal"
+    },
+    "FX_MODEL": {
+      "job": "setting-override",
+      "stability": "stable"
+    },
+    "FX_NO_OPEN_BROWSER": {
+      "job": "integration",
+      "stability": "stable"
+    },
+    "FX_OAUTH_CLIENT_ID": {
+      "job": "internal",
+      "stability": "internal"
+    },
+    "FX_PERMISSION_MODE": {
+      "job": "setting-override",
+      "stability": "stable"
+    },
+    "FX_PROVIDER": {
+      "job": "setting-override",
+      "stability": "stable"
+    },
+    "FX_PROVIDER_ORDER": {
+      "job": "setting-override",
+      "stability": "stable"
+    },
+    "FX_PROVIDER_STRICT": {
+      "job": "setting-override",
+      "stability": "stable"
+    },
+    "FX_RECORD": {
+      "job": "diagnostics",
+      "stability": "stable"
+    },
+    "FX_RECORD_INPUT": {
+      "job": "diagnostics",
+      "stability": "stable"
+    },
+    "FX_REVIEW_MODEL": {
+      "job": "setting-override",
+      "stability": "stable"
+    },
+    "FX_SESSIONS_V2": {
+      "job": "experimental",
+      "stability": "experimental"
+    },
+    "FX_SKILL_SYMLINK_AUTHORITIES": {
+      "job": "setting-override",
+      "stability": "internal"
+    },
+    "FX_SKIP_ONBOARDING": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_SNAPSHOT_MARKER": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_SOUND": {
+      "job": "setting-override",
+      "stability": "stable"
+    },
+    "FX_SYNC_UPDATES": {
+      "job": "diagnostics",
+      "stability": "stable"
+    },
+    "FX_TERMINAL_TEST_BACKEND_CLEANUP_DELAY_MS": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TERMINAL_TEST_COMMAND_BOUNDARY_DELAY_MS": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TERMINAL_TEST_FAIL_CANCELLATION_OPEN": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TERMINAL_TEST_FAIL_SIGNAL_STAGE": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TERMINAL_TEST_WRITE_BARRIER_PATH": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TERMINAL_TEST_WRITE_DELAY_MS": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_C04_STREAM_ANSI_OSC8_FIXTURE": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_THEME": {
+      "job": "setting-override",
+      "stability": "stable"
+    },
+    "FX_TRACE": {
+      "job": "diagnostics",
+      "stability": "stable"
+    },
+    "FX_TRACE_LOG": {
+      "job": "diagnostics",
+      "stability": "stable"
+    },
+    "FX_TRACE_SCOPES": {
+      "job": "diagnostics",
+      "stability": "stable"
+    },
+    "FX_TRACE_STDERR": {
+      "job": "diagnostics",
+      "stability": "stable"
+    },
+    "FX_UI_OBSERVE_DIR": {
+      "job": "diagnostics",
+      "stability": "internal"
+    },
+    "FX_ULTRAFAST": {
+      "job": "setting-override",
+      "stability": "stable"
+    },
+    "FX_WEB_SEARCH_BACKEND": {
+      "job": "internal",
+      "stability": "internal"
+    }
+  },
+  "not_env": {
+    "FX_AI_GATEWAY_API_KEY": "Keychain service name for the AI Gateway API key, not an env var",
+    "FX_MCP_OAUTH_CREDENTIALS_V1": "Keychain service name for MCP OAuth credentials, not an env var",
+    "FX_MCP_OAUTH_CREDENTIALS_V2": "Keychain service name for MCP OAuth credentials, not an env var",
+    "FX_OAUTH_SESSION_V1": "Keychain service name for the fx OAuth session, not an env var",
+    "FX_TEST_AI_GATEWAY_API_KEY": "Keychain service name used by keychain tests, not an env var"
+  },
+  "external_env": [
+    "AI_GATEWAY_API_KEY",
+    "CMUX_WORKSPACE_ID",
+    "COLORFGBG",
+    "COLORTERM",
+    "COLUMNS",
+    "COMSPEC",
+    "DISPLAY",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_CONFIG_SYSTEM",
+    "HERDR_PANE_ID",
+    "HERDR_SOCKET_PATH",
+    "HOME",
+    "LANG",
+    "PATH",
+    "SHELL",
+    "SSH_CONNECTION",
+    "TEMP",
+    "TERM",
+    "TERM_PROGRAM",
+    "TMP",
+    "TMPDIR",
+    "TMUX",
+    "TMUX_PANE",
+    "TYPESAFE_API_KEY",
+    "TYPESAFE_BASE_URL",
+    "USER",
+    "USERPROFILE",
+    "WAYLAND_DISPLAY",
+    "XDG_CONFIG_HOME",
+    "ZDOTDIR"
+  ],
+  "exceptions": {
+    "flag_names": {
+      "--resume-": "Prefix of the --resume-<id> launch alias, which is being removed in favor of --resume <id>.",
+      "--resume-<id>": "Value inside the flag name, which is being removed in favor of --resume <id>."
+    },
+    "undocumented_flags": {},
+    "setting_keys": {
+      "statusLine": "camelCase key, being renamed to status_line; both are read during migration"
+    }
+  }
+}
