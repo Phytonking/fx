@@ -1024,7 +1024,7 @@ test.skipIf(!tmuxAvailable())(
       const resumeGateway = startFakeGateway([]);
       try {
         active = await TmuxSession.create({
-          cmd: `${FX_BIN} --resume-last`,
+          cmd: `${FX_BIN} --resume last`,
           cwd: realpathSync(workspace),
           env: gatewayEnv(home, resumeGateway),
           stderrPath,
@@ -1096,7 +1096,7 @@ test.skipIf(!tmuxAvailable())(
       const sessionId = sessionIdFromHome(home);
       const cases = [
         {
-          command: `${FX_BIN} session resume --id ${sessionId}`,
+          command: `${FX_BIN} session resume ${sessionId}`,
           stderrPath: exactStderrPath,
         },
         {
@@ -1322,7 +1322,7 @@ printf '${trailingMarker}   '
 
       resumedGateway = startFakeGateway([]);
       active = await TmuxSession.create({
-        cmd: `${FX_BIN} --resume-last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: realpathSync(workspace),
         env: gatewayEnv(home, resumedGateway),
         stderrPath: resumedStderrPath,
@@ -1414,7 +1414,7 @@ test.skipIf(!tmuxAvailable())(
 
       resumedGateway = startFakeGateway([]);
       active = await TmuxSession.create({
-        cmd: `${FX_BIN} --resume-last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: workspace,
         env: gatewayEnv(home, resumedGateway),
         stderrPath: join(root, "stderr-resumed.log"),
@@ -1491,7 +1491,7 @@ test.skipIf(!tmuxAvailable())(
 
       resumedGateway = startFakeGateway([fakeGatewayFinalText("STALE_NOTE_PHASE2_DONE")]);
       active = await TmuxSession.create({
-        cmd: `${FX_BIN} --resume-last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: workspace,
         env: gatewayEnv(home, resumedGateway),
         stderrPath: join(root, "stderr-resumed.log"),
@@ -5321,9 +5321,9 @@ test.skipIf(!tmuxAvailable())(
         ["-c"],
         ["--continue"],
         ["--resume"],
-        ["--resume-last"],
-        [`--resume-${sessionId}`],
-        ["resume", "--resume", "--last"],
+        ["--resume", "last"],
+        ["--resume", sessionId],
+        ["session", "resume", "last"],
       ];
       for (const [index, args] of invocations.entries()) {
         const restoredMarker =
@@ -5341,8 +5341,8 @@ test.skipIf(!tmuxAvailable())(
             FX_RECORD: tapePath,
           },
           stderrPath,
-          width: args[0] === `--resume-${sessionId}` ? 42 : 100,
-          height: args[0] === `--resume-${sessionId}` ? 16 : 32,
+          width: args[1] === sessionId ? 42 : 100,
+          height: args[1] === sessionId ? 16 : 32,
         });
         await active.waitForComposer(TIMEOUT);
         const scrollback = await waitForScrollback(active, restoredMarker);
@@ -5467,7 +5467,7 @@ test.skipIf(!tmuxAvailable())(
       gateways.push(resumedMarkdownGateway);
       writeFileSync(markdownStderrPath, "");
       active = await TmuxSession.create({
-        cmd: `${FX_BIN} --resume-last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: realpathSync(markdownWorkspace),
         env: { ...gatewayEnv(markdownHome, resumedMarkdownGateway), FX_RECORD: resumedMarkdownTapePath },
         stderrPath: markdownStderrPath,
@@ -5549,8 +5549,8 @@ test.skipIf(!tmuxAvailable())(
       const toolSessionId = sessionIdFromHome(toolHome);
       const toolInvocations = [
         ["--resume"],
-        ["--resume-last"],
-        [`--resume-${toolSessionId}`],
+        ["--resume", "last"],
+        ["--resume", toolSessionId],
       ];
       for (const [index, args] of toolInvocations.entries()) {
         const followUp = `tool resume follow-up ${index}`;
@@ -5855,7 +5855,7 @@ test.skipIf(!tmuxAvailable())(
       gateways.push(flagGateway);
       writeFileSync(stderrPath, "");
       active = await TmuxSession.create({
-        cmd: `${FX_BIN} --resume-last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: workspaceRoot,
         env: gatewayEnv(home, flagGateway),
         stderrPath,
@@ -5998,7 +5998,7 @@ test.skipIf(!tmuxAvailable())(
       expect(eventsJsonl).not.toContain("sk-abcdefghijklmnop");
       writeFileSync(stderrPath, "");
       active = await TmuxSession.create({
-        cmd: `${FX_BIN} --resume-${sessionId}`,
+        cmd: `${FX_BIN} --resume ${sessionId}`,
         cwd: realpathSync(workspace),
         env: { ...gatewayEnv(home, resumedGateway), FX_RECORD: resumedTapePath },
         stderrPath,
@@ -6148,7 +6148,7 @@ test.skipIf(!tmuxAvailable())(
       const resumedGateway = startFakeGateway([]);
       try {
         active = await TmuxSession.create({
-          cmd: `${FX_BIN} --resume-${sessionId}`,
+          cmd: `${FX_BIN} --resume ${sessionId}`,
           cwd: realpathSync(workspace),
           env: { ...gatewayEnv(home, resumedGateway), FX_RECORD: join(root, "resumed.fxtape") },
           stderrPath,
@@ -6258,7 +6258,7 @@ test.skipIf(!tmuxAvailable())(
       const resumedGateway = startFakeGateway([]);
       try {
         active = await TmuxSession.create({
-          cmd: `${FX_BIN} --resume-${sessionId}`,
+          cmd: `${FX_BIN} --resume ${sessionId}`,
           cwd: realpathSync(workspace),
           env: { ...gatewayEnv(home, resumedGateway), FX_RECORD: join(root, "resumed.fxtape") },
           stderrPath,
@@ -6390,7 +6390,7 @@ test.skipIf(!tmuxAvailable())(
       const resumedGateway = startFakeGateway([]);
       try {
         active = await TmuxSession.create({
-          cmd: `${FX_BIN} --resume-${sessionId}`,
+          cmd: `${FX_BIN} --resume ${sessionId}`,
           cwd: realpathSync(workspace),
           env: {
             ...gatewayEnv(home, resumedGateway),
@@ -6440,7 +6440,7 @@ test.skipIf(!tmuxAvailable())(
         const secondGateway = startFakeGateway([]);
         try {
           active = await TmuxSession.create({
-            cmd: `${FX_BIN} --resume-${sessionId}`,
+            cmd: `${FX_BIN} --resume ${sessionId}`,
             cwd: realpathSync(workspace),
             env: { ...gatewayEnv(home, secondGateway), FX_RECORD: join(root, "second.fxtape") },
             stderrPath,
@@ -6619,7 +6619,7 @@ printf '${stdoutTail2}\\n'
       gateways.push(flagGateway);
       writeFileSync(stderrPath, "");
       active = await TmuxSession.create({
-        cmd: `${FX_BIN} --resume-last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: workspaceRoot,
         env: gatewayEnv(home, flagGateway),
         stderrPath,
@@ -7663,7 +7663,7 @@ test.skipIf(!tmuxAvailable())(
         writeFileSync(path, content, { mode: 0o600 });
         remnants.push([path, content]);
       }
-      for (const [flag, reply] of [["--resume-last", "LATEST_CONTINUATION_SAVED"], ["-r", "PICKER_CONTINUATION_SAVED"]] as const) {
+      for (const [flag, reply] of [["--resume last", "LATEST_CONTINUATION_SAVED"], ["-r", "PICKER_CONTINUATION_SAVED"]] as const) {
         const stderrPath = join(root, `${flag}.stderr`);
         active = await TmuxSession.create({ cmd: `${shellQuote(FX_BIN)} ${flag}`, cwd: workspace, env, stderrPath, remainOnExit: true });
         if (flag === "-r") {
@@ -7890,7 +7890,7 @@ for (const inspectDetails of [false, true]) {
         const sessionId = sessionIdFromHome(home);
         const eventsPath = join(home, ".fx", "sessions", sessionId, "events.jsonl");
         await active.kill();
-        active = await TmuxSession.create({ cmd: `${FX_BIN} --resume-last`, cwd: workspace, env, stderrPath, isolated: true, remainOnExit: true, width: 88, height: 24 });
+        active = await TmuxSession.create({ cmd: `${FX_BIN} --resume last`, cwd: workspace, env, stderrPath, isolated: true, remainOnExit: true, width: 88, height: 24 });
         await active.waitForComposer(TIMEOUT);
         await assertHistory();
         if (inspectDetails) {

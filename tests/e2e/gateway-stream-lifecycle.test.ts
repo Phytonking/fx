@@ -2810,7 +2810,7 @@ describe("gateway stream lifecycle", () => {
       rmSync(skillDirectory, { recursive: true, force: true });
       const resumeStderr = join(root.root, "resume-stderr.log");
       tui = await TmuxSession.create({
-        cmd: `${binary} --resume-last`,
+        cmd: `${binary} --resume last`,
         cwd: root.workspace,
         env: fixtureEnv(root, gateway, join(root.root, "resume-trace.log")),
         stderrPath: resumeStderr,
@@ -3967,7 +3967,7 @@ describe("gateway stream lifecycle", () => {
         if (tmuxAvailable()) {
           const stderrPath = join(root.root, "tui-stderr.log");
           const tui = await TmuxSession.create({
-            cmd: `${FX_BIN} --resume-last`,
+            cmd: `${FX_BIN} --resume last`,
             cwd: root.workspace,
             env: fixtureEnv(root, gateway, join(root.root, "tui-trace.log")),
             stderrPath,

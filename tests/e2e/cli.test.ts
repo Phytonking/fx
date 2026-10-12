@@ -369,7 +369,8 @@ describe("cli: help", () => {
       expect(stdout).toContain("Open the saved-session picker");
       expect(stdout).not.toContain("-c, -r, --continue");
       expect(stdout).toContain("--resume [last|<id>]");
-      expect(stdout).toContain("--resume-last");
+      expect(stdout).not.toContain("--resume-last");
+      expect(stdout).not.toContain("--resume-<id>");
       expect(stdout).toContain("session resume [last|id]");
       expect(stdout).toContain("-v, --version");
       expect(stdout).toContain("Print the fx version and exit");
@@ -3949,10 +3950,10 @@ describe("cli: interactive startup", () => {
     async () => {
       const cases = [
         [],
-        ["resume", "last"],
+        ["--resume", "last"],
         ["--resume"],
         ["session", "resume", "last"],
-        ["session", "resume", "--id", "session.v3"],
+        ["session", "resume", "session.v3"],
       ];
 
       for (const args of cases) {
@@ -3962,6 +3963,33 @@ describe("cli: interactive startup", () => {
           expect(r.code).toBe(1);
           expect(r.stdout).toBe("");
           expect(r.stderr).toBe("fx requires an interactive terminal (TTY).\n");
+          expect(readdirSync(home)).toEqual([]);
+        } finally {
+          rmSync(home, { recursive: true, force: true });
+        }
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
+    "removed resume spellings exit two and name the replacement",
+    async () => {
+      const cases: [string[], string][] = [
+        [["--resume-last"], "fx: --resume-last was removed; use fx --resume last\n"],
+        [["--resume-session.v3"], "fx: --resume-<id> was removed; use fx --resume <id>\n"],
+        [["resume", "last"], "fx: fx resume was removed; use fx --resume [last|<id>] or fx session resume [last|<id>]\n"],
+        [["session", "resume", "--id", "session.v3"], "fx session resume: --id was removed; use fx session resume <id>\n"],
+        [["session", "resume", "--resume", "--last"], "fx session resume: --resume --last was removed; use fx session resume last\n"],
+      ];
+
+      for (const [args, stderr] of cases) {
+        const home = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-removed-resume-")));
+        try {
+          const r = await runFx(args, { env: { HOME: home } });
+          expect(r.code).toBe(2);
+          expect(r.stdout).toBe("");
+          expect(r.stderr).toBe(stderr);
           expect(readdirSync(home)).toEqual([]);
         } finally {
           rmSync(home, { recursive: true, force: true });

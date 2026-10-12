@@ -1247,7 +1247,7 @@ describe("effect-aware command permissions", () => {
       await activeSession.kill();
       activeSession = null;
       activeSession = await TmuxSession.create({
-        cmd: `${FX_BIN} --resume-last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: root.workspace,
         env: gatewayEnv(root, gateway, {
           FX_PERMISSION_MODE: "auto",
@@ -1500,7 +1500,7 @@ describe("effect-aware command permissions", () => {
 
       const resumedGateway = startFakeGateway([]);
       activeSession = await TmuxSession.create({
-        cmd: `${FX_BIN} --resume-last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: root.workspace,
         env: gatewayEnv(root, resumedGateway),
         stderrPath: resumedStderrPath,

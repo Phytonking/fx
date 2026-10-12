@@ -201,7 +201,7 @@ pub const top_level_specs = [_]TopLevelSpec{
     .{
         .kind = .session,
         .token = "session",
-        .usage = "session <last|id>|--id <id> [--json] | session resume [last|<id>] | session resume --id <id> | session migrate <id>|--id <id> [--allow-large] [--json] | session recover <id>|--id <id> [--json]",
+        .usage = "session <last|id>|--id <id> [--json] | session resume [last|<id>] | session migrate <id>|--id <id> [--allow-large] [--json] | session recover <id>|--id <id> [--json]",
         .summary = "Inspect, resume, migrate, or recover saved sessions",
         .options = &.{
             .{ .flag = "last", .description = "Inspect the current workspace session" },
@@ -228,9 +228,9 @@ pub const top_level_specs = [_]TopLevelSpec{
     .{
         .kind = .@"resume",
         .token = "resume",
-        .aliases = &.{ "--resume", "--resume-last", "--continue", "-c", "-r" },
+        .aliases = &.{ "--resume", "--continue", "-c", "-r" },
         .hidden_from_top_level_help = true,
-        .usage = "session resume [last|<id>] | session resume --id <id> | --resume [last|<id>] | resume [last|<id>] | resume --id <id> | --resume-last | --continue | -c | -r | --resume-<id>",
+        .usage = "session resume [last|<id>] | --resume [last|<id>] | --continue | -c | -r",
         .summary = "Continue a saved interactive session",
         .options = &.{
             .{ .flag = "-r", .description = "Choose the session to resume from a picker" },
@@ -404,14 +404,6 @@ pub const top_level_flags = [_]TopLevelFlag{
     .{
         .usage = "--resume [last|<id>]",
         .description = "Resume the latest workspace session or an exact ID",
-    },
-    .{
-        .usage = "--resume-last",
-        .description = "Resume the latest workspace session",
-    },
-    .{
-        .usage = "--resume-<id>",
-        .description = "Resume a session by exact ID",
     },
     .{
         .usage = "--sessions-v2",

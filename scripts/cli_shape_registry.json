@@ -360,8 +360,7 @@
   ],
   "exceptions": {
     "flag_names": {
-      "--resume-": "Prefix of the --resume-<id> launch alias, which is being removed in favor of --resume <id>.",
-      "--resume-<id>": "Value inside the flag name, which is being removed in favor of --resume <id>."
+      "--resume-": "Prefix of the removed --resume-<id> alias, kept so the removed spelling fails with a hint."
     },
     "undocumented_flags": {},
     "setting_keys": {

@@ -1747,7 +1747,7 @@ describe.skipIf(!tmuxAvailable())("TUI gateway stream lifecycle", () => {
     // The first launch stored the configured model with Fast mode off; the
     // resume leg's flags must win over those stored preferences for this launch.
     session = await TmuxSession.create({
-      cmd: `${FX_BIN} --fast --effort low --model ${LAUNCH_MODEL} --resume-last`,
+      cmd: `${FX_BIN} --fast --effort low --model ${LAUNCH_MODEL} --resume last`,
       cwd: workspace,
       width: 72,
       height: 24,
@@ -2602,7 +2602,7 @@ describe.skipIf(!tmuxAvailable())("TUI gateway stream lifecycle", () => {
         session = null;
         const resumedStderr = join(root!, "resumed-stderr.log");
         session = await TmuxSession.create({
-          cmd: `${FX_BIN} --resume-last`,
+          cmd: `${FX_BIN} --resume last`,
           cwd: join(root!, "workspace"),
           width: 100,
           height: 32,
@@ -2778,7 +2778,7 @@ describe.skipIf(!tmuxAvailable())("TUI gateway stream lifecycle", () => {
       session = null;
       const resumedStderrPath = join(root!, "resumed-stderr.log");
       session = await TmuxSession.create({
-        cmd: `${FX_BIN} --resume-last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: join(root!, "workspace"),
         width: 72,
         height: 24,
@@ -5825,7 +5825,7 @@ describe.skipIf(!tmuxAvailable())("TUI gateway stream lifecycle", () => {
       session = null;
 
       session = await TmuxSession.create({
-        cmd: `${FX_BIN} --resume-last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: workspace,
         width: 100,
         height: 30,
@@ -6159,7 +6159,7 @@ describe.skipIf(!tmuxAvailable())("TUI gateway stream lifecycle", () => {
         await session.sendText("/quit");
         expect(await session.waitForSessionEnd(TIMEOUT)).toBe(true);
         await session.kill();
-        session = await TmuxSession.create({ cmd: `${FX_BIN} --resume-last`, cwd: workspace, env, width: 110, height: 35, stderrPath: join(root, "resumed-stderr.log") });
+        session = await TmuxSession.create({ cmd: `${FX_BIN} --resume last`, cwd: workspace, env, width: 110, height: 35, stderrPath: join(root, "resumed-stderr.log") });
         await session.waitForText(finalText, TIMEOUT);
         const resumed = await session.captureFullScrollback();
         expect(resumed).toContain("● 5 tool calls · 4 subagent · 1 read");
@@ -6341,7 +6341,7 @@ describe.skipIf(!tmuxAvailable())("TUI gateway stream lifecycle", () => {
       session = null;
 
       session = await TmuxSession.create({
-        cmd: `${FX_BIN} --resume-last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: workspace,
         width: 120,
         height: 30,
