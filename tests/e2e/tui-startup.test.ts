@@ -422,6 +422,56 @@ describe.skipIf(SKIP_TMUX)("tui: fresh-session commands", () => {
   );
 
   test(
+    "a quoted prompt after fx is sent as the first message",
+    async () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-launch-prompt-")));
+      const home = join(root, "home");
+      const stderrPath = join(root, "stderr.log");
+      mkdirSync(home, { recursive: true });
+      writeFileSync(stderrPath, "");
+      const gateway = startDynamicFakeGateway(() => fakeGatewayFinalText("LAUNCH_PROMPT_REPLY"));
+
+      try {
+        session = await TmuxSession.create({
+          cmd: `${FX_BIN} "fix the launch prompt fixture"`,
+          cwd: root,
+          env: {
+            HOME: home,
+            FX_AUTO_UPGRADE: "0",
+            AI_GATEWAY_API_KEY: "launch-prompt-fixture-key",
+            VERCEL_OIDC_TOKEN: undefined,
+            FX_GATEWAY_BASE_URL: gateway.baseUrl,
+            FX_GATEWAY_CHAT_URL: gateway.chatUrl,
+            FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+            FX_MODEL: FAKE_GATEWAY_MODEL,
+          },
+          stderrPath,
+          width: 100,
+          height: 24,
+        });
+        await session.waitForText("LAUNCH_PROMPT_REPLY", 10_000);
+        await session.waitForPane((pane) => hasEmptyComposer(pane), 10_000);
+        expect(gateway.requests).toHaveLength(1);
+        expect(gateway.requests[0].body).toContain("fix the launch prompt fixture");
+        const history = await session.captureFullScrollback();
+        expect(history.indexOf("fix the launch prompt fixture")).toBeGreaterThanOrEqual(0);
+        expect(history.indexOf("fix the launch prompt fixture")).toBeLessThan(
+          history.indexOf("LAUNCH_PROMPT_REPLY"),
+        );
+        expect(readFileSync(stderrPath, "utf8")).toBe("");
+      } finally {
+        if (session) {
+          await session.kill();
+          session = null;
+        }
+        gateway.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
     "/new waits for a resize before moving the old transcript into scrollback",
     async () => {
       const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-new-resize-")));

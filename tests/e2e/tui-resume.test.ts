@@ -4542,7 +4542,7 @@ test.skipIf(!tmuxAvailable())(
 
       writeFileSync(contenderStderrPath, "");
       contender = await TmuxSession.create({
-        cmd: `${FX_BIN} --resume`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: workspaceRoot,
         env: {
           ...gatewayEnv(home, ownerGateway),
@@ -4591,7 +4591,7 @@ test.skipIf(!tmuxAvailable())(
 
       writeFileSync(retryStderrPath, "");
       retry = await TmuxSession.create({
-        cmd: `${FX_BIN} --resume`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: workspaceRoot,
         env: gatewayEnv(home, retryGateway),
         stderrPath: retryStderrPath,
@@ -5211,8 +5211,9 @@ test.skipIf(!tmuxAvailable())(
 
     try {
       writeFileSync(stderrPath, "");
+      // A bare --resume opens the same picker as -r.
       active = await TmuxSession.create({
-        cmd: `${FX_BIN} -r`,
+        cmd: `${FX_BIN} --resume`,
         cwd: realpathSync(workspace),
         env: gatewayEnv(home, gateway),
         stderrPath,
@@ -5320,7 +5321,7 @@ test.skipIf(!tmuxAvailable())(
       const invocations = [
         ["-c"],
         ["--continue"],
-        ["--resume"],
+        ["-r", "last"],
         ["--resume", "last"],
         ["--resume", sessionId],
         ["session", "resume", "last"],
@@ -5548,7 +5549,7 @@ test.skipIf(!tmuxAvailable())(
 
       const toolSessionId = sessionIdFromHome(toolHome);
       const toolInvocations = [
-        ["--resume"],
+        ["-r", toolSessionId],
         ["--resume", "last"],
         ["--resume", toolSessionId],
       ];

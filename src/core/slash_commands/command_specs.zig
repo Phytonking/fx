@@ -314,6 +314,7 @@ pub fn renderTopLevelHelpWithStyle(alloc: Allocator, registry: TopLevelRegistry,
 
     try writeSectionHeading(&out.writer, style, "Usage:");
     try writeWrappedStyledLine(&out.writer, "  ", "  ", "fx [flags]", width, style, .syntax);
+    try writeWrappedStyledLine(&out.writer, "  ", "  ", "fx [flags] \"<prompt>\"", width, style, .syntax);
     try writeWrappedStyledLine(&out.writer, "  ", "  ", "fx <command> [...flags] [...args]", width, style, .syntax);
 
     try writeSectionHeading(&out.writer, style, "Commands:");
@@ -1699,9 +1700,7 @@ test "top-level help renders flags as compact aligned rows" {
     try std.testing.expect(lineContainsBoth(wide, "--context-limit <spec>", "Set name=bytes|off; repeatable"));
     try std.testing.expect(lineContainsBoth(wide, "--add-dir <path>", "Add a workspace directory; repeatable"));
     try std.testing.expect(lineContainsBoth(wide, "-c, --continue", "Resume the remembered workspace session"));
-    try std.testing.expect(lineContainsBoth(wide, "-r", "Open the saved-session picker"));
-    try std.testing.expect(lineContainsBoth(wide, "--resume [last|<id>]", "Resume the latest workspace session or an exact ID"));
-    try std.testing.expect(lineContainsBoth(wide, "--resume [last|<id>]", "Resume"));
+    try std.testing.expect(lineContainsBoth(wide, "-r, --resume [last|<id>]", "Pick a saved session, or resume the latest or an exact ID"));
     try std.testing.expect(std.mem.find(u8, wide, "Print the fx version and exit\n\nExamples:") != null);
     try std.testing.expect(std.mem.find(u8, wide, "List available models\n\n  setup") != null);
     try std.testing.expect(std.mem.find(u8, wide, "Show Vercel AI Gateway credits\n\n  usage") != null);
@@ -1745,7 +1744,7 @@ test "per-command help preserves long resume usage without debug recording" {
     const text = try renderTopLevelCommandHelp(std.testing.allocator, testTopLevelRegistry(), .@"resume");
     defer std.testing.allocator.free(text);
 
-    try std.testing.expect(std.mem.find(u8, text, "Usage:\n  fx session resume [last|<id>] | --resume [last|<id>] | --continue | -c | -r") != null);
+    try std.testing.expect(std.mem.find(u8, text, "Usage:\n  fx session resume [last|<id>] | -r, --resume [last|<id>] | --continue | -c") != null);
     try std.testing.expect(std.mem.find(u8, text, "Options:") != null);
     try std.testing.expect(std.mem.find(u8, text, "--record") == null);
 }

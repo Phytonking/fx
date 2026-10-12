@@ -678,6 +678,9 @@ const App = struct {
             launch.requested_resume = null;
         }
         errdefer if (app.requested_resume) |*target| target.deinit(alloc);
+        app.submission.launch_prompt = launch.initial_prompt;
+        launch.initial_prompt = null;
+        errdefer if (app.submission.launch_prompt) |prompt| alloc.free(prompt);
         app.session_persistence.sessions_v2 = launch.modifiers.sessions_v2;
         try BootstrapAppRuntime.bootstrap(
             &app,
@@ -903,6 +906,7 @@ const App = struct {
         // Cancel a /usage fetch in flight before shutdown continues.
         self.usage_dashboard.deinit();
         InputSubmitRuntime.clearPendingSubmission(self, "shutdown");
+        InputSubmitRuntime.discardLaunchPrompt(self, "shutdown");
         const resume_handoff = SessionAppRuntime.finalizePersistenceWithResumeHandoff(self);
         const shutdown_failure = self.session_persistence.shutdown_failure;
         // These delete image snapshots and log discarded drafts.
@@ -970,6 +974,7 @@ const App = struct {
         self.model_cache.deinit();
         self.usage_dashboard.deinit();
         InputSubmitRuntime.clearPendingSubmission(self, "shutdown");
+        InputSubmitRuntime.discardLaunchPrompt(self, "shutdown");
         SessionAppRuntime.finalizePersistence(self);
         shutdown_trace.mark("persistence_finalized");
         self.worker.deinit(std.heap.c_allocator);
@@ -3134,6 +3139,7 @@ const App = struct {
             AuthAppRuntime.collectDeferredStartupInventory(self);
         }
         InputSubmitRuntime.collectPendingSubmissionFacts(self);
+        try InputSubmitRuntime.collectLaunchPromptFacts(self, max_prompt_history);
         InputAppRuntime.collectFilePickerFacts(self);
 
         try self.collectThemeFacts();

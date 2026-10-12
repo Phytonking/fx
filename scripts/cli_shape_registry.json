@@ -369,7 +369,10 @@
     "-c": "The fixed resume grammar.",
     "--resume-last": "Removed resume spelling, matched only to name its replacement.",
     "--id": "Removed fx session resume --id spelling, matched only to name its replacement.",
-    "--golden": "Maps a missing-value failure onto fx replay's own error."
+    "--golden": "Maps a missing-value failure onto fx replay's own error.",
+    "-p": "Other agents' one-shot flag. fx doesn't accept it; it is matched only to point to fx ask.",
+    "--print": "Long form of -p, matched only to point to fx ask.",
+    "--print=": "Inline form of --print, matched only to point to fx ask."
   },
   "exceptions": {
     "flag_names": {

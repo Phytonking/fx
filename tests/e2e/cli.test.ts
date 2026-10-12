@@ -365,10 +365,10 @@ describe("cli: help", () => {
       expect(stdout).toContain("Set name=bytes|off; repeatable");
       expect(stdout).toContain("--add-dir <path>");
       expect(stdout).toContain("-c, --continue");
-      expect(stdout).toContain("-r");
-      expect(stdout).toContain("Open the saved-session picker");
+      expect(stdout).toContain("-r, --resume [last|<id>]");
+      expect(stdout).toContain("Pick a saved session, or resume");
       expect(stdout).not.toContain("-c, -r, --continue");
-      expect(stdout).toContain("--resume [last|<id>]");
+      expect(stdout).toContain('fx [flags] "<prompt>"');
       expect(stdout).not.toContain("--resume-last");
       expect(stdout).not.toContain("--resume-<id>");
       expect(stdout).toContain("session resume [last|id]");
@@ -559,8 +559,8 @@ With --prompt-permissions, JSON and quiet requests may prompt on stderr only whe
     "fx rejects the removed record flag as unknown input",
     async () => {
       const r = await runFx(["--record"]);
-      expect(r.code).not.toBe(0);
-      expect(r.stderr).toContain("fx: unknown subcommand: --record");
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain("fx: unknown flag --record");
       expect(r.stderr).not.toContain("visual terminal capture:");
     },
     TIMEOUT,
@@ -3103,13 +3103,17 @@ describe("cli: sessions", () => {
 
 describe("cli: removed task and background commands", () => {
   test(
-    "fx task, fx tasks, and fx background are unknown commands",
+    "fx task, fx tasks, and fx background are not commands",
     async () => {
-      for (const command of ["task", "tasks", "background"]) {
+      for (const command of ["task", "tasks"]) {
         const result = await runFx([command], { env: NO_GATEWAY_AUTH });
         expect(result.code).toBe(2);
-        expect(`${result.stdout}\n${result.stderr}`).toContain("unknown subcommand");
+        expect(result.stderr).toContain(`fx: unknown command ${command} (did you mean ask?)`);
       }
+      // A word that isn't close to a command is a first prompt for a session.
+      const background = await runFx(["background"], { env: NO_GATEWAY_AUTH });
+      expect(background.code).toBe(1);
+      expect(background.stderr).toContain("fx requires an interactive terminal (TTY).");
     },
     TIMEOUT,
   );
@@ -3952,14 +3956,42 @@ describe("cli: session", () => {
 
 describe("cli: interactive startup", () => {
   test(
+    "fx explains a first argument it can't take as a command or a prompt",
+    async () => {
+      const cases: Array<[string[], string]> = [
+        [["fix", "the", "login", "bug"], 'fx: put the prompt in quotes: fx "fix the login bug"\n'],
+        [["stauts"], "fx: unknown command stauts (did you mean status?)\n"],
+        [["-p", "fix the bug"], 'fx: -p isn\'t an fx flag; to run one request and exit, use fx ask "fix the bug"\n'],
+        [["--print"], 'fx: --print isn\'t an fx flag; to run one request and exit, use fx ask "<prompt>"\n'],
+        [[""], "fx: the prompt is empty\n"],
+      ];
+      for (const [args, stderr] of cases) {
+        const r = await runFx(args, { env: NO_GATEWAY_AUTH });
+        expect(r.code, args.join(" ")).toBe(2);
+        expect(r.stdout).toBe("");
+        expect(r.stderr).toBe(stderr);
+      }
+      for (const args of [["--modle", "x"], ["fix it", "--modle=x"]]) {
+        const r = await runFx(args, { env: NO_GATEWAY_AUTH });
+        expect(r.code, args.join(" ")).toBe(2);
+        expect(r.stderr.split("\n")[0]).toBe("fx: unknown flag --modle (did you mean --model?)");
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
     "interactive startup without TTY exits one",
     async () => {
       const cases = [
         [],
         ["--resume", "last"],
         ["--resume"],
+        ["-r", "last"],
         ["session", "resume", "last"],
         ["session", "resume", "session.v3"],
+        ["fix the login bug"],
+        ["fix the login bug", "--model", "x"],
       ];
 
       for (const args of cases) {

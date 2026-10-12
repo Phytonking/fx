@@ -272,10 +272,10 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "resume",
         .aliases = &.{ "--resume", "--continue", "-c", "-r" },
         .hidden_from_top_level_help = true,
-        .usage = "session resume [last|<id>] | --resume [last|<id>] | --continue | -c | -r",
+        .usage = "session resume [last|<id>] | -r, --resume [last|<id>] | --continue | -c",
         .summary = "Continue a saved interactive session",
         .options = &.{
-            .{ .flag = "-r", .description = "Choose the session to resume from a picker" },
+            .{ .flag = "-r", .description = "Short for --resume; with no value, choose a session from a picker" },
             .{ .flag = "last", .description = "Resume the most recent session" },
             .{ .flag = "<id>", .description = "Resume a session by id" },
             .{ .flag = "--id <id>", .description = "Resume a session by exact id" },
@@ -456,12 +456,8 @@ pub const top_level_flags = [_]TopLevelFlag{
         .description = "Resume the remembered workspace session",
     },
     .{
-        .usage = "-r",
-        .description = "Open the saved-session picker",
-    },
-    .{
-        .usage = "--resume [last|<id>]",
-        .description = "Resume the latest workspace session or an exact ID",
+        .usage = "-r, --resume [last|<id>]",
+        .description = "Pick a saved session, or resume the latest or an exact ID",
     },
     .{
         .usage = "--sessions-v2",
@@ -479,6 +475,7 @@ pub const top_level_flags = [_]TopLevelFlag{
 
 pub const top_level_examples = [_]TopLevelExample{
     .{ .command = "fx", .description = "Start a fresh interactive session" },
+    .{ .command = "fx \"Fix the failing login test\"", .description = "Start a session with a first prompt" },
     .{ .command = "fx ask \"Explain the changes in this repository\"", .description = "Run one request and exit" },
     .{ .command = "fx session resume last", .description = "Continue the latest session for this workspace" },
     .{ .command = "fx status --json", .description = "Inspect the current configuration as JSON" },

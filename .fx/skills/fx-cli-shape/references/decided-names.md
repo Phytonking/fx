@@ -7,7 +7,7 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 | Spelling | Opens | Status |
 |---|---|---|
 | `fx -c`, `fx --continue` | The session you last worked in interactively | Keep |
-| `fx -r [last\|<id>]`, `fx --resume [last\|<id>]` | One flag in short and long form. With no value, the session picker, the same list as `/resume`. `last` opens the newest saved session, and an ID opens that one | Keep. The single meaning is planned: today `-r` takes no value, and a bare `--resume` opens the newest session |
+| `fx -r [last\|<id>]`, `fx --resume [last\|<id>]` | One flag in short and long form. With no value, the session picker, the same list as `/resume`. `last` opens the newest saved session, and an ID opens that one | Keep |
 | `fx session resume [last\|<id>]` | The newest saved session (also with no value), or an exact one | Keep |
 | `fx ask --resume <last\|id>` | Same, for one-shot runs | Keep |
 | `/resume` | Inside a session | Keep |
@@ -66,5 +66,7 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 | MCP servers | `fx mcp` (stays the command) |
 | Usage and spend | `fx usage`, `/usage` (`/cost`) |
 | In-session token and turn statistics | `/stats` |
-| Exit codes | 0 success, 1 failure, 2 usage error (planned) |
+| Exit codes | 0 success, 1 failure, 2 usage error |
+| Start a session with a first prompt | `fx "<prompt>"`, one quoted argument |
+| Run one request and exit | `fx ask "<prompt>"`; `-p` and `--print` only point to it |
 | Versioned JSON | `--json=v2` when a shape must change |
