@@ -5047,7 +5047,7 @@ test "parseInteractiveLaunch shares native resume grammar" {
         ),
     );
     try std.testing.expectError(
-        error.MissingAddDirectoryValue,
+        error.InvalidFlag,
         parseInteractiveLaunch(alloc, &.{@constCast("--add-dir")}, command_catalog),
     );
 }
