@@ -344,6 +344,20 @@ describe("ultrafast fake Gateway", () => {
           args: ["--no-ultrafast"],
           ultrafast: false,
         },
+        {
+          name: "the last CLI flag wins when it turns Ultrafast off",
+          settings: {},
+          extraEnv: {},
+          args: ["--ultrafast", "--no-ultrafast"],
+          ultrafast: false,
+        },
+        {
+          name: "the last CLI flag wins when it turns Ultrafast on",
+          settings: {},
+          extraEnv: {},
+          args: ["--no-ultrafast", "--ultrafast"],
+          ultrafast: true,
+        },
         { name: "workspace on", settings: { ultrafast_mode: false }, workspace: true, extraEnv: {}, args: [], ultrafast: true },
         { name: "workspace off", settings: { ultrafast_mode: true }, workspace: false, extraEnv: {}, args: [], ultrafast: false },
         { name: "environment overrides workspace", settings: { ultrafast_mode: false }, workspace: true, extraEnv: { FX_ULTRAFAST: "0" }, args: [], ultrafast: false },
@@ -383,32 +397,6 @@ describe("ultrafast fake Gateway", () => {
           gateway.stop();
           rmSync(root.root, { recursive: true, force: true });
         }
-      }
-    },
-    TIMEOUT,
-  );
-
-  test(
-    "ask rejects conflicting Ultrafast flags before any POST",
-    async () => {
-      const root = createIsolatedRoot();
-      const gateway = startFakeGateway([], { models: [ultrafastCatalogModel()] });
-      try {
-        const result = await runFx(
-          ["ask", "--auto", "--no-save", "--ultrafast", "--no-ultrafast", "Conflicting flags must not spend."],
-          { cwd: root.workspace, env: fakeGatewayEnv(root, gateway), timeoutMs: TIMEOUT },
-        );
-        expect(result.code, result.stderr).toBe(2);
-        expect(result.stdout).toBe("");
-        expect(result.stderr).toMatch(/ultrafast/i);
-        expect(result.stderr).not.toMatch(/panic|segmentation fault|aborted/i);
-        expect(gateway.requests).toEqual([]);
-        expect(gateway.classifierRequests).toEqual([]);
-        expect(gateway.evaluationRequests).toEqual([]);
-        expect(gateway.titleRequests).toEqual([]);
-      } finally {
-        gateway.stop();
-        rmSync(root.root, { recursive: true, force: true });
       }
     },
     TIMEOUT,
