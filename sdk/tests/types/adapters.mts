@@ -1,5 +1,18 @@
 // The MCP and skills adapters, as the README combines them with an agent.
-import { createFxAgent } from "libfx";
+import { createFxAgent, type FxProviderCredentials } from "libfx";
+import {
+  completeDeviceSignIn,
+  finishSignIn,
+  pollDeviceSignIn,
+  refreshCredentials,
+  startDeviceSignIn,
+  startSignIn,
+  type ChatgptDeviceSignIn,
+  type ChatgptSignIn,
+  type ChatgptSignInErrorCode,
+} from "libfx/chatgpt";
+import * as grok from "libfx/grok";
+import type { GrokDeviceSignIn, GrokSignIn, GrokSignInErrorCode } from "libfx/grok";
 import { createMcpAdapter, type McpAdapter, type McpClient } from "libfx/mcp";
 import { createSkillsAdapter, type SkillRecord } from "libfx/skills";
 import { createSkillsAdapter as createSkillsAdapterFromNode, loadSkillFile, type LoadedSkill } from "libfx/skills/node";
@@ -67,4 +80,37 @@ export async function skills(): Promise<void> {
 
   // @ts-expect-error a skill record needs instructions
   createSkillsAdapter([{ name: "review" }]);
+}
+
+// Sign in with ChatGPT on a website: start in one request, finish in another.
+declare const sessionStore: { put(value: ChatgptSignIn): void; take(): ChatgptSignIn };
+export async function chatgptSignIn(pastedAddress: string): Promise<FxProviderCredentials> {
+  const signIn = await startSignIn();
+  sessionStore.put(signIn);
+  const credentials = await finishSignIn(sessionStore.take(), pastedAddress);
+  // @ts-expect-error finishSignIn() needs the sign-in startSignIn() returned
+  await finishSignIn({ url: signIn.url }, pastedAddress);
+  const device: ChatgptDeviceSignIn = await startDeviceSignIn();
+  const polled: FxProviderCredentials | null = await pollDeviceSignIn(device);
+  const waited: FxProviderCredentials = await completeDeviceSignIn(device, { signal: AbortSignal.timeout(900_000) });
+  const code: ChatgptSignInErrorCode = "LIBFX_CHATGPT_SIGN_IN_EXPIRED";
+  void polled; void waited; void code;
+  return refreshCredentials(credentials);
+}
+
+// Sign in with a Grok plan: device code first, the pasted address as a fallback.
+declare const grokStore: { put(value: GrokSignIn | GrokDeviceSignIn): void };
+export async function grokSignIn(pastedAddress: string): Promise<FxProviderCredentials> {
+  const device: GrokDeviceSignIn = await grok.startDeviceSignIn();
+  grokStore.put(device);
+  const polled: FxProviderCredentials | null = await grok.pollDeviceSignIn(device);
+  const viaDevice: FxProviderCredentials = await grok.completeDeviceSignIn(device, { signal: AbortSignal.timeout(1_800_000) });
+  const signIn: GrokSignIn = await grok.startSignIn();
+  const redirect: string = signIn.redirectUri;
+  const viaAddress = await grok.finishSignIn(signIn, pastedAddress);
+  // @ts-expect-error finishSignIn() needs the sign-in startSignIn() returned
+  await grok.finishSignIn({ url: signIn.url, state: signIn.state, verifier: signIn.verifier }, pastedAddress);
+  const code: GrokSignInErrorCode = "LIBFX_GROK_ACCOUNT_CHANGED";
+  void polled; void viaDevice; void redirect; void code;
+  return grok.refreshCredentials(viaAddress);
 }

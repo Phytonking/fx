@@ -43,9 +43,19 @@ const newId = (prefix) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`
 
 // How long a worker leaves for a model step it decides not to start.
 const defaultReserveMs = 30_000;
-// A lease with nothing to show whether its holder lives expires after this,
-// and its holder renews it well before.
-const unknownHolderLeaseMs = 60_000;
+// A lease with nothing to show whether its holder lives expires this long
+// after it was taken or last renewed, and its holder renews it every third of
+// that while it runs. So a worker that dies frees its session this soon
+// after its last renewal, not at its function's deadline.
+const defaultLeaseMs = 15_000;
+
+// When a lease taken or renewed now runs out: never past the deadline its
+// worker stops at, and with liveness known, only at that deadline.
+function leaseEnd(backend, deadline) {
+  if (backend.livenessKnown) return deadline;
+  const renewed = Date.now() + backend.leaseMs;
+  return deadline === null ? renewed : Math.min(renewed, deadline);
+}
 // The newest consumed message ids a checkpoint keeps, so a message the queue
 // delivers again after its turn ended is still recognized.
 const recentIdsKept = 256;
@@ -150,13 +160,18 @@ export function foldSessionLog(entries, { now = 0, alive = () => null } = {}) {
   const inputs = [];
   const records = [];
   // A checkpoint taken where a turn yielded leaves that turn open.
-  let openTurn = typeof base?.openTurn?.id === "string" ? { id: base.openTurn.id, at: Number(base.openTurn.at) || 0, context: base.openTurn.context ?? null } : null;
+  let openTurn = typeof base?.openTurn?.id === "string" ? { id: base.openTurn.id, at: Number(base.openTurn.at) || 0, context: base.openTurn.context ?? null, settings: base.openTurn.settings ?? null } : null;
   let lastTurnId = base?.lastTurnId ?? null;
   let yielded = base?.yielded === true;
-  // The context each prompt's or steer's caller gave, which its turn runs
-  // with: an untaken steer becomes a turn.
+  // The context each prompt's or steer's caller gave, and the settings its
+  // session object set, which its turn runs with: an untaken steer becomes a
+  // turn.
   const contexts = new Map();
-  for (const input of base?.pending ?? []) if (input.context !== undefined) contexts.set(input.messageId, input.context);
+  const settingsOf = new Map();
+  for (const input of base?.pending ?? []) {
+    if (input.context !== undefined) contexts.set(input.messageId, input.context);
+    if (input.settings !== undefined) settingsOf.set(input.messageId, input.settings);
+  }
   // How many times each turn's engine stopped under it.
   const stops = new Map();
   const failed = new Map();
@@ -182,6 +197,7 @@ export function foldSessionLog(entries, { now = 0, alive = () => null } = {}) {
         seenInputs.add(entry.key);
         inputs.push({ ...entry, cursor: position });
         if (entry.context !== undefined) contexts.set(entry.messageId, entry.context);
+        if (entry.settings !== undefined) settingsOf.set(entry.messageId, entry.settings);
         break;
       case "lease":
       case "release":
@@ -201,7 +217,7 @@ export function foldSessionLog(entries, { now = 0, alive = () => null } = {}) {
           records.push({ cursor, data: entry.data });
           for (const mark of entry.marks ?? []) {
             if (typeof mark.start === "string") {
-              openTurn = { id: mark.start, at: position, context: contexts.get(mark.start) ?? null };
+              openTurn = { id: mark.start, at: position, context: contexts.get(mark.start) ?? null, settings: settingsOf.get(mark.start) ?? null };
               consume(mark.start);
               yielded = false;
             } else if (mark.end === true) {
@@ -498,7 +514,7 @@ const listenersOf = new WeakMap();
 
 // libfx starts and closes a World it `owned`, having created it; a World the
 // app passed in stays the app's.
-function createWorldBackend(world, { name, reserveMs, pollMs, alive, holderInfo, livenessKnown = false, queueDurable = false, maxDurationMs, owned = true }) {
+function createWorldBackend(world, { name, reserveMs, pollMs, leaseMs, alive, holderInfo, livenessKnown = false, queueDurable = false, maxDurationMs, owned = true }) {
   const spec = world.specVersion === undefined ? {} : { specVersion: world.specVersion };
   const created = new Set();
   // Runs being created now: writes that go out together create a run once.
@@ -534,6 +550,7 @@ function createWorldBackend(world, { name, reserveMs, pollMs, alive, holderInfo,
     queueDurable,
     pollMs: pollMs ?? 1000,
     reserveMs: reserveMs ?? defaultReserveMs,
+    leaseMs: leaseMs ?? defaultLeaseMs,
     maxDurationMs: maxDurationMs ?? null,
     world,
     newSessionId: () => `wrun_${typeof world.createRunId === "function" ? world.createRunId({}) : ulid()}`,
@@ -799,12 +816,17 @@ function uiWriter(log, onError, epoch) {
   };
 }
 
+// What a turn runs with: its caller's context and its session object's
+// settings, from the input that started it or from the open turn.
+const runOf = (input) => ({ context: input?.context ?? null, settings: input?.settings ?? null });
+
 const errorSummary = (error) => ({ name: error?.name ?? "Error", message: String(error?.message ?? error), ...(error?.code ? { code: error.code } : {}) });
 // The harness contract: a fenced write rejects with this code.
 const isFenced = (error) => error?.code === "FX_FENCED";
 
 // What a queue message adds to its session's log: a restored agent's first
-// checkpoint and the message's input, a prompt with its caller's context.
+// checkpoint and the message's input, a prompt with its caller's context and
+// its session object's settings.
 // Nothing the log already holds. Pure.
 function messageEntries(state, message) {
   const entries = [];
@@ -822,6 +844,7 @@ function messageEntries(state, message) {
       ...(message.input === undefined ? {} : { input: message.input }),
       ...(typeof message.target === "string" ? { target: message.target } : {}),
       ...((message.type === "prompt" || message.type === "steer") && message.context !== undefined ? { context: message.context } : {}),
+      ...((message.type === "prompt" || message.type === "steer") && message.settings !== undefined ? { settings: message.settings } : {}),
     });
   }
   return entries;
@@ -969,7 +992,7 @@ class SessionWorker {
       a: state.head,
       holder: this.holder,
       epoch: state.lastEpoch + 1,
-      expiresAt: deadline ?? (this.backend.livenessKnown ? null : Date.now() + unknownHolderLeaseMs),
+      expiresAt: leaseEnd(this.backend, deadline),
       ...this.backend.holderInfo(),
     };
     this.backend.holding(this.holder, true);
@@ -1090,6 +1113,8 @@ class SessionWorker {
       cut = state.cut;
     }
     const ui = uiWriter(log, (error) => agent.emit("ui.error", { sessionId: this.sessionId, error: error?.name ?? "Error" }), lease.epoch);
+    // When the lease runs out, as this worker last renewed it.
+    let leaseExpiresAt = lease.expiresAt;
     const store = {
       load: async () => ({
         ...(state.checkpoint?.data ? { checkpoint: { through: state.checkpoint.through ?? "0", data: fromBase64(state.checkpoint.data) } } : {}),
@@ -1111,23 +1136,30 @@ class SessionWorker {
           recent: now.recent,
           lastTurnId: now.lastTurnId,
           ...(now.openTurn ? { openTurn: now.openTurn, yielded: now.yielded } : {}),
-          lease: { holder: this.holder, epoch: lease.epoch, expiresAt: lease.expiresAt, pid: lease.pid, host: lease.host },
+          lease: { holder: this.holder, epoch: lease.epoch, expiresAt: leaseExpiresAt, pid: lease.pid, host: lease.host },
         });
       },
     };
+    // The turn running now, which a deadline or a lost lease cancels.
+    let turnNow = null;
     let renew = null;
-    if (lease.expiresAt !== null && deadline === null) {
-      // A lease nothing else shows alive is renewed while its worker runs.
+    if (!this.backend.livenessKnown) {
+      // A lease nothing else shows alive is renewed while its worker runs,
+      // and never after its release, which would take the session back. A
+      // renewal fenced out by another worker's write stops the turn at once,
+      // as a claim that failed does.
       renew = setInterval(() => {
-        void chained({ k: "lease", holder: this.holder, epoch: lease.epoch, expiresAt: Date.now() + unknownHolderLeaseMs, ...this.backend.holderInfo() }).catch(() => {});
-      }, unknownHolderLeaseMs / 3);
+        if (released || failed || this.stopping) return;
+        leaseExpiresAt = leaseEnd(this.backend, deadline);
+        void chained({ k: "lease", holder: this.holder, epoch: lease.epoch, expiresAt: leaseExpiresAt, ...this.backend.holderInfo() })
+          .catch((error) => { if (isFenced(error)) turnNow?.cancel({ reason: "handoff" }); });
+      }, Math.max(1, Math.floor(this.backend.leaseMs / 3)));
     }
     // Shortly before the deadline the worker hands the open turn back to the
     // log, cutting off whatever call is still running, and the same message
     // continues the turn in a new delivery. Half the reserve, at most
     // hardStopMs; a reserve of zero never stops a step.
     const stopMargin = deadline === null ? 0 : Math.min(hardStopMs, Math.floor(this.backend.reserveMs / 2));
-    let turnNow = null;
     this.stopping = false;
     this.stopNow = () => {
       if (this.stopping) return;
@@ -1143,7 +1175,7 @@ class SessionWorker {
       ? setTimeout(this.stopNow, deadline - stopMargin - Date.now())
       : null;
     let harness = null;
-    let harnessContext = null;
+    let harnessRun = runOf(null);
     this.settled = () => (harness ? harness.settled() : Promise.resolve());
     // A harness that throws instead of returning a turn cannot run one; the
     // same message runs the session again with a new harness.
@@ -1170,10 +1202,10 @@ class SessionWorker {
         return "done";
       }
       try {
-        // The context of the turn it runs first: the open turn's, or the
-        // next prompt's.
-        harnessContext = (state.openTurn ? state.openTurn.context : state.pending[0]?.context) ?? null;
-        harness = await agent.openHarness(this.sessionId, store, harnessContext, ready);
+        // What the turn it runs first runs with: the open turn's context and
+        // settings, or the next prompt's.
+        harnessRun = runOf(state.openTurn ?? state.pending[0]);
+        harness = await agent.openHarness(this.sessionId, store, harnessRun, ready);
       } catch (error) {
         // A harness that cannot start fails the turn waiting on it, once:
         // the open turn, or after it failed, the next prompt.
@@ -1243,13 +1275,14 @@ class SessionWorker {
             state = this.fold(await log.read());
             continue;
           }
-          // Each prompt runs with the context its caller gave.
-          const wanted = next.context ?? null;
-          if (JSON.stringify(wanted ?? null) !== JSON.stringify(harnessContext ?? null)) {
+          // Each prompt runs with the context its caller gave and its session
+          // object's settings.
+          const wanted = runOf(next);
+          if (JSON.stringify(wanted) !== JSON.stringify(harnessRun)) {
             await harness.close();
             harness = null;
             harness = await agent.openHarness(this.sessionId, store, wanted, ready);
-            harnessContext = wanted;
+            harnessRun = wanted;
           }
           try {
             turn = harness.prompt(next.input ?? "", { turnId: messageId, yieldAt });
@@ -1646,8 +1679,9 @@ function turnView({ messageId, resumeRequest = null, start }) {
  * `harness(options)` receives the caller's options without `durability` and
  * returns:
  *
- * - `open({ sessionId, store, context, durability, ready })`: the harness session
- *   for one worker. `store` is where it keeps the session: `load()` resolves
+ * - `open({ sessionId, store, context, settings, durability, ready })`: the
+ *   harness session for one worker, for turns with that `context` and those
+ *   `settings`. `store` is where it keeps the session: `load()` resolves
  *   `{ checkpoint?, journal, head }`, `append({ idempotencyKey, data, marks })`
  *   stores one opaque record durably and resolves `{ cursor }`, and
  *   `saveCheckpoint({ through, data })` stores what the records through
@@ -1660,6 +1694,10 @@ function turnView({ messageId, resumeRequest = null, start }) {
  *   before then, and the harness runs no tool until it resolves true. The
  *   core holds the store's writes and the turn's UI lines meanwhile.
  * - `seed` (optional): the bytes of a checkpoint a new session starts from.
+ * - `settings(sessionOptions)` (optional): what an `agent.session()` call
+ *   sets over the agent's options for the turns it starts, as JSON the core
+ *   stores with each prompt and passes to `open()`, or undefined for none.
+ *   It throws a TypeError for options it refuses.
  *
  * A harness session has `prompt(input, { turnId, yieldAt })` and
  * `resume({ yieldAt, rerun })`, each returning a turn, where `rerun: false`
@@ -1701,7 +1739,14 @@ export function createDurableAgentFactory({ harness, defaultDurability, name = "
     };
     const agent = {
       emit,
-      openHarness: (sessionId, store, context, ready) => plugged.open({ sessionId, store, context, durability: chosenDurability, ...(ready ? { ready } : {}) }),
+      openHarness: (sessionId, store, run, ready) => plugged.open({
+        sessionId,
+        store,
+        context: run?.context ?? null,
+        ...(run?.settings == null ? {} : { settings: run.settings }),
+        durability: chosenDurability,
+        ...(ready ? { ready } : {}),
+      }),
     };
     let backendPromise = null;
     let chosenDurability = null;
@@ -1747,6 +1792,7 @@ export function createDurableAgentFactory({ harness, defaultDurability, name = "
       if (context !== undefined) {
         try { JSON.stringify(context); } catch { throw new TypeError("session context must be JSON"); }
       }
+      const settings = plugged.settings?.(sessionOptions ?? {});
       let id = requestedId ?? null;
       let seeded = seed === undefined || requestedId !== undefined;
       const resolved = backend().then((created) => {
@@ -1760,6 +1806,7 @@ export function createDurableAgentFactory({ harness, defaultDurability, name = "
         const extra = {
           ...(seeded ? {} : { seed }),
           ...(context === undefined ? {} : { context }),
+          ...(settings === undefined ? {} : { settings }),
         };
         const full = { ...message, ...extra, sessionId };
         // A queue that ends with the process could lose the message, so its
@@ -1946,15 +1993,21 @@ export function createDurableAgentFactory({ harness, defaultDurability, name = "
     let defaultSession = null;
     const durableAgent = {
       // For tests and drivers: stops a session's running worker as its
-      // deadline would, and waits for what its turn has written so far.
+      // deadline would.
       [durableInternals]: {
         stopAtDeadline: (sessionId) => workers.get(sessionId)?.stopNow?.(),
-        settled: async (sessionId) => { await workers.get(sessionId)?.settled?.(); },
         liveWorkers: () => workers.size,
         // The newest lease the session's log holds, standing or not.
         lastLease: async (sessionId) => {
           const log = await (await backend()).session(sessionId);
           return foldSessionLog(await log.read()).lastLease;
+        },
+        // Whether a lease stands on the session now, as a worker reading it
+        // would judge: unexpired, and not held by a worker known dead.
+        leaseStands: async (sessionId) => {
+          const held = await backend();
+          const log = await held.session(sessionId);
+          return foldSessionLog(await log.read(), { now: Date.now(), alive: (lease) => held.alive(lease) }).lease !== null;
         },
       },
       /** Opens session `id`, or a new one; no I/O until it is used. */

@@ -14,8 +14,13 @@ export {
 } from "./libfx.cjs";
 
 export type {
+  FxApiKeyCredentials,
   FxBytes,
   FxCheckpointMeta,
+  FxCodexProvider,
+  FxCustomProvider,
+  FxCustomProviderDefinition,
+  FxCustomProviderModel,
   FxEffort,
   FxEngine,
   FxEngineEvent,
@@ -27,6 +32,8 @@ export type {
   FxErrorSummary,
   FxFetch,
   FxFollowUp,
+  FxGatewayProvider,
+  FxGrokProvider,
   FxHostTool,
   FxImageBlock,
   FxJsonSchema,
@@ -39,6 +46,7 @@ export type {
   FxOnAmbiguous,
   FxPromptBlock,
   FxPromptInput,
+  FxProviderCredentials,
   FxProviderTool,
   FxResizedImage,
   FxResourceBlock,

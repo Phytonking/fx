@@ -20,11 +20,11 @@ Contributions should preserve that direction:
 
 Requirements:
 
-* Zig `0.16.0+`
+* Zig `0.17.0+`
 
 * interactive terminal for manual shell testing
 
-* a model connection for model-backed flows. [Custom model connections](README.md#custom-model-connections) support local and remote endpoints. Vercel OAuth via `fx login`, macOS Keychain API keys via `fx setup`, `AI_GATEWAY_API_KEY`, and `VERCEL_OIDC_TOKEN` are also supported
+* a model connection for model-backed flows. [Custom model connections](https://fx.sh/docs/configure-fx/custom-model-connections) support local and remote endpoints. Vercel OAuth via `fx login`, macOS Keychain API keys via `fx setup`, `AI_GATEWAY_API_KEY`, and `VERCEL_OIDC_TOKEN` are also supported
 
 Common commands:
 
@@ -655,4 +655,4 @@ Minimum checklist:
 2. Run `zig build`, then exercise the change with `./zig-out/bin/fx`.
 3. Push the feature branch and open a draft PR immediately.
 4. Require **CI**, including the **macOS arm64** check, and the final ship gate to pass for the exact current commit before marking the PR ready.
-5. Update `README.md` if user-facing behavior changed.
+5. If user-facing behavior changed, update the docs as [Documentation](AGENTS.md#documentation) describes.

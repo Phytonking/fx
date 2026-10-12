@@ -387,6 +387,7 @@ pub fn CompletionRuntime(comptime App: type) type {
         }
 
         fn routeNonSlashPickerMove(app: *App, delta: i32) !bool {
+            if (try routeMcpHostMenuMove(app, delta)) return true;
             if (try routeSettingsMenuMove(app, delta)) return true;
             if (try routeHelpMenuMove(app, delta)) return true;
             if (try routeModelMenuMove(app, delta)) return true;
@@ -410,6 +411,13 @@ pub fn CompletionRuntime(comptime App: type) type {
             // Mid-turn bare `/model`: consume arrows without slash/skill navigation.
             if (app.stream.active and picker_state.isBareModelCommandAtCursor(&app.input_runtime.edit_state)) return true;
             return false;
+        }
+
+        fn routeMcpHostMenuMove(app: *App, delta: i32) !bool {
+            if (comptime !@hasDecl(App, "mcpHostMenuKey")) return false;
+            if (!app.mcp.hostMenuActive()) return false;
+            try app.mcpHostMenuKey(if (delta < 0) .up else .down);
+            return true;
         }
 
         fn routeSettingsMenuMove(app: *App, delta: i32) !bool {
@@ -1079,7 +1087,7 @@ pub fn CompletionRuntime(comptime App: type) type {
         const navigatePickerOptions = list_window.advanceSelection;
 
         fn setModelComposerText(app: *App, comptime fmt: []const u8, args: anytype) !void {
-            const text = try std.fmt.allocPrint(app.alloc, fmt, args);
+            const text = try app.alloc.print(fmt, args);
             defer app.alloc.free(text);
             try app.input_runtime.textReplacementState().replace(app.alloc, text);
         }
@@ -1917,7 +1925,7 @@ test "file picker resize invalidation blocks acceptance without another lookup" 
     var app = FilePickerTestApp{ .alloc = alloc, .file_completion_values = &.{.{ .path = "file.txt", .kind = .file }} };
     defer app.deinit();
     try app.input_runtime.textReplacementState().replace(alloc, "@file");
-    presentFilePickerForTest(&app);
+    try presentFilePickerForTest(&app);
     app.shell.render_requests.observeResizeSignal(0, 100);
     try std.testing.expectEqual(edit_contract.InsertResult.inactive, (try rt.submitFilePickerOnEnter(&app, 4096)).?);
     try std.testing.expectEqualStrings("@file", app.input_runtime.edit_state.input.items);
@@ -1951,13 +1959,13 @@ test "file picker preparation caches data but requires an explicit visible recei
     try std.testing.expectEqualStrings("@file.txt ", app.input_runtime.edit_state.input.items);
 }
 
-fn presentFilePickerForTest(app: anytype) void {
+fn presentFilePickerForTest(app: anytype) !void {
     const rt = CompletionRuntime(@TypeOf(app.*));
     rt.prepareFilePicker(app);
     if (comptime @TypeOf(app.*) == FilesystemFilePickerTestApp) {
         while (app.input_runtime.picker.file_completion.directory_request != null) {
             rt.collectFilePickerFacts(app);
-            std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake) catch unreachable;
+            try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
         }
     }
     if (rt.filePickerView(app).receipt) |receipt| rt.acknowledgeFilePicker(app, receipt);
@@ -1973,7 +1981,7 @@ test "streaming file selection commits the selected path" {
     defer app.deinit();
     try app.input_runtime.textReplacementState().replace(alloc, "review @src/mai");
     app.stream.active = true;
-    presentFilePickerForTest(&app);
+    try presentFilePickerForTest(&app);
 
     try std.testing.expectEqual(
         edit_contract.InsertResult.inserted,
@@ -1991,7 +1999,7 @@ test "file picker encodes literal quotes without reopening quote grammar" {
     };
     defer app.deinit();
     try app.input_runtime.textReplacementState().replace(alloc, "@we");
-    presentFilePickerForTest(&app);
+    try presentFilePickerForTest(&app);
 
     try std.testing.expectEqual(
         edit_contract.InsertResult.inserted,
@@ -2008,7 +2016,7 @@ test "file picker quoted middle replacement preserves only the outside tail" {
     defer app.deinit();
     try app.input_runtime.textReplacementState().replace(alloc, "read @\"a\\\\old.txt\" suffix");
     app.input_runtime.edit_state.cursor = "read @\"a\\\\".len;
-    presentFilePickerForTest(&app);
+    try presentFilePickerForTest(&app);
     try std.testing.expectEqual(edit_contract.InsertResult.inserted, try rt.autocompleteFilePickerSelection(&app, 4096));
     try std.testing.expectEqualStrings("read @\"a\\\\b.txt\" suffix", app.input_runtime.edit_state.input.items);
     try std.testing.expectEqual("read @\"a\\\\b.txt\" ".len, app.input_runtime.edit_state.cursor);
@@ -2036,7 +2044,7 @@ test "filesystem file picker pipeline drills into a directory and selects a file
     defer app.deinit();
 
     try app.input_runtime.textReplacementState().replace(alloc, "@./space");
-    presentFilePickerForTest(&app);
+    try presentFilePickerForTest(&app);
     try std.testing.expectEqual(
         edit_contract.InsertResult.inserted,
         try rt.autocompleteFilePickerSelection(&app, 4096),
@@ -2051,7 +2059,7 @@ test "filesystem file picker pipeline drills into a directory and selects a file
     );
 
     try app.input_runtime.edit_state.insertSlice(alloc, "item");
-    presentFilePickerForTest(&app);
+    try presentFilePickerForTest(&app);
     try std.testing.expectEqual(
         edit_contract.InsertResult.inserted,
         try rt.autocompleteFilePickerSelection(&app, 4096),

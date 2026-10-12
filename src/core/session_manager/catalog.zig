@@ -24,7 +24,7 @@ const lock_name = "index.lock";
 /// A `.tmp` entry younger than this may be a publish in progress.
 const sweep_after_ms: i64 = 60 * 60 * 1000;
 
-pub const host_count = @typeInfo(schema.Host).@"enum".fields.len;
+pub const host_count = @typeInfo(schema.Host).@"enum".field_names.len;
 
 pub const Summary = struct {
     id: []const u8,
@@ -170,7 +170,7 @@ pub const Entry = struct {
 /// Owns everything through its arena.
 pub const Index = struct {
     arena: std.heap.ArenaAllocator,
-    entries: std.StringArrayHashMapUnmanaged(Entry) = .empty,
+    entries: std.array_hash_map.String(Entry) = .empty,
     /// Lines that failed their checksum or did not parse.
     damaged_lines: u64 = 0,
     /// Lines folded.
@@ -223,7 +223,7 @@ pub const Index = struct {
                 }
             },
             .opened => |o| if (index.entries.getPtr(o.id)) |entry| {
-                const i = @intFromEnum(o.host);
+                const i = @backingInt(o.host);
                 entry.summary.opened_ms[i] = @max(entry.summary.opened_ms[i], o.ts_ms);
             },
             .del => |d| {
@@ -373,7 +373,7 @@ pub const Catalog = struct {
                 if (!std.mem.eql(u8, entry.summary.workspace, workspace)) continue;
                 const key = switch (target) {
                     .last => entry.summary.updated_ms,
-                    .last_opened => |host| entry.summary.opened_ms[@intFromEnum(host)],
+                    .last_opened => |host| entry.summary.opened_ms[@backingInt(host)],
                 };
                 if (key == 0 and target == .last_opened) continue;
                 // A tie resolves as `list` sorts: the smaller id first (D11).
@@ -713,14 +713,14 @@ test "records round trip" {
     var summary = sample("abc", 7);
     summary.title = "\"a \\\"title\\\"\"";
     summary.parent = "p";
-    summary.opened_ms[@intFromEnum(schema.Host.ask)] = 9;
+    summary.opened_ms[@backingInt(schema.Host.ask)] = 9;
     try encodeRecord(arena.allocator(), &out, .{ .put = summary });
     try encodeRecord(arena.allocator(), &out, .{ .opened = .{ .id = "abc", .host = .acp, .ts_ms = 10 } });
     try encodeRecord(arena.allocator(), &out, .{ .del = .{ .id = "abc", .ts_ms = 11 } });
     var lines = std.mem.splitScalar(u8, out.items, '\n');
     const put = (try decodeRecord(arena.allocator(), try std.mem.concat(arena.allocator(), u8, &.{ lines.next().?, "\n" }))).?.put;
     try testing.expectEqualStrings("\"a \\\"title\\\"\"", put.title.?);
-    try testing.expectEqual(@as(u64, 9), put.opened_ms[@intFromEnum(schema.Host.ask)]);
+    try testing.expectEqual(@as(u64, 9), put.opened_ms[@backingInt(schema.Host.ask)]);
     const opened = (try decodeRecord(arena.allocator(), try std.mem.concat(arena.allocator(), u8, &.{ lines.next().?, "\n" }))).?.opened;
     try testing.expectEqual(schema.Host.acp, opened.host);
     const del = (try decodeRecord(arena.allocator(), try std.mem.concat(arena.allocator(), u8, &.{ lines.next().?, "\n" }))).?.del;
@@ -746,7 +746,7 @@ test "the fold keeps the newest put, merges open times, and a tombstone is final
     try testing.expectEqual(@as(u64, 0), index.damaged_lines);
     const s1 = index.entries.get("s1").?.summary;
     try testing.expectEqual(@as(u64, 4), s1.turns);
-    try testing.expectEqual(@as(u64, 5), s1.opened_ms[@intFromEnum(schema.Host.app)]);
+    try testing.expectEqual(@as(u64, 5), s1.opened_ms[@backingInt(schema.Host.app)]);
     try testing.expect(index.isDeleted("s2"));
 
     // A flipped byte in a middle line is counted, never folded.
@@ -895,7 +895,7 @@ const catalog_model_tests = struct {
             const id = t.ids[i] orelse return "none";
             var path: [300]u8 = undefined;
             if (exists(t.root, id)) return "live";
-            if (exists(t.root, std.fmt.bufPrint(&path, ".trash/{s}", .{id}) catch return "none")) return "trash";
+            if (exists(t.root, std.mem.print(&path, ".trash/{s}", .{id}) catch return "none")) return "trash";
             return if (t.published[i]) "gone" else "none";
         }
 
@@ -966,7 +966,7 @@ const catalog_model_tests = struct {
         defer tmp.cleanup();
         const base = try tmp.dir.realPathFileAlloc(io, ".", gpa);
         defer gpa.free(base);
-        const root_path = try std.fs.path.join(gpa, &.{ base, "sessions", "v2" });
+        const root_path = try std.Io.Dir.path.join(gpa, &.{ base, "sessions", "v2" });
         defer gpa.free(root_path);
         var fault = Fault.init(gpa, io, 1);
         defer fault.deinit();

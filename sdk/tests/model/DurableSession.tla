@@ -28,6 +28,12 @@
 (* that never wakes is a crash. One that wakes carries on until its next   *)
 (* write, so two workers can be active at once (the witness below).        *)
 (*                                                                         *)
+(* With Heartbeat, a holder renews a short lease while it runs, as on a    *)
+(* World that cannot tell whether a holder lives. A freeze is then any     *)
+(* stall long enough for the lease to run out, and a renewal is a write:   *)
+(* one that lands after a worker wakes keeps its lease when it still heads *)
+(* the chain, and stops it when another worker took the session over.      *)
+(*                                                                         *)
 (* Shortly before its deadline a worker's own timer stops it: it cuts off  *)
 (* the call still running, hands the open turn back to the log, and the    *)
 (* same message comes back for a new delivery. So a lease that runs out at *)
@@ -55,13 +61,15 @@ CONSTANTS
     SelfStop,    \* whether a worker stops itself before its deadline
     ClaimFenced, \* whether a claim on a stale read is refused
     MaxCutoffs,  \* cut-offs of one step in a row before it is not run again
-    CutoffBound  \* whether that bound applies
+    CutoffBound, \* whether that bound applies
+    Heartbeat    \* whether a holder renews a short lease while it runs
 
 ASSUME Tool \in {"lookup", "send"}
 ASSUME SelfStop \in BOOLEAN
 ASSUME ClaimFenced \in BOOLEAN
 ASSUME MaxCutoffs \in Nat
 ASSUME CutoffBound \in BOOLEAN
+ASSUME Heartbeat \in BOOLEAN
 
 None == "none"
 Waiting == {"announce", "model1", "tool", "model2"}
@@ -220,27 +228,20 @@ Announce(w) ==
     /\ UNCHANGED <<epoch, frozen, freezes, froze, seen>>
     /\ act' = [name |-> "Announce", w |-> w]
 
-\* The model asks for the tool. A call with effects starts only once its
-\* intent is in the chain; a safe one starts at once, its intent behind it.
+\* The model asks for the tool. The call starts only once its intent is in
+\* the chain, a safe one included: after a crash, only a recorded intent
+\* lets it run again.
 Model1(w) ==
     /\ pc[w] = "model1"
     /\ ~frozen[w]
-    /\ IF Tool = "send"
-          THEN IF Heads(w)
-                  THEN /\ progress' = "intent"
-                       /\ runs' = runs + 1
-                       /\ pc' = [pc EXCEPT ![w] = "tool"]
-                       /\ ui' = Append(ui, Line(w))
-                  ELSE /\ pc' = [pc EXCEPT ![w] = "stopped"]
-                       /\ MaybeLine(w)
-                       /\ UNCHANGED <<progress, runs>>
-          ELSE /\ runs' = runs + 1
+    /\ IF Heads(w)
+          THEN /\ progress' = "intent"
+               /\ runs' = runs + 1
+               /\ pc' = [pc EXCEPT ![w] = "tool"]
                /\ ui' = Append(ui, Line(w))
-               /\ IF Heads(w)
-                     THEN /\ progress' = "intent"
-                          /\ pc' = [pc EXCEPT ![w] = "tool"]
-                     ELSE /\ pc' = [pc EXCEPT ![w] = "stopped"]
-                          /\ UNCHANGED progress
+          ELSE /\ pc' = [pc EXCEPT ![w] = "stopped"]
+               /\ MaybeLine(w)
+               /\ UNCHANGED <<progress, runs>>
     /\ chain' = IF Heads(w) THEN chain + 1 ELSE chain
     /\ cutoffs' = IF Heads(w) THEN 0 ELSE cutoffs
     /\ UNCHANGED <<epoch, frozen, lease, freezes, froze, seen>>
@@ -292,11 +293,23 @@ Freeze(w) ==
     /\ UNCHANGED <<pc, epoch, progress, runs, ui, chain, cutoffs, seen>>
     /\ act' = [name |-> "Freeze", w |-> w]
 
-\* w wakes and carries on from where it waited.
+\* w wakes and carries on from where it waited. With Heartbeat its next
+\* renewal may land first: it keeps the lease where w still heads the chain,
+\* and stops w where another worker took the session over.
 Wake(w) ==
     /\ frozen[w]
     /\ frozen' = [frozen EXCEPT ![w] = FALSE]
-    /\ UNCHANGED <<pc, epoch, lease, progress, runs, ui, freezes, froze, chain, cutoffs, seen>>
+    /\ \/ UNCHANGED <<pc, lease, chain>>
+       \/ /\ Heartbeat
+          /\ Heads(w)
+          /\ lease' = [lease EXCEPT !.live = TRUE]
+          /\ chain' = chain + 1
+          /\ UNCHANGED pc
+       \/ /\ Heartbeat
+          /\ ~Heads(w)
+          /\ pc' = [pc EXCEPT ![w] = "stopped"]
+          /\ UNCHANGED <<lease, chain>>
+    /\ UNCHANGED <<epoch, progress, runs, ui, freezes, froze, cutoffs, seen>>
     /\ act' = [name |-> "Wake", w |-> w]
 
 \* Shortly before its deadline, w's own timer stops it and cuts off the call
@@ -359,8 +372,8 @@ EffectsAtMostOnce == Tool = "send" => runs <= 1
 \* delivery after that does not run it again.
 HandoffsBounded == cutoffs <= MaxCutoffs
 
-\* A call with effects starts only after its intent counts in the chain.
-EffectsAfterIntent == Tool = "send" /\ runs > 0 => progress # "start"
+\* A call starts only after its intent counts in the chain.
+CallAfterIntent == runs > 0 => progress # "start"
 
 \* Only the chain's head ends the turn.
 DoneByHead == progress = "done" => \E w \in Workers : pc[w] = "done"

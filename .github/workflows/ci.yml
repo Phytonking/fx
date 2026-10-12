@@ -37,7 +37,7 @@ jobs:
         id: zig
         uses: ./.github/actions/setup-zig
         with:
-          version: "0.16.0"
+          version: "0.17.0"
           cache-key: ci-unit-${{ matrix.optimize }}
 
       - name: Check formatting
@@ -101,7 +101,7 @@ jobs:
         id: zig
         uses: ./.github/actions/setup-zig
         with:
-          version: "0.16.0"
+          version: "0.17.0"
           cache-key: ci-build-ReleaseSafe
 
       # Other runners execute this binary, and their CPUs can differ from this
@@ -138,7 +138,7 @@ jobs:
         id: zig
         uses: ./.github/actions/setup-zig
         with:
-          version: "0.16.0"
+          version: "0.17.0"
           cache-key: ci-sdk-wasm
 
       - name: Build WASM surfaces (ReleaseSmall)
@@ -191,7 +191,7 @@ jobs:
         id: zig
         uses: ./.github/actions/setup-zig
         with:
-          version: "0.16.0"
+          version: "0.17.0"
           cache-key: ci-sdk-napi-${{ matrix.platform }}
 
       - name: Build N-API addon (ReleaseSafe)
@@ -252,6 +252,7 @@ jobs:
         run: |
           node --experimental-wasm-jspi sdk/tests/test-durable.mjs memory wasm
           node --experimental-wasm-jspi sdk/tests/test-durable.mjs local wasm
+          node --experimental-wasm-jspi sdk/tests/test-durable-provider-crash.mjs wasm
 
       - name: Type-check the TypeScript declarations
         run: node sdk/tests/test-types.mjs
@@ -298,6 +299,7 @@ jobs:
           node sdk/tests/test-durable.mjs memory native
           node sdk/tests/test-durable.mjs local native
           node sdk/tests/test-durable.mjs world native
+          node sdk/tests/test-durable-provider-crash.mjs native
           node sdk/tests/test-durable-core.mjs memory
           node sdk/tests/test-durable-core.mjs local
           node sdk/tests/test-durable-core.mjs world
@@ -373,6 +375,7 @@ jobs:
           bun sdk/tests/model/drive.mjs send --walks 20 --seed 3 --durability world
           bun sdk/tests/model/drive.mjs lookup --walks 20 --seed 9 --durability world
           bun sdk/tests/model/drive.mjs cutoff --walks 20 --seed 5
+          bun sdk/tests/model/drive.mjs leased --walks 40 --seed 12
 
       - name: Test libfx on a World
         run: |
@@ -527,7 +530,7 @@ jobs:
         id: zig
         uses: ./.github/actions/setup-zig
         with:
-          version: "0.16.0"
+          version: "0.17.0"
           cache-key: ci-e2e-fixtures
 
       - name: Setup Bun
@@ -630,7 +633,7 @@ jobs:
         id: zig
         uses: ./.github/actions/setup-zig
         with:
-          version: "0.16.0"
+          version: "0.17.0"
           cache-key: ci-mcp-fixtures
 
       - name: Setup Bun
@@ -708,7 +711,7 @@ jobs:
         id: zig
         uses: ./.github/actions/setup-zig
         with:
-          version: "0.16.0"
+          version: "0.17.0"
           cache-key: ci-unit-ReleaseSafe
 
       - name: Build

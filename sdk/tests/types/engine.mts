@@ -10,6 +10,7 @@ import {
   listModels,
   fxSdkApiVersion,
   supportsJspi,
+  type FxProviderCredentials,
   type FxEngine,
   type FxEngineEvent,
   type FxEngineTurn,
@@ -223,4 +224,73 @@ export async function events(): Promise<void> {
       if (event.type === "session.error") console.log(event);
     },
   });
+}
+
+// A Codex engine on the host's ChatGPT credentials.
+declare const tokenStore: {
+  load(provider: "codex", sessionId?: string): Promise<FxProviderCredentials>;
+  save(provider: "codex", credentials: FxProviderCredentials): Promise<void>;
+};
+declare const accountLocks: { run<T>(key: string, fn: () => Promise<T>): Promise<T> };
+export async function codexEngine(): Promise<FxEngine> {
+  const engine = await createFxEngine({
+    provider: "codex",
+    model: "gpt-6.1-sol",
+    credentials: ({ provider, sessionId }) => tokenStore.load(provider, sessionId),
+    onCredentials: (credentials, { provider }) => tokenStore.save(provider, credentials),
+    refreshLock: ({ provider, sessionId }, refresh) => accountLocks.run(`${provider}:${sessionId ?? "catalog"}`, refresh),
+  });
+  // @ts-expect-error a Codex engine needs credentials()
+  await createFxEngine({ provider: "codex", model });
+  // @ts-expect-error credentials() needs provider "codex"
+  await createFxEngine({ apiKey, model, credentials: () => tokenStore.load("codex") });
+  // @ts-expect-error onCredentials needs provider "codex"
+  await createFxEngine({ apiKey, model, onCredentials: () => {} });
+  // @ts-expect-error refreshLock needs provider "codex"
+  await createFxEngine({ apiKey, model, refreshLock: async (_info, refresh) => refresh() });
+  // @ts-expect-error a Gateway engine needs apiKey
+  await createFxEngine({ provider: "gateway", model });
+  // @ts-expect-error a provider named by string is Gateway, Codex or Grok
+  await createFxEngine({ provider: "custom", apiKey, model });
+  return engine;
+}
+
+// A custom provider: a local server needs no key; a hosted one gets the host's.
+declare const providerKeys: { load(provider: string, sessionId?: string): Promise<string> };
+export async function customEngine(): Promise<FxEngine> {
+  const local = await createFxEngine({
+    provider: { name: "local", baseUrl: "http://localhost:11434/v1", models: { "qwen3:8b": { contextWindow: 32768, supportsToolUse: true } } },
+    model: "qwen3:8b",
+  });
+  await local.close();
+  const router = { name: "router", baseUrl: "https://openrouter.ai/api/v1" };
+  const engine = await createFxEngine({
+    provider: router,
+    model: "qwen/qwen3-coder",
+    credentials: async ({ provider, sessionId }) => ({ apiKey: await providerKeys.load(provider, sessionId) }),
+  });
+  // @ts-expect-error a custom provider's credentials are an API key
+  await createFxEngine({ provider: router, model, credentials: () => tokenStore.load("codex") });
+  // @ts-expect-error a custom provider's key is never refreshed
+  await createFxEngine({ provider: router, model, onCredentials: () => {} });
+  // @ts-expect-error a custom provider's key is never refreshed, so it takes no lock
+  await createFxEngine({ provider: router, model, refreshLock: async (_info, refresh) => refresh() });
+  // @ts-expect-error a custom provider needs a base URL
+  await createFxEngine({ provider: { name: "router" }, model });
+  // @ts-expect-error model details use libfx's option names
+  await createFxEngine({ provider: { ...router, models: { m: { context_window: 1 } } }, model });
+  return engine;
+}
+
+// A Grok engine on the host's Grok credentials; one store serves both plans.
+declare const planTokens: { load(provider: "codex" | "grok", sessionId?: string): Promise<FxProviderCredentials> };
+export async function grokEngine(): Promise<FxEngine> {
+  const engine = await createFxEngine({
+    provider: "grok",
+    model: "grok-4.5",
+    credentials: ({ provider, sessionId }) => planTokens.load(provider, sessionId),
+  });
+  // @ts-expect-error a Grok request names provider "grok"
+  await createFxEngine({ provider: "grok", model, credentials: ({ provider }) => tokenStore.load(provider) });
+  return engine;
 }

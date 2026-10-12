@@ -57,7 +57,7 @@ pub const Problem = struct {
     /// Records the reason, cut at the buffer's size, and returns the error
     /// that carries it.
     pub fn set(problem: *Problem, comptime fmt: []const u8, args: anytype) error{InvalidSessionFormat} {
-        problem.len = if (std.fmt.bufPrint(&problem.buffer, fmt, args)) |written| written.len else |_| problem.buffer.len;
+        problem.len = if (std.mem.print(&problem.buffer, fmt, args)) |written| written.len else |_| problem.buffer.len;
         return error.InvalidSessionFormat;
     }
 };
@@ -233,8 +233,8 @@ fn openMemberDir(store: *session_store.Store, id: []const u8) !?io_mod.VerifiedD
 /// anything but its absence, so a new v2 id never takes a v1 id that could
 /// not be checked (`tla/V1Conversion.tla` NoShadow).
 pub fn hasFolder(home: []const u8, id: []const u8) !bool {
-    var buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try std.fmt.bufPrint(&buffer, "{s}/{s}/{s}/{s}", .{ home, profile_paths.root_dir_name, profile_paths.sessions_dir_name, id });
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path = try std.mem.print(&buffer, "{s}/{s}/{s}/{s}", .{ home, profile_paths.root_dir_name, profile_paths.sessions_dir_name, id });
     _ = std.Io.Dir.cwd().statFile(io_mod.getIo(), path, .{ .follow_symlinks = false }) catch |err| return switch (err) {
         error.FileNotFound => false,
         else => err,
@@ -871,7 +871,7 @@ fn storeInline(a: Allocator, execution: *types.ExecutionMemory, stored: *std.Arr
     for (execution.tool_steps) |*step| for (step.tool_results) |*result| {
         if (result.output_handle == null) {
             const handle = try result_store.makeHandle(a, result.tool_call_id, result.tool_name, result.output);
-            try stored.append(a, .{ .key = try std.fmt.allocPrint(a, "tool-results/{s}", .{handle}), .bytes = result.output });
+            try stored.append(a, .{ .key = try a.print("tool-results/{s}", .{handle}), .bytes = result.output });
             result.output_handle = handle;
             result.truncated = true;
             result.stored_output_bytes = result.output.len;

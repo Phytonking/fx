@@ -62,6 +62,12 @@ export async function sessionsAndTurns(agent: FxAgent): Promise<void> {
   assertType<Equal<typeof id, string>>();
   const known: FxSession = agent.session(id, { context: { userId: "user_1", roles: ["admin"], limit: 3 } });
   agent.session(undefined, { context: null });
+  agent.session(id, { model: "openai/gpt-5", instructions: ["Design rules.", "House style."] });
+  agent.session(id, { model: { id: "anthropic/claude-haiku-4.5", effort: "low", fast: true }, context: { userId: "user_1" } });
+  // @ts-expect-error a session's model takes no top-level effort
+  agent.session(id, { model: "openai/gpt-5", effort: "low" });
+  // @ts-expect-error instructions are text
+  agent.session(id, { instructions: 5 });
   assertType<Equal<typeof known.id, string | null>>();
 
   // @ts-expect-error null is not a session id: only a missing id starts a new session
@@ -154,13 +160,14 @@ export async function durabilities(): Promise<void> {
   createFxAgent({ durability: memory({ maxDurationMs: 60_000, reserveMs: 5_000 }) });
   createFxAgent({ durability: local({ maxDurationMs: 300_000, reserveMs: 30_000 }) });
   createFxAgent({ durability: vercel({ reserveMs: 10_000 }) });
+  createFxAgent({ durability: vercel({ reserveMs: 10_000, leaseMs: 5_000 }) });
   createFxAgent({ durability: vercel() });
 
   // @ts-expect-error memory() has no dir
   memory({ dir: ".fx/sessions" });
   // @ts-expect-error local() takes no World options
   local({ queueDurable: true });
-  // @ts-expect-error vercel() takes only reserveMs
+  // @ts-expect-error vercel() takes only reserveMs and leaseMs
   vercel({ maxDurationMs: 60_000 });
   // @ts-expect-error durability must come from memory(), local(), vercel(), or world()
   createFxAgent({ durability: { name: "memory" } });
@@ -198,7 +205,7 @@ export async function worlds(): Promise<void> {
   };
   world(fake);
   world(() => fake);
-  world(async () => fake, { name: "postgres", pollMs: 500, maxDurationMs: 800_000, reserveMs: 30_000 });
+  world(async () => fake, { name: "postgres", pollMs: 500, maxDurationMs: 800_000, reserveMs: 30_000, leaseMs: 10_000 });
   world(fake, {
     livenessKnown: true,
     holderInfo: () => ({ pid: 42, host: "worker-1" }),
@@ -350,3 +357,10 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 export const wake: (request: Request) => Promise<Response> = agent.wakeHandler();
+
+// A durable Codex agent: each process asks the host for the session's credentials.
+export const codexAgent: FxAgent = createFxAgent({
+  provider: "codex",
+  model: "gpt-6.1-sol",
+  credentials: async ({ sessionId }) => ({ accessToken: sessionId ?? "token", refreshToken: "refresh" }),
+});

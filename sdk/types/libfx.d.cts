@@ -458,10 +458,89 @@ export type FxEngineStorage =
     checkpoint?: FxBytes;
   };
 
-/** Options for `createFxEngine()`. */
-export type FxEngineOptions = FxSharedOptions<FxEngineEvent> & FxModelChoice & FxEngineStorage & {
-  /** The AI Gateway credential. Required. */
+/** A subscription provider's credentials: a ChatGPT plan's for Codex, or a Grok plan's. `accountId` and `expiresAt` default to the access token's own claims when it carries them. */
+export interface FxProviderCredentials {
+  accessToken: string;
+  /** Lets libfx refresh the access token near expiry and once after a rejection. */
+  refreshToken?: string;
+  accountId?: string;
+  /** Milliseconds since the epoch. */
+  expiresAt?: number;
+}
+
+/** Runs on AI Gateway, the default. */
+export interface FxGatewayProvider {
+  provider?: "gateway" | undefined;
+  credentials?: undefined;
+  onCredentials?: undefined;
+  refreshLock?: undefined;
+}
+
+/** Runs on a user's plan instead of AI Gateway. */
+interface FxSubscriptionProvider<Provider extends "codex" | "grok"> {
+  provider: Provider;
+  /** Credentials for the provider's requests, asked for in whichever process runs the turn. `sessionId` is set for model requests and absent for the model list. */
+  credentials: (request: { provider: Provider; sessionId?: string }) => FxProviderCredentials | Promise<FxProviderCredentials>;
+  /** Receives credentials libfx refreshed, so the host can save them. */
+  onCredentials?: (credentials: FxProviderCredentials, info: { provider: Provider; sessionId?: string }) => void | Promise<void>;
+  /**
+   * Runs `refresh` while the host holds a lock on the account, so a host with
+   * several servers refreshes it on one at a time. libfx asks `credentials()`
+   * again inside it and uses credentials another server already saved.
+   */
+  refreshLock?: (info: { provider: Provider; sessionId?: string }, refresh: () => Promise<void>) => Promise<unknown>;
+}
+
+/** Runs on a ChatGPT plan through Codex instead of AI Gateway. */
+export type FxCodexProvider = FxSubscriptionProvider<"codex">;
+
+/** Runs on a Grok plan instead of AI Gateway. */
+export type FxGrokProvider = FxSubscriptionProvider<"grok">;
+
+/** What libfx knows about a model a custom provider serves. Unset fields are unknown. */
+export interface FxCustomProviderModel {
+  contextWindow?: number;
+  /** Less than `contextWindow` when both are set. */
+  maxOutputTokens?: number;
+  supportsToolUse?: boolean;
+  supportsVision?: boolean;
+}
+
+/** A server that speaks OpenAI Chat Completions, such as a local model server or a router. */
+export interface FxCustomProviderDefinition {
+  /** Names the provider to `credentials()`: a letter, then letters, digits, `_` or `-`, at most 64 characters. Not `gateway`, `codex` or `grok`. */
+  name: string;
+  /** The API prefix: requests go to `{baseUrl}/chat/completions`. HTTPS, or HTTP on localhost. */
+  baseUrl: string;
+  /** The models it serves, by id. */
+  models?: Record<string, FxCustomProviderModel>;
+}
+
+/** A custom provider's API key. */
+export interface FxApiKeyCredentials {
   apiKey: string;
+}
+
+/** Runs on a custom provider instead of AI Gateway. */
+export interface FxCustomProvider {
+  provider: FxCustomProviderDefinition;
+  /** The API key for the provider's requests, asked for in whichever process runs the turn. Omit it for a server that needs no key. */
+  credentials?: ((request: { provider: string; sessionId?: string }) => FxApiKeyCredentials | Promise<FxApiKeyCredentials>) | undefined;
+  onCredentials?: undefined;
+  refreshLock?: undefined;
+}
+
+/** Options for `createFxEngine()`. */
+export type FxEngineOptions = FxSharedOptions<FxEngineEvent> & FxModelChoice & FxEngineStorage & (
+  | (FxGatewayProvider & {
+    /** The AI Gateway credential. Required. */
+    apiKey: string;
+  })
+  | ((FxCodexProvider | FxGrokProvider | FxCustomProvider) & {
+    /** The AI Gateway credential, unused by this provider's turns. */
+    apiKey?: string | undefined;
+  })
+) & {
   /** The id for AI Gateway session affinity: 1 to 255 letters, digits, `.`, `_`, or `-`. Give a restored session the id it had before. */
   sessionId?: string | null;
 };
@@ -491,7 +570,7 @@ export declare function memory(options?: MemoryOptions): Durability;
 // Durable agents
 
 /** Options for `createFxAgent()`. */
-export type FxAgentOptions = FxSharedOptions<FxAgentEvent> & FxModelChoice & {
+export type FxAgentOptions = FxSharedOptions<FxAgentEvent> & FxModelChoice & (FxGatewayProvider | FxCodexProvider | FxGrokProvider | FxCustomProvider) & {
   /** The AI Gateway credential. Without it, libfx uses `AI_GATEWAY_API_KEY`, then on Vercel the deployment's OIDC token. */
   apiKey?: string | undefined;
   /** Where sessions live. Without it, libfx picks one from the environment. */
@@ -500,10 +579,14 @@ export type FxAgentOptions = FxSharedOptions<FxAgentEvent> & FxModelChoice & {
   checkpoint?: FxBytes;
 };
 
-/** Options for `agent.session()`. */
+/** Options for `agent.session()`. Each applies to the turns this session object starts. */
 export interface FxSessionOptions {
-  /** JSON every tool call of the turns this session object starts receives as `context`. */
+  /** JSON every tool call of those turns receives as `context`. */
   context?: JsonValue;
+  /** The model for those turns instead of the agent's whole model choice: a model ID, or a model object. */
+  model?: string | FxModelOptions;
+  /** The system context for those turns instead of the agent's. An array is joined with blank lines. */
+  instructions?: string | readonly string[];
 }
 
 /** Options for a durable session's `prompt()`. */

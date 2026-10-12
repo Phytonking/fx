@@ -352,14 +352,22 @@ export async function getBackendInfo(value = {}) {
 }
 
 function createNativeCoreRuntime(addon, options) {
-  const { apiKey, model, effort, fast, ultrafast, gatewayChatUrl } = options;
+  const { apiKey, providerName: provider, customProvider, model, effort, fast, ultrafast, gatewayChatUrl } = options;
   if (ultrafast !== undefined && addon.supportsUltrafast !== true) {
     const error = new Error("native addon does not support the ultrafast option");
     error.code = "LIBFX_NATIVE_CAPABILITY_UNAVAILABLE";
     throw error;
   }
+  const capability = customProvider ? "supportsConfiguredProvider" : { codex: "supportsCodex", grok: "supportsGrok" }[provider];
+  if (capability && addon[capability] !== true) {
+    const error = new Error(`native addon does not support the ${provider} provider`);
+    error.code = "LIBFX_NATIVE_CAPABILITY_UNAVAILABLE";
+    throw error;
+  }
   const core = addon.createCore({
-    apiKey,
+    ...(apiKey === undefined ? {} : { apiKey }),
+    ...(provider === undefined ? {} : { provider }),
+    ...(customProvider === undefined ? {} : { configuredProviders: customProvider.json }),
     home: options.home ?? homedir(),
     workspaceRoot: options.workspaceRoot ?? process.cwd(),
     ...(model === undefined ? {} : { model }),
