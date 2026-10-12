@@ -287,7 +287,7 @@ test.skipIf(!tmuxAvailable())("suspended sessions retain exclusive writer owners
     await tui.waitForText("DRAFT_SURVIVES_SUSPENSION", TIMEOUT);
     await tui.sendKeys("C-z");
     await tui.waitForPane(pane => /stopped|suspended/i.test(pane), TIMEOUT);
-    const other = await runFx(["ask", "--json", "--resume-id", id, "Must not run while the owner is suspended."], { cwd: workspace, env, timeoutMs: TIMEOUT });
+    const other = await runFx(["ask", "--json", "--resume", id, "Must not run while the owner is suspended."], { cwd: workspace, env, timeoutMs: TIMEOUT });
     expect(other.code).toBe(1);
     expect(JSON.parse(other.stdout).error).toBe("SessionBusy");
     expect(gateway.requests).toHaveLength(1);
@@ -303,7 +303,7 @@ test.skipIf(!tmuxAvailable())("suspended sessions retain exclusive writer owners
     await tui.sendText("/quit");
     await tui.waitForPane(() => existsSync(exitPath), TIMEOUT);
     expect(readFileSync(exitPath, "utf8")).toBe("0");
-    const cold = await runFx(["ask", "--json", "--resume-id", id, "Read the saved conversation."], { cwd: workspace, env, timeoutMs: TIMEOUT });
+    const cold = await runFx(["ask", "--json", "--resume", id, "Read the saved conversation."], { cwd: workspace, env, timeoutMs: TIMEOUT });
     expect(cold.code).toBe(0);
     expect(gateway.requests.at(-1)?.body).toContain("FIRST_ACCEPTED_TURN");
     expect(gateway.requests.at(-1)?.body).toContain("AFTER_FOREGROUND_TURN");
@@ -7998,7 +7998,7 @@ test.skipIf(!tmuxAvailable())("remembered continuation restores the selected con
     await active.waitForStableComposer(TIMEOUT);
     await close(active); active = null;
     expect(readFileSync(bookmark, "utf8")).toBe(aId + "\n");
-    const latest = await runFx(["ask", "--json", "--resume-id", bId, "Update B without tools."], { cwd: workspace, env, timeoutMs: TIMEOUT });
+    const latest = await runFx(["ask", "--json", "--resume", bId, "Update B without tools."], { cwd: workspace, env, timeoutMs: TIMEOUT });
     expect(latest.code).toBe(0);
     const last = await runFx(["session", "last", "--json"], { cwd: workspace, env });
     expect(last.code).toBe(0); expect(JSON.parse(last.stdout).id).toBe(bId);

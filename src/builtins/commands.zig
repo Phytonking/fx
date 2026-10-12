@@ -18,6 +18,39 @@ pub const SlashRegistry = command_specs.SlashRegistry;
 
 const json_option = command_specs.OptionDoc{ .flag = "--json", .description = "Emit machine-readable JSON instead of text" };
 
+/// Options for `fx ask`. `cli_ask` parses against this list and its help is
+/// rendered from it, so the two can't disagree.
+pub const ask_options = [_]command_specs.OptionDoc{
+    .{ .flag = "--permission-mode <mode>", .description = "Set the permission mode for this request: ask, auto, or full-access" },
+    .{ .flag = "--ask", .description = "Ask before each action that needs permission" },
+    .{ .flag = "--auto", .description = "Automatically review unresolved permission requests" },
+    .{ .flag = "--full-access", .description = "Disable fx permission checks" },
+    .{ .flag = "--yolo", .description = "Alias for --full-access" },
+    .{ .flag = "--provider <name>", .description = "Override the model provider for this request (gateway, codex, grok, or a configured name)" },
+    .{ .flag = "--model <id>", .description = "Override the model for this request" },
+    .{ .flag = "--effort <level>", .description = "Override the reasoning effort for this request" },
+    .{ .flag = "--fast", .description = "Enable Fast mode for this request when the model supports it" },
+    .{ .flag = "--no-fast", .description = "Disable Fast mode for this request" },
+    .{ .flag = "--ultrafast", .description = "Request Ultra mode for this request when the model supports it" },
+    .{ .flag = "--no-ultrafast", .description = "Disable Ultra mode for this request" },
+    .{ .flag = "--provider-order <a,b,...>", .description = "Prefer these gateway providers in order for this request" },
+    .{ .flag = "--provider-strict", .description = "Restrict this request to only the providers in --provider-order" },
+    .{ .flag = "--no-provider-strict", .description = "Clear the provider restriction for this request" },
+    .{ .flag = "--image PATH", .description = "Attach an image file; repeat for multiple images" },
+    .{ .flag = "--system TEXT", .description = "Replace the built-in system prompt for this request" },
+    json_option,
+    .{ .flag = "--quiet", .description = "Suppress assistant output" },
+    .{ .flag = "--prompt-permissions", .description = "Prompt for Y/N permission approval when stdin is a TTY" },
+    .{ .flag = "--timeout <seconds>", .description = "Time limit for each shell command the agent runs" },
+    .{ .flag = "--no-save", .description = "Do not save the session; incompatible with --resume" },
+    .{ .flag = "--sessions-v2", .description = "Use the experimental v2 session store, also set by FX_SESSIONS_V2=1; its sessions resume only with it" },
+    .{ .flag = "--no-color", .description = "Render TTY output without colors or hyperlinks" },
+    .{ .flag = "--resume <last|id>", .description = "Continue the last session or a session by id" },
+    .{ .flag = "--resume-id <id>", .description = "Continue a session by exact id", .replacement = "use --resume <id>" },
+    .{ .flag = "--continue-recovery", .description = "Resume the paused model response in the selected session" },
+    .{ .flag = "--", .description = "Treat every following argument as prompt text" },
+};
+
 pub const top_level_specs = [_]TopLevelSpec{
     .{
         .kind = .help,
@@ -29,36 +62,9 @@ pub const top_level_specs = [_]TopLevelSpec{
     .{
         .kind = .ask,
         .token = "ask",
-        .usage = "ask [--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--timeout <seconds>] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>|--resume-id <id>] [--continue-recovery] [--] <prompt>",
+        .usage = "ask [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--timeout <seconds>] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>] [--continue-recovery] [--] <prompt>",
         .summary = "Run one noninteractive request",
-        .options = &.{
-            .{ .flag = "--auto", .description = "Automatically review unresolved permission requests" },
-            .{ .flag = "--full-access", .description = "Disable fx permission checks" },
-            .{ .flag = "--yolo", .description = "Alias for --full-access" },
-            .{ .flag = "--provider <name>", .description = "Override the model provider for this request (gateway, codex, grok, or a configured name)" },
-            .{ .flag = "--model <id>", .description = "Override the model for this request" },
-            .{ .flag = "--effort <level>", .description = "Override the reasoning effort for this request" },
-            .{ .flag = "--fast", .description = "Enable Fast mode for this request when the model supports it" },
-            .{ .flag = "--no-fast", .description = "Disable Fast mode for this request" },
-            .{ .flag = "--ultrafast", .description = "Request Ultra mode for this request when the model supports it" },
-            .{ .flag = "--no-ultrafast", .description = "Disable Ultra mode for this request" },
-            .{ .flag = "--provider-order <a,b,...>", .description = "Prefer these gateway providers in order for this request" },
-            .{ .flag = "--provider-strict", .description = "Restrict this request to only the providers in --provider-order" },
-            .{ .flag = "--no-provider-strict", .description = "Clear the provider restriction for this request" },
-            .{ .flag = "--image PATH", .description = "Attach an image file; repeat for multiple images" },
-            .{ .flag = "--system TEXT", .description = "Replace the built-in system prompt for this request" },
-            json_option,
-            .{ .flag = "--quiet", .description = "Suppress assistant output" },
-            .{ .flag = "--prompt-permissions", .description = "Prompt for Y/N permission approval when stdin is a TTY" },
-            .{ .flag = "--timeout <seconds>", .description = "Time limit for each shell command the agent runs" },
-            .{ .flag = "--no-save", .description = "Do not save the session; incompatible with --resume and --resume-id" },
-            .{ .flag = "--sessions-v2", .description = "Use the experimental v2 session store, also set by FX_SESSIONS_V2=1; its sessions resume only with it" },
-            .{ .flag = "--no-color", .description = "Render TTY output without colors or hyperlinks" },
-            .{ .flag = "--resume <last|id>", .description = "Continue the last session or a session by id" },
-            .{ .flag = "--resume-id <id>", .description = "Continue a session by exact id" },
-            .{ .flag = "--continue-recovery", .description = "Resume the paused model response in the selected session" },
-            .{ .flag = "--", .description = "Treat every following argument as prompt text" },
-        },
+        .options = &ask_options,
         .details = &.{
             "The prompt may be passed as arguments or piped on stdin when no prompt args are given.",
             "TTY stdout uses the Minimal transcript presentation; redirected stdout emits raw assistant Markdown.",

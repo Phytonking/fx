@@ -116,7 +116,7 @@ describe.skipIf(SKIP)("tui: interrupt recovery", () => {
         expect(output + stderr).toMatch(/save.*fail|fail.*sav|could not.*sav|unable to.*sav/i);
       } else { expect(session.paneStatus().status).toBe(0); expect(stderr).toBe(""); }
       expect(readFileSync(eventPath).subarray(0, saved.length).equals(saved)).toBe(true);
-      const resumed = await runFx(["ask", "--json", "--resume-id", id, "Continue without repeating work."], {
+      const resumed = await runFx(["ask", "--json", "--resume", id, "Continue without repeating work."], {
         cwd: workspace, env, timeoutMs: TIMEOUT });
       expect(resumed.code).toBe(0); expect(resumed.stderr).toBe("");
       expect(JSON.parse(resumed.stdout).session_id).toBe(id);

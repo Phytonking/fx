@@ -39,6 +39,8 @@ const compactor = @import("../compactor/compactor.zig");
 const config_runtime = @import("../config/config_runtime.zig");
 const model_capabilities = @import("../config/model_capabilities.zig");
 const model_provider = @import("../config/model_provider.zig");
+const builtin_commands = @import("../../builtins/commands.zig");
+const cli_flags = @import("cli_flags.zig");
 const output_contracts = @import("../output/output_contracts.zig");
 const mcp_elicitation_interaction = @import("../mcp/elicitation_interaction.zig");
 const mcp_elicitation = @import("../mcp/elicitation.zig");
@@ -1389,7 +1391,8 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
     );
     defer interrupt_scope.restoreAndRedeliver();
 
-    var options = parseOptionsWithStdin(alloc, args, deps.stdin_source) catch |err| switch (err) {
+    var problem: AskUsageProblem = .none;
+    var options = parseAskOptions(alloc, args, deps.stdin_source, &problem) catch |err| switch (err) {
         error.MissingPrompt => {
             if (hasJsonFlag(args)) {
                 const json = try renderErrorJsonResult(alloc, @errorName(err));
@@ -1408,7 +1411,7 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
                 try deps.write_stdout(deps.stdout_ctx, json);
                 return output_contracts.usage_exit_code;
             }
-            try deps.write_stderr(deps.stderr_ctx, "fx ask: --no-save cannot be used with --resume or --resume-id\n");
+            try deps.write_stderr(deps.stderr_ctx, "fx ask: --no-save cannot be used with --resume\n");
             try writeAskUsage(deps, cfg.command_usage);
             return output_contracts.usage_exit_code;
         },
@@ -1439,6 +1442,7 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
                 try deps.write_stdout(deps.stdout_ctx, json);
                 return output_contracts.usage_exit_code;
             }
+            try writeAskUsageProblem(alloc, deps, problem);
             try writeAskUsage(deps, cfg.command_usage);
             return output_contracts.usage_exit_code;
         },
@@ -4080,112 +4084,125 @@ fn parseAskProviderOrder(alloc: Allocator, raw: []const u8, previous: ?[][]const
     return parsed;
 }
 
+/// What was wrong with an `fx ask` command line, for its error message.
+const AskUsageProblem = union(enum) {
+    none,
+    flag: cli_flags.Failure,
+    invalid_value: struct { flag: []const u8, value: []const u8 },
+};
+
+const AskFlag = enum {
+    permission_mode,
+    ask,
+    auto,
+    full_access,
+    yolo,
+    provider,
+    model,
+    effort,
+    fast,
+    no_fast,
+    ultrafast,
+    no_ultrafast,
+    provider_order,
+    provider_strict,
+    no_provider_strict,
+    image,
+    system,
+    json,
+    quiet,
+    prompt_permissions,
+    timeout,
+    no_save,
+    sessions_v2,
+    no_color,
+    @"resume",
+    resume_id,
+    continue_recovery,
+};
+
+const ask_flag_ids = cli_flags.idTable(AskFlag, &builtin_commands.ask_options);
+
 fn parseOptionsWithStdin(alloc: Allocator, args: []const [:0]const u8, stdin: StdinSource) !AskOptions {
+    var problem: AskUsageProblem = .none;
+    return parseAskOptions(alloc, args, stdin, &problem);
+}
+
+/// Parses `fx ask` arguments. On `error.InvalidAskArgs`, `problem` says why;
+/// its slices borrow from `args`. When a flag repeats or conflicts with
+/// another, the last one wins.
+fn parseAskOptions(alloc: Allocator, args: []const [:0]const u8, stdin: StdinSource, problem: *AskUsageProblem) !AskOptions {
     var opts: AskOptions = .{ .prompt = &.{} };
     errdefer opts.deinit(alloc);
 
     var prompt_parts: std.ArrayList([]const u8) = .empty;
     defer prompt_parts.deinit(alloc);
 
-    var options_ended = false;
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (options_ended) {
-            try prompt_parts.append(alloc, arg);
-        } else if (std.mem.eql(u8, arg, "--")) {
-            options_ended = true;
-        } else if (std.mem.eql(u8, arg, "--auto")) {
-            if (opts.permission_override != null) return error.InvalidAskArgs;
-            opts.permission_override = .auto;
-        } else if (std.mem.eql(u8, arg, "--full-access") or std.mem.eql(u8, arg, "--yolo")) {
-            if (opts.permission_override != null) return error.InvalidAskArgs;
-            opts.permission_override = .yolo;
-        } else if (std.mem.eql(u8, arg, "--provider")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidAskArgs;
-            opts.provider_override = model_provider.parse(args[i]) orelse return error.InvalidAskArgs;
-        } else if (std.mem.startsWith(u8, arg, "--provider=")) {
-            opts.provider_override = model_provider.parse(arg["--provider=".len..]) orelse return error.InvalidAskArgs;
-        } else if (std.mem.eql(u8, arg, "--model")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidAskArgs;
-            const model = std.mem.trim(u8, args[i], " \t\r\n");
-            if (model.len == 0) return error.InvalidAskArgs;
-            const owned_model = try alloc.dupe(u8, model);
-            if (opts.model_override) |old| alloc.free(old);
-            opts.model_override = owned_model;
-        } else if (std.mem.eql(u8, arg, "--effort")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidAskArgs;
-            opts.effort_override = types.ReasoningEffort.parse(args[i]) orelse
-                return error.InvalidAskArgs;
-        } else if (std.mem.eql(u8, arg, "--fast") or std.mem.eql(u8, arg, "--no-fast")) {
-            const enabled = std.mem.eql(u8, arg, "--fast");
-            if (opts.fast_override != null and opts.fast_override.? != enabled)
-                return error.InvalidAskArgs;
-            opts.fast_override = enabled;
-            if (enabled) opts.ultrafast_override = false;
-        } else if (std.mem.eql(u8, arg, "--ultrafast") or std.mem.eql(u8, arg, "--no-ultrafast")) {
-            const enabled = std.mem.eql(u8, arg, "--ultrafast");
-            if (opts.ultrafast_override != null and opts.ultrafast_override.? != enabled)
-                return error.InvalidAskArgs;
-            opts.ultrafast_override = enabled;
-            if (enabled) opts.fast_override = false;
-        } else if (std.mem.eql(u8, arg, "--provider-order")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidAskArgs;
-            opts.provider_order_override = try parseAskProviderOrder(alloc, args[i], opts.provider_order_override);
-        } else if (std.mem.startsWith(u8, arg, "--provider-order=")) {
-            opts.provider_order_override = try parseAskProviderOrder(alloc, arg["--provider-order=".len..], opts.provider_order_override);
-        } else if (std.mem.eql(u8, arg, "--provider-strict") or std.mem.eql(u8, arg, "--no-provider-strict")) {
-            const strict = std.mem.eql(u8, arg, "--provider-strict");
-            if (opts.provider_strict_override != null and opts.provider_strict_override.? != strict)
-                return error.InvalidAskArgs;
-            opts.provider_strict_override = strict;
-        } else if (std.mem.eql(u8, arg, "--resume") or std.mem.eql(u8, arg, "--resume-id")) {
-            if (opts.resume_target != null) return error.InvalidAskArgs;
-            const exact_id = std.mem.eql(u8, arg, "--resume-id");
-            i += 1;
-            if (i >= args.len) return error.InvalidAskArgs;
-            const target = std.mem.trim(u8, args[i], " \t\r\n");
-            if (target.len == 0) return error.InvalidAskArgs;
-            opts.resume_target = if (!exact_id and std.mem.eql(u8, target, "last"))
-                .last
-            else
-                .{ .id = target };
-        } else if (std.mem.eql(u8, arg, "--image")) {
-            i += 1;
-            if (i >= args.len) return error.MissingPrompt;
-            try opts.image_paths.append(alloc, try alloc.dupe(u8, args[i]));
-        } else if (std.mem.eql(u8, arg, "--system")) {
-            i += 1;
-            if (i >= args.len) return error.MissingPrompt;
-            if (opts.system_prompt_override) |old| alloc.free(old);
-            opts.system_prompt_override = try alloc.dupe(u8, args[i]);
-        } else if (std.mem.eql(u8, arg, "--json")) {
-            opts.json_output = true;
-        } else if (std.mem.eql(u8, arg, "--prompt-permissions")) {
-            opts.prompt_permissions = true;
-        } else if (std.mem.eql(u8, arg, "--timeout")) {
-            i += 1;
-            if (i >= args.len) return error.MissingPrompt;
-            opts.timeout_ms = parseTimeoutMs(args[i]);
-        } else if (std.mem.eql(u8, arg, "--quiet")) {
-            opts.quiet = true;
-        } else if (std.mem.eql(u8, arg, "--no-save")) {
-            opts.no_save = true;
-        } else if (std.mem.eql(u8, arg, "--sessions-v2")) {
-            opts.sessions_v2 = true;
-        } else if (std.mem.eql(u8, arg, "--no-color")) {
-            opts.no_color = true;
-        } else if (std.mem.eql(u8, arg, "--continue-recovery")) {
-            if (opts.continue_recovery) return error.InvalidAskArgs;
-            opts.continue_recovery = true;
-        } else if (arg.len > 1 and arg[0] == '-') {
-            return error.InvalidAskArgs;
-        } else {
-            try prompt_parts.append(alloc, arg);
+    var parser = cli_flags.Parser.init(&builtin_commands.ask_options, args);
+    while (parser.next() catch {
+        problem.* = .{ .flag = parser.failure.? };
+        return error.InvalidAskArgs;
+    }) |item| {
+        const match = switch (item) {
+            .positional => |text| {
+                try prompt_parts.append(alloc, text);
+                continue;
+            },
+            .option => |option| option,
+        };
+        const value = match.value orelse "";
+        switch (ask_flag_ids[match.index].?) {
+            .permission_mode => opts.permission_override = PermissionMode.parse(value) orelse
+                return invalidAskValue(problem, match, value),
+            .ask => opts.permission_override = .ask,
+            .auto => opts.permission_override = .auto,
+            .full_access, .yolo => opts.permission_override = .yolo,
+            .provider => opts.provider_override = model_provider.parse(value) orelse
+                return invalidAskValue(problem, match, value),
+            .model => {
+                const model = std.mem.trim(u8, value, " \t\r\n");
+                if (model.len == 0) return invalidAskValue(problem, match, value);
+                const owned_model = try alloc.dupe(u8, model);
+                if (opts.model_override) |old| alloc.free(old);
+                opts.model_override = owned_model;
+            },
+            .effort => opts.effort_override = types.ReasoningEffort.parse(value) orelse
+                return invalidAskValue(problem, match, value),
+            .fast => {
+                opts.fast_override = true;
+                opts.ultrafast_override = false;
+            },
+            .no_fast => opts.fast_override = false,
+            .ultrafast => {
+                opts.ultrafast_override = true;
+                opts.fast_override = false;
+            },
+            .no_ultrafast => opts.ultrafast_override = false,
+            .provider_order => opts.provider_order_override = try parseAskProviderOrder(alloc, value, opts.provider_order_override),
+            .provider_strict => opts.provider_strict_override = true,
+            .no_provider_strict => opts.provider_strict_override = false,
+            .image => try opts.image_paths.append(alloc, try alloc.dupe(u8, value)),
+            .system => {
+                const owned_prompt = try alloc.dupe(u8, value);
+                if (opts.system_prompt_override) |old| alloc.free(old);
+                opts.system_prompt_override = owned_prompt;
+            },
+            .json => opts.json_output = true,
+            .quiet => opts.quiet = true,
+            .prompt_permissions => opts.prompt_permissions = true,
+            .timeout => opts.timeout_ms = parseTimeoutMs(value) orelse
+                return invalidAskValue(problem, match, value),
+            .no_save => opts.no_save = true,
+            .sessions_v2 => opts.sessions_v2 = true,
+            .no_color => opts.no_color = true,
+            .@"resume" => {
+                const target = std.mem.trim(u8, value, " \t\r\n");
+                if (target.len == 0) return invalidAskValue(problem, match, value);
+                opts.resume_target = if (std.mem.eql(u8, target, "last")) .last else .{ .id = target };
+            },
+            // The parser rejects removed spellings before they get here.
+            .resume_id => unreachable,
+            .continue_recovery => opts.continue_recovery = true,
         }
     }
 
@@ -4205,6 +4222,29 @@ fn parseOptionsWithStdin(alloc: Allocator, args: []const [:0]const u8, stdin: St
     if (opts.no_save and opts.resume_target != null) return error.NoSaveResumeConflict;
 
     return opts;
+}
+
+fn writeAskUsageProblem(alloc: Allocator, deps: RunDeps, problem: AskUsageProblem) !void {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    switch (problem) {
+        .none => return,
+        .flag => |failure| {
+            try out.writer.writeAll("fx ask: ");
+            try failure.write(&out.writer);
+        },
+        .invalid_value => |bad| try out.writer.print("fx ask: invalid value for {s}: {s}", .{ bad.flag, bad.value }),
+    }
+    try out.writer.writeByte('\n');
+    try deps.write_stderr(deps.stderr_ctx, out.written());
+}
+
+fn invalidAskValue(problem: *AskUsageProblem, match: cli_flags.Match, value: []const u8) error{InvalidAskArgs} {
+    problem.* = .{ .invalid_value = .{
+        .flag = cli_flags.flagName(builtin_commands.ask_options[match.index]),
+        .value = value,
+    } };
+    return error.InvalidAskArgs;
 }
 
 fn emitHeadlessYoloWarning(alloc: Allocator, options: RunOptions) !void {
@@ -5689,7 +5729,7 @@ test "parse options preserves active ask flags and operands" {
     try std.testing.expectEqualStrings("hello world", options.prompt);
 }
 
-test "parse options accepts full access aliases and rejects permission flag conflicts" {
+test "parse options accepts permission modes and the last one wins" {
     const alloc = std.testing.allocator;
     const aliases = [_][:0]const u8{ "--full-access", "--yolo" };
     for (aliases) |alias| {
@@ -5699,15 +5739,19 @@ test "parse options accepts full access aliases and rejects permission flag conf
         try std.testing.expectEqualStrings("hello", options.prompt);
     }
 
-    const permission_flags = [_][:0]const u8{ "--auto", "--full-access", "--yolo" };
-    for (permission_flags) |first| {
-        for (permission_flags) |second| {
-            try std.testing.expectError(
-                error.InvalidAskArgs,
-                parseOptionsWithStdin(alloc, &.{ first, second, "hello" }, .tty),
-            );
-        }
+    const cases = [_]struct { args: []const [:0]const u8, mode: PermissionMode }{
+        .{ .args = &.{ "--auto", "--full-access", "hello" }, .mode = .yolo },
+        .{ .args = &.{ "--yolo", "--auto", "hello" }, .mode = .auto },
+        .{ .args = &.{ "--auto", "--ask", "hello" }, .mode = .ask },
+        .{ .args = &.{ "--permission-mode", "full-access", "hello" }, .mode = .yolo },
+        .{ .args = &.{ "--full-access", "--permission-mode=ask", "hello" }, .mode = .ask },
+    };
+    for (cases) |case| {
+        var options = try parseOptionsWithStdin(alloc, case.args, .tty);
+        defer options.deinit(alloc);
+        try std.testing.expectEqual(@as(?PermissionMode, case.mode), options.permission_override);
     }
+    try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{ "--permission-mode", "sometimes", "hello" }, .tty));
 }
 
 test "parse options preserves full access aliases after the delimiter as prompt text" {
@@ -5810,17 +5854,27 @@ test "parse options accepts provider routing flags and rejects malformed values"
 
     try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{"--provider-order"}, .tty));
     try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{ "--provider-order=Bad Slug", "hello" }, .tty));
-    try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{ "--provider-strict", "--no-provider-strict", "hello" }, .tty));
+
+    var last_strict = try parseOptionsWithStdin(alloc, &.{ "--provider-strict", "--no-provider-strict", "hello" }, .tty);
+    defer last_strict.deinit(alloc);
+    try std.testing.expectEqual(@as(?bool, false), last_strict.provider_strict_override);
 }
 
-test "parse options rejects invalid model effort and fast flag forms" {
+test "parse options rejects invalid model and effort values and keeps the last fast flag" {
     const alloc = std.testing.allocator;
     try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{"--model"}, .tty));
     try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{ "--model", "  ", "hello" }, .tty));
     try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{"--effort"}, .tty));
     try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{ "--effort", "not an effort", "hello" }, .tty));
-    try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{ "--fast", "--no-fast", "hello" }, .tty));
-    try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{ "--no-fast", "--fast", "hello" }, .tty));
+    try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{ "--fast=yes", "hello" }, .tty));
+
+    var fast_off = try parseOptionsWithStdin(alloc, &.{ "--fast", "--no-fast", "hello" }, .tty);
+    defer fast_off.deinit(alloc);
+    try std.testing.expectEqual(@as(?bool, false), fast_off.fast_override);
+    var fast_on = try parseOptionsWithStdin(alloc, &.{ "--no-fast", "--fast", "--model=a/b", "hello" }, .tty);
+    defer fast_on.deinit(alloc);
+    try std.testing.expectEqual(@as(?bool, true), fast_on.fast_override);
+    try std.testing.expectEqualStrings("a/b", fast_on.model_override.?);
 
     var literal = try parseOptionsWithStdin(alloc, &.{ "--", "--model", "--fast" }, .tty);
     defer literal.deinit(alloc);
@@ -6129,27 +6183,33 @@ test "preflightAskImages resolves image paths from the workspace" {
     try std.testing.expectEqualStrings(expected_path, options.images.items[0].path);
 }
 
-test "parse options rejects unknown flags and accepts dash prompts after sentinel" {
+test "parse options rejects unknown flags and bad timeouts and accepts dash prompts after sentinel" {
+    var problem: AskUsageProblem = .none;
     try std.testing.expectError(
         error.InvalidAskArgs,
-        parseOptionsWithStdin(
-            std.testing.allocator,
-            &.{ "--timeout", "nope", "--not-a-flag", "prompt" },
-            .tty,
-        ),
+        parseAskOptions(std.testing.allocator, &.{ "--timeout", "5", "--not-a-flag", "prompt" }, .tty, &problem),
     );
+    try std.testing.expectEqualStrings("--not-a-flag", problem.flag.unknown.flag);
 
-    var options = try parseOptionsWithStdin(std.testing.allocator, &.{ "--timeout", "nope", "--", "--not-a-flag", "prompt" }, .tty);
+    try std.testing.expectError(
+        error.InvalidAskArgs,
+        parseAskOptions(std.testing.allocator, &.{ "--timeout", "nope", "prompt" }, .tty, &problem),
+    );
+    try std.testing.expectEqualStrings("--timeout", problem.invalid_value.flag);
+
+    var options = try parseOptionsWithStdin(std.testing.allocator, &.{ "--timeout=5", "--", "--not-a-flag", "prompt" }, .tty);
     defer options.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(@as(?usize, null), options.timeout_ms);
+    try std.testing.expectEqual(@as(?usize, 5 * std.time.ms_per_s), options.timeout_ms);
     try std.testing.expectEqualStrings("--not-a-flag prompt", options.prompt);
 }
 
-test "parse options reports missing operands and empty tty input as missing prompt" {
-    try std.testing.expectError(error.MissingPrompt, parseOptionsWithStdin(std.testing.allocator, &.{"--image"}, .tty));
-    try std.testing.expectError(error.MissingPrompt, parseOptionsWithStdin(std.testing.allocator, &.{"--system"}, .tty));
-    try std.testing.expectError(error.MissingPrompt, parseOptionsWithStdin(std.testing.allocator, &.{"--timeout"}, .tty));
+test "parse options names a missing flag value and reports empty tty input as missing prompt" {
+    for ([_][:0]const u8{ "--image", "--system", "--timeout" }) |flag| {
+        var problem: AskUsageProblem = .none;
+        try std.testing.expectError(error.InvalidAskArgs, parseAskOptions(std.testing.allocator, &.{flag}, .tty, &problem));
+        try std.testing.expectEqualStrings(flag, problem.flag.missing_value);
+    }
     try std.testing.expectError(error.MissingPrompt, parseOptionsWithStdin(std.testing.allocator, &.{}, .tty));
 }
 
@@ -7737,11 +7797,11 @@ test "fx ask renders one-off resume denial in text and JSON modes" {
         json: bool,
     }{
         .{
-            .args = &.{ "--resume-id", "one-off-child", "continue" },
+            .args = &.{ "--resume", "one-off-child", "continue" },
             .json = false,
         },
         .{
-            .args = &.{ "--json", "--resume-id", "one-off-child", "continue" },
+            .args = &.{ "--json", "--resume", "one-off-child", "continue" },
             .json = true,
         },
     };
@@ -8132,25 +8192,19 @@ test "parse options rejects model-unsafe prompt text from arguments and stdin" {
     );
 }
 
-test "parse options preserves exact resume-id operands" {
-    var options = try parseOptionsWithStdin(
-        std.testing.allocator,
-        &.{ "--resume-id", "last", "continue" },
-        .tty,
+test "the removed --resume-id spelling fails with a hint" {
+    var problem: AskUsageProblem = .none;
+    try std.testing.expectError(
+        error.InvalidAskArgs,
+        parseAskOptions(std.testing.allocator, &.{ "--resume-id", "session.v3", "continue" }, .tty, &problem),
     );
-    defer options.deinit(std.testing.allocator);
-
-    switch (options.resume_target.?) {
-        .last => return error.TestExpectedExactResumeId,
-        .id => |id| try std.testing.expectEqualStrings("last", id),
-    }
-    try std.testing.expectEqualStrings("continue", options.prompt);
+    try std.testing.expectEqualStrings("use --resume <id>", problem.flag.removed.replacement);
 }
 
 test "parse options requires an explicit saved session for recovery continuation" {
     var options = try parseOptionsWithStdin(
         std.testing.allocator,
-        &.{ "--resume-id", "session.v3", "--continue-recovery" },
+        &.{ "--resume", "session.v3", "--continue-recovery" },
         .tty,
     );
     defer options.deinit(std.testing.allocator);
@@ -8175,15 +8229,14 @@ test "parse options requires an explicit saved session for recovery continuation
     );
 }
 
-test "parse options rejects repeated resume targets and no-save resume" {
-    try std.testing.expectError(
-        error.InvalidAskArgs,
-        parseOptionsWithStdin(
-            std.testing.allocator,
-            &.{ "--resume", "last", "--resume-id", "session.v3", "continue" },
-            .tty,
-        ),
+test "parse options keeps the last resume target and rejects no-save resume" {
+    var options = try parseOptionsWithStdin(
+        std.testing.allocator,
+        &.{ "--resume", "last", "--resume", "session.v3", "continue" },
+        .tty,
     );
+    defer options.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("session.v3", options.resume_target.?.id);
     try std.testing.expectError(
         error.NoSaveResumeConflict,
         parseOptionsWithStdin(
@@ -8196,7 +8249,7 @@ test "parse options rejects repeated resume targets and no-save resume" {
         error.NoSaveResumeConflict,
         parseOptionsWithStdin(
             std.testing.allocator,
-            &.{ "--resume-id", "session.v3", "--no-save", "continue" },
+            &.{ "--resume", "session.v3", "--no-save", "continue" },
             .tty,
         ),
     );
@@ -8598,7 +8651,7 @@ test "saved failures retain ineligible session lifecycles" {
         deps.discard_pristine_session_ctx = &probe;
         deps.discard_pristine_session = DiscardProbe.run;
         const args: []const [:0]const u8 = switch (case.kind) {
-            .resumed => &.{ "--json", "--resume-id", "cli-protected-resume", "hello" },
+            .resumed => &.{ "--json", "--resume", "cli-protected-resume", "hello" },
             .committed_history, .tool_started, .generic_failure => &.{ "--json", "hello" },
         };
 
@@ -9247,9 +9300,9 @@ test "resumed ask preserves user and image identity after a retained mid-turn ch
         deps.initialize_session_stores = initializeSessionStoresDefault;
         deps.process_queued_prompt = Process.run;
         const args: []const [:0]const u8 = if (case.continue_recovery)
-            &.{ "--json", "--resume-id", session_id, "--continue-recovery" }
+            &.{ "--json", "--resume", session_id, "--continue-recovery" }
         else
-            &.{ "--json", "--resume-id", session_id, case.prompt };
+            &.{ "--json", "--resume", session_id, case.prompt };
         try std.testing.expectEqual(@as(u8, 0), try runWithDeps(alloc, args, testConfig(), deps));
 
         var restored = try store.loadReadOnly(alloc, session_id);
@@ -9298,7 +9351,7 @@ test "recovery continuation checks local checkpoint before credentials" {
 
     const exit_code = try runWithDeps(
         alloc,
-        &.{ "--json", "--resume-id", session_id, "--continue-recovery" },
+        &.{ "--json", "--resume", session_id, "--continue-recovery" },
         testConfig(),
         deps,
     );
@@ -9329,7 +9382,7 @@ test "json run with session setup failure still emits final object" {
 
     const exit_code = try runWithDeps(
         alloc,
-        &.{ "--json", "--resume-id", "corrupt-session", "hello" },
+        &.{ "--json", "--resume", "corrupt-session", "hello" },
         testConfig(),
         deps,
     );

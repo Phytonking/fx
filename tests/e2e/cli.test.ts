@@ -399,9 +399,11 @@ describe("cli: help", () => {
 Run one noninteractive request
 
 Usage:
-  fx ask [--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--timeout <seconds>] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>|--resume-id <id>] [--continue-recovery] [--] <prompt>
+  fx ask [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--timeout <seconds>] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>] [--continue-recovery] [--] <prompt>
 
 Options:
+  --permission-mode <mode>    Set the permission mode for this request: ask, auto, or full-access
+  --ask                       Ask before each action that needs permission
   --auto                      Automatically review unresolved permission requests
   --full-access               Disable fx permission checks
   --yolo                      Alias for --full-access
@@ -421,11 +423,10 @@ Options:
   --quiet                     Suppress assistant output
   --prompt-permissions        Prompt for Y/N permission approval when stdin is a TTY
   --timeout <seconds>         Time limit for each shell command the agent runs
-  --no-save                   Do not save the session; incompatible with --resume and --resume-id
+  --no-save                   Do not save the session; incompatible with --resume
   --sessions-v2               Use the experimental v2 session store, also set by FX_SESSIONS_V2=1; its sessions resume only with it
   --no-color                  Render TTY output without colors or hyperlinks
   --resume <last|id>          Continue the last session or a session by id
-  --resume-id <id>            Continue a session by exact id
   --continue-recovery         Resume the paused model response in the selected session
   --                          Treat every following argument as prompt text
 
@@ -835,7 +836,7 @@ describe("cli: status", () => {
         for (const json of [false, true]) {
           const result = await runFx([
             "ask", ...(json ? ["--json"] : []),
-            ...(resumed ? ["--resume-id", sessionId] : ["--no-save"]),
+            ...(resumed ? ["--resume", sessionId] : ["--no-save"]),
             "Continue with a greeting.",
           ], options);
           expect(result.code).toBe(1);
@@ -4618,7 +4619,7 @@ describe("cli: ask success", () => {
         };
 
         const first = await runFx(
-          ["ask", "--json", "--auto", "--resume-id", sessionId, "Convert and continue."],
+          ["ask", "--json", "--auto", "--resume", sessionId, "Convert and continue."],
           { cwd: workspaceRoot, env, timeoutMs: 60_000 },
         );
         expect(first.code, first.stderr + first.stdout).toBe(0);
@@ -4636,7 +4637,7 @@ describe("cli: ask success", () => {
         expect(existsSync(join(sessionDir, "events.v3.backup"))).toBe(false);
 
         const second = await runFx(
-          ["ask", "--json", "--auto", "--resume-id", sessionId, "Continue after restart."],
+          ["ask", "--json", "--auto", "--resume", sessionId, "Continue after restart."],
           { cwd: workspaceRoot, env, timeoutMs: 60_000 },
         );
         expect(second.code).toBe(0);
@@ -4753,7 +4754,7 @@ describe("cli: ask success", () => {
             "ask",
             "--json",
             "--auto",
-            "--resume-id",
+            "--resume",
             sessionId,
             "Reply with the exact resumed turn.",
           ],
@@ -4806,7 +4807,7 @@ describe("cli: ask success", () => {
             "ask",
             "--json",
             "--auto",
-            "--resume-id",
+            "--resume",
             sessionId,
             "Reply with the continued target turn.",
           ],
@@ -4827,7 +4828,7 @@ describe("cli: ask success", () => {
             "ask",
             "--json",
             "--auto",
-            "--resume-id",
+            "--resume",
             createdNextId,
             "Continue the second saved session.",
           ],
@@ -4984,7 +4985,7 @@ describe("cli: error handling", () => {
 
         for (const args of [
           ["ask", "--no-save", "--resume", "last", "hello"],
-          ["ask", "--resume-id", "session.v3", "--no-save", "hello"],
+          ["ask", "--resume", "session.v3", "--no-save", "hello"],
         ]) {
           const rejected = await runFx(args, {
             cwd: realpathSync(workspace),
@@ -4994,10 +4995,10 @@ describe("cli: error handling", () => {
           expect(rejected.code).toBe(2);
           expect(rejected.stdout).toBe("");
           expect(rejected.stderr).toContain(
-            "fx ask: --no-save cannot be used with --resume or --resume-id",
+            "fx ask: --no-save cannot be used with --resume",
           );
           expect(rejected.stderr).toContain(
-            "usage: fx ask [--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--timeout <seconds>] [--no-save]",
+            "usage: fx ask [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--timeout <seconds>] [--no-save]",
           );
         }
         expect(gateway.requests).toHaveLength(0);

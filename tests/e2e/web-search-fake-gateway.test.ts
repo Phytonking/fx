@@ -666,7 +666,7 @@ describe("web_search Gateway fixture", () => {
         expect(gateway.requests).toHaveLength(1);
 
         const resumed = await runFx(
-          ["ask", "--auto", "--json", "--resume-id", saved.session_id, "Summarize the saved search."],
+          ["ask", "--auto", "--json", "--resume", saved.session_id, "Summarize the saved search."],
           { cwd: root.workspace, env, timeoutMs: TIMEOUT },
         );
         expect(resumed.code).toBe(0);

@@ -4937,7 +4937,7 @@ for (const scenario of ["replace", "conflict", "invalid-index"] as const) {
         expect(steps[0].tool_calls[0].id).toBe(conflict ? "prior" : "pending");
         expect(steps[0].tool_calls[0].arguments_json).toBe(conflict ? prior.arguments : final.arguments);
         if (conflict) {
-          const resumed = await runFx(["ask", "--json", "--auto", "--resume-id", resultJson.session_id, "Report the completed work without writing more files."], { cwd: profile, env, timeoutMs: TIMEOUT });
+          const resumed = await runFx(["ask", "--json", "--auto", "--resume", resultJson.session_id, "Report the completed work without writing more files."], { cwd: profile, env, timeoutMs: TIMEOUT });
           expect(resumed.code, resumed.stdout + resumed.stderr).toBe(0);
           expect(resumed.stderr).toBe("");
           expect(JSON.parse(resumed.stdout).output).toBe("FINAL_RECORD_OK");
@@ -4997,7 +4997,7 @@ test("native assistant messages keep their boundaries and phases through tools a
       const result = JSON.parse(first.stdout);
       expect(result.output).toBe("Checking the file.\n\nReading its contents.\n\nRead complete.\n\nThe value is 42.");
       expect(direct.bodies).toHaveLength(2);
-      const resumed = await runFx(["ask", "--json", "--auto", "--resume-id", result.session_id, "What was the value?"], { cwd: profile, env, timeoutMs: TIMEOUT });
+      const resumed = await runFx(["ask", "--json", "--auto", "--resume", result.session_id, "What was the value?"], { cwd: profile, env, timeoutMs: TIMEOUT });
       expect(resumed.code, resumed.stdout + resumed.stderr).toBe(0);
       expect(JSON.parse(resumed.stdout).output).toBe("Still 42.");
       expect(direct.bodies).toHaveLength(3);
@@ -5075,7 +5075,7 @@ test("native reasoning snapshots survive tools and saved resume exactly once", a
       expect(direct.bodies).toHaveLength(2);
       const saved = readFileSync(join(profile, ".fx", "sessions", result.session_id, "events.jsonl"), "utf8");
       expect(saved).toContain(signature);
-      const resumed = await runFx(["ask", "--json", "--auto", "--resume-id", result.session_id, "Continue without tools."], { cwd: profile, env, timeoutMs: TIMEOUT });
+      const resumed = await runFx(["ask", "--json", "--auto", "--resume", result.session_id, "Continue without tools."], { cwd: profile, env, timeoutMs: TIMEOUT });
       expect(resumed.code, resumed.stdout + resumed.stderr).toBe(0);
       expect(resumed.stderr).toBe("");
       expect(direct.bodies).toHaveLength(3);
@@ -5156,7 +5156,7 @@ test("native final snapshots preserve completed items and reject conflicting kin
       expect(history).toHaveLength(1);
       expect(history[0].kind).toBe(conflict ? "interrupted" : "assistant");
       expect(history[0].execution?.tool_steps ?? []).toHaveLength(conflict ? 0 : 1);
-      const resumed = await runFx(["ask", "--json", "--auto", "--resume-id", result.session_id, "Continue without tools."], { cwd: profile, env, timeoutMs: TIMEOUT });
+      const resumed = await runFx(["ask", "--json", "--auto", "--resume", result.session_id, "Continue without tools."], { cwd: profile, env, timeoutMs: TIMEOUT });
       expect(resumed.code, resumed.stdout + resumed.stderr).toBe(0);
       expect(resumed.stderr).toBe("");
       expect(JSON.parse(resumed.stdout).output).toBe(conflict ? "SNAPSHOT_OK" : "RESUMED_OK");
@@ -5231,7 +5231,7 @@ test("native discarded prose keeps tool continuation and saved resume valid", as
       const detail = await runFx(["session", "--json", "--id", result.session_id], { cwd: profile, env });
       expect(detail.code).toBe(0);
       expect(JSON.parse(detail.stdout).history).toHaveLength(1);
-      const resumed = await runFx(["ask", "--json", "--auto", "--resume-id", result.session_id, "Please confirm the saved result without tools."], { cwd: profile, env, timeoutMs: TIMEOUT });
+      const resumed = await runFx(["ask", "--json", "--auto", "--resume", result.session_id, "Please confirm the saved result without tools."], { cwd: profile, env, timeoutMs: TIMEOUT });
       expect(resumed.code, resumed.stdout + resumed.stderr).toBe(0);
       expect(resumed.stderr).toBe("");
       expect(JSON.parse(resumed.stdout).tool_calls).toEqual([]);
@@ -5316,7 +5316,7 @@ test("native terminal outcomes preserve recovery and incomplete warnings", async
           expect(history[0].execution?.tool_steps ?? []).toEqual([]);
           expect(history[0].tool_call).toBeNull();
           expect(history[0].completed_tool_names).toEqual([]);
-          const resumed = await runFx(["ask", "--json", "--auto", "--resume-id", output.session_id, "Continue from the saved partial answer without using tools."], { cwd: profile, env, timeoutMs: TIMEOUT });
+          const resumed = await runFx(["ask", "--json", "--auto", "--resume", output.session_id, "Continue from the saved partial answer without using tools."], { cwd: profile, env, timeoutMs: TIMEOUT });
           expect(resumed.code, resumed.stdout + resumed.stderr).toBe(0);
           expect(JSON.parse(resumed.stdout).output).toBe("RECOVERED_OK");
           expect(direct!.bodies).toHaveLength(2);
@@ -5406,7 +5406,7 @@ test("provider SSE framing preserves saved and resumed answers", async () => {
         const detail = await runFx(["session", "--json", "--id", output.session_id], { cwd: profile, env });
         expect(detail.code).toBe(0);
         expect(JSON.parse(detail.stdout).history[0].assistant).toBe(prefix + answer);
-        const resumed = await runFx(["ask", "--json", "--auto", "--resume-id", output.session_id, "Recall the prior answer."], { cwd: profile, env, timeoutMs: TIMEOUT });
+        const resumed = await runFx(["ask", "--json", "--auto", "--resume", output.session_id, "Recall the prior answer."], { cwd: profile, env, timeoutMs: TIMEOUT });
         expect(resumed.code, resumed.stdout + resumed.stderr).toBe(0);
         expect(resumed.stderr).toBe("");
         expect(direct ? direct.bodies.length : gateway.requests.length).toBe(2);
@@ -5484,7 +5484,7 @@ test("direct providers reconcile final text before saving or releasing tools", a
         const detail = await runFx(["session", "--json", "--id", output.session_id], { cwd: profile, env });
         expect(detail.code).toBe(0);
         expect(JSON.parse(detail.stdout).history[0].assistant).toBe(display);
-        const resumed = await runFx(["ask", "--json", "--auto", "--resume-id", output.session_id, "Recall the prior answer."], { cwd: profile, env, timeoutMs: TIMEOUT });
+        const resumed = await runFx(["ask", "--json", "--auto", "--resume", output.session_id, "Recall the prior answer."], { cwd: profile, env, timeoutMs: TIMEOUT });
         expect(resumed.code, resumed.stdout + resumed.stderr).toBe(0);
         expect(resumed.stderr).toBe("");
         expect(direct.bodies).toHaveLength(2);
@@ -5562,13 +5562,13 @@ test("direct providers keep images with their users through tools and resume", a
       expect(imageOwners(direct.bodies[1])).toEqual([firstOwner]);
       expect(readFileSync(join(profile, "trace.log"), "utf8")).toContain("has_images=true image_baseline=true");
       unlinkSync(firstPath);
-      const second = await runFx(["ask", "--json", "--auto", "--resume-id", sessionId, "--image", secondPath, secondPrompt], { cwd: profile, env, timeoutMs: TIMEOUT });
+      const second = await runFx(["ask", "--json", "--auto", "--resume", sessionId, "--image", secondPath, secondPrompt], { cwd: profile, env, timeoutMs: TIMEOUT });
       expect(second.code, second.stdout + second.stderr).toBe(0);
       expect(second.signal).toBeNull();
       expect(second.stderr).toBe("");
       expect(direct.bodies).toHaveLength(3);
       expect(imageOwners(direct.bodies[2])).toEqual([firstOwner, secondOwner]);
-      const third = await runFx(["ask", "--json", "--auto", "--resume-id", sessionId, "Look again at both earlier images."], { cwd: profile, env, timeoutMs: TIMEOUT });
+      const third = await runFx(["ask", "--json", "--auto", "--resume", sessionId, "Look again at both earlier images."], { cwd: profile, env, timeoutMs: TIMEOUT });
       expect(third.code, third.stdout + third.stderr).toBe(0);
       expect(third.signal).toBeNull();
       expect(third.stderr).toBe("");
@@ -5583,7 +5583,7 @@ test("direct providers keep images with their users through tools and resume", a
       const snapshotName = readdirSync(imageDir).find(name => name.endsWith(".bin") && readFileSync(join(imageDir, name)).equals(firstImage));
       expect(snapshotName).toBeDefined();
       writeFileSync(join(imageDir, snapshotName!), secondImage);
-      const rejected = await runFx(["ask", "--json", "--auto", "--resume-id", sessionId, "Inspect the earlier images again."], { cwd: profile, env, timeoutMs: TIMEOUT });
+      const rejected = await runFx(["ask", "--json", "--auto", "--resume", sessionId, "Inspect the earlier images again."], { cwd: profile, env, timeoutMs: TIMEOUT });
       expect(rejected.code, rejected.stdout + rejected.stderr).toBe(1);
       expect(rejected.signal).toBeNull();
       expect(rejected.stdout + rejected.stderr).toContain("ImageSnapshotCorrupt");
@@ -6110,7 +6110,7 @@ test(
         expect(catalog.code, `${catalog.stdout}\n${catalog.stderr}\n${JSON.stringify(direct.urls)}`).toBe(0);
         const seeded = await runFx(["ask", "--json", "--yolo", "Keep these provider facts."], options);
         expect(seeded.code).toBe(0);
-        const result = await runFx(["ask", "--json", "--yolo", "--resume-id", JSON.parse(seeded.stdout).session_id, "Continue from those facts."], options);
+        const result = await runFx(["ask", "--json", "--yolo", "--resume", JSON.parse(seeded.stdout).session_id, "Continue from those facts."], options);
 
         expect(result.code, `stdout: ${result.stdout}\nstderr: ${result.stderr}\nrequests=${direct.bodies.length}\n${readFileSync(join(testHome, "compaction.log"), "utf8").split("\n").filter((line) => line.includes("context_compaction")).join("\n")}`).toBe(0);
         expect(JSON.parse(result.stdout).output).toContain(`${provider.toUpperCase()}_COMPACTION_CONTINUED`);

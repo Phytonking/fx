@@ -300,7 +300,7 @@ test("fx ask saves to v2, resumes by id and by last, and never writes v1", async
     expect(statSync(v2Root(fixture)).mode & 0o777).toBe(0o700);
     expect(statSync(join(v2Root(fixture), id, "log.jsonl")).mode & 0o777).toBe(0o600);
 
-    const byId = await ask(fixture, gateway, ["--resume-id", id, "Second v2 question."]);
+    const byId = await ask(fixture, gateway, ["--resume", id, "Second v2 question."]);
     expect(byId.code).toBe(0);
     expect(byId.stderr).toBe("");
     expect(JSON.parse(byId.stdout).session_id).toBe(id);
@@ -372,7 +372,7 @@ test("fx ask keeps the conversation language when a resumed turn has no language
     const seededLanguages = languages();
     expect(seededLanguages.at(-1)).toBe("ja");
 
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "👍"]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "👍"]);
     expect(resumed.code).toBe(0);
     expect(resumed.stderr).toBe("");
     // The language is written only when it changes, so the resumed turn
@@ -438,7 +438,7 @@ for (const userHeavy of [false, true]) {
       const before = readFileSync(logPath);
 
       phase = "continue";
-      const continued = await run(["--resume-id", id, "Continue the saved task without losing its pending check."]);
+      const continued = await run(["--resume", id, "Continue the saved task without losing its pending check."]);
       expect(continued.code).toBe(0);
       expect(continued.stderr).toBe("");
       expect(JSON.parse(continued.stdout).output).toBe("CONTINUED_FROM_COMMITTED_MEMORY");
@@ -480,7 +480,7 @@ for (const userHeavy of [false, true]) {
 
       // A fresh process resumes from the summary: it sends the summary, not
       // the turns it replaced, and has nothing left to summarize.
-      const reopened = await run(["--resume-id", id, "Continue after this fresh process restart."]);
+      const reopened = await run(["--resume", id, "Continue after this fresh process restart."]);
       expect(reopened.code).toBe(0);
       expect(reopened.stderr).toBe("");
       expect(JSON.parse(reopened.stdout).output).toBe("CONTINUED_FROM_COMMITTED_MEMORY");
@@ -494,7 +494,7 @@ for (const userHeavy of [false, true]) {
       // Another fresh process reads the saved turn by its ID, through the
       // records the session keeps as blobs (D50).
       phase = "read";
-      const read = await run(["--resume-id", id, "Read the saved turn."]);
+      const read = await run(["--resume", id, "Read the saved turn."]);
       expect(read.code).toBe(0);
       // Tool progress goes to stderr.
       expect(read.stderr).not.toContain("panic");
@@ -597,7 +597,7 @@ test("a long command output is kept as one read-only blob, and the model pages i
     }
     expect(Buffer.concat(stdout).toString("utf8")).toBe(expected);
 
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "Page the output again."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "Page the output again."]);
     expect(resumed.code).toBe(0);
     expect(resumed.stderr).not.toContain("panic");
     expect(JSON.parse(resumed.stdout).output).toBe("REPLAY_PAGED_DONE");
@@ -636,7 +636,7 @@ test("fx ask killed in the middle of a turn resumes with that turn interrupted",
     expect(created.code).toBe(0);
     const id = JSON.parse(created.stdout).session_id;
 
-    const child = spawn(FX_BIN, ["ask", "--json", "--auto", "--resume-id", id, "This turn is killed."], {
+    const child = spawn(FX_BIN, ["ask", "--json", "--auto", "--resume", id, "This turn is killed."], {
       cwd: fixture.workspace,
       env: { ...process.env, ...env(fixture, gateway) } as Record<string, string>,
       stdio: "ignore",
@@ -646,7 +646,7 @@ test("fx ask killed in the middle of a turn resumes with that turn interrupted",
     child.kill("SIGKILL");
     await exited;
 
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "After the kill."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "After the kill."]);
     expect(resumed.code).toBe(0);
     expect(resumed.stderr).toBe("");
     expect(JSON.parse(resumed.stdout).output).toBe("AFTER_KILL_ANSWER");
@@ -687,14 +687,14 @@ test("a kill while a tool runs keeps the finished tool and answers the running o
     expect(created.code).toBe(0);
     const id = JSON.parse(created.stdout).session_id;
 
-    const run = spawnAsk(fixture, gateway, ["--resume-id", id, "Run two tools."]);
+    const run = spawnAsk(fixture, gateway, ["--resume", id, "Run two tools."]);
     await slowStarted;
     // The call is saved before it runs (D28).
     await waitForLog(fixture, id, "v2-slow-2");
     run.child.kill("SIGKILL");
     await run.exited;
 
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "After the tool kill."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "After the tool kill."]);
     expect(resumed.code).toBe(0);
     expect(resumed.stderr).toBe("");
     expect(JSON.parse(resumed.stdout).output).toBe("AFTER_TOOL_KILL");
@@ -741,7 +741,7 @@ test("a kill while a tool runs keeps the text of the message that issued it", as
     expect(created.code).toBe(0);
     const id = JSON.parse(created.stdout).session_id;
 
-    const run = spawnAsk(fixture, gateway, ["--resume-id", id, "Run the build."]);
+    const run = spawnAsk(fixture, gateway, ["--resume", id, "Run the build."]);
     await slowStarted;
     await waitForLog(fixture, id, "v2-slow-2");
     run.child.kill("SIGKILL");
@@ -751,7 +751,7 @@ test("a kill while a tool runs keeps the text of the message that issued it", as
     expect(running.length).toBe(2);
     expect(JSON.stringify(running.at(-1))).toContain("RUNNING_PLAN_7731");
 
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "After the text kill."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "After the text kill."]);
     expect(resumed.code).toBe(0);
     expect(resumed.stderr).toBe("");
     expect(JSON.parse(resumed.stdout).output).toBe("AFTER_TEXT_KILL");
@@ -794,7 +794,7 @@ test("a session whose first turn was killed takes its first prompt as title", as
     await run.exited;
     expect(storedTitles(fixture, id)).toEqual([]);
 
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "After the first-turn kill."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "After the first-turn kill."]);
     expect(resumed.code).toBe(0);
     expect(resumed.stderr).toBe("");
     // The title comes from the first prompt, which the crashed turn kept (D52).
@@ -804,7 +804,7 @@ test("a session whose first turn was killed takes its first prompt as title", as
     const summary = JSON.parse(listed.stdout).sessions.find((entry: any) => entry.id === id);
     expect(summary.title).toBe("Why is the sky orange at dusk?");
     // Later turns leave it.
-    expect((await ask(fixture, gateway, ["--resume-id", id, "After the first-turn kill. Again."])).code).toBe(0);
+    expect((await ask(fixture, gateway, ["--resume", id, "After the first-turn kill. Again."])).code).toBe(0);
     expect(storedTitles(fixture, id)).toEqual(["Why is the sky orange at dusk?"]);
     expectWholeLog(fixture, id);
   } finally {
@@ -826,7 +826,7 @@ test("a torn tail is cut on resume and the session goes on", async () => {
     // A write cut short by a power loss: part of a line, no newline.
     appendFileSync(join(v2Root(fixture), id, "log.jsonl"), '{"v":1,"seq":99,"ts":1,"kind":"item","ty');
 
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "After the torn tail."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "After the torn tail."]);
     expect(resumed.code).toBe(0);
     expect(resumed.stderr).toBe("");
     expect(JSON.parse(resumed.stdout).output).toBe("AFTER_TORN_TAIL");
@@ -850,13 +850,13 @@ test("a flipped byte inside the log stops resume and leaves the file as it was",
     const created = await ask(fixture, gateway, ["Flip question one."]);
     expect(created.code).toBe(0);
     const id = JSON.parse(created.stdout).session_id;
-    expect((await ask(fixture, gateway, ["--resume-id", id, "Flip question two."])).code).toBe(0);
+    expect((await ask(fixture, gateway, ["--resume", id, "Flip question two."])).code).toBe(0);
     const path = join(v2Root(fixture), id, "log.jsonl");
     const damaged = readFileSync(path, "utf8").replace("Flip question one.", "Flip question 0ne.");
     writeFileSync(path, damaged);
     const requests = gateway.requests.length;
 
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "Flip question three."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "Flip question three."]);
     expect(resumed.code).toBe(1);
     expect(resumed.stdout + resumed.stderr).toContain("InvalidSessionFormat");
     // No request was made, and the damaged file is left for recovery.
@@ -879,7 +879,7 @@ test("a blob that went missing stops resume as damage, not as a missing session"
     const referenced = (logLines(fixture, id) as any[]).find((line) => Array.isArray(line.blobs) && line.blobs.length === 1);
     rmSync(join(v2Root(fixture), id, "blobs", referenced.blobs[0]));
 
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "Continue after the lost blob."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "Continue after the lost blob."]);
     expect(resumed.code).toBe(1);
     expect(resumed.stdout + resumed.stderr).toContain("InvalidSessionFormat");
     expect(resumed.stdout + resumed.stderr).not.toContain("NotFound");
@@ -907,16 +907,16 @@ test("a second process on an open session is refused and writes nothing", async 
     expect(created.code).toBe(0);
     const id = JSON.parse(created.stdout).session_id;
 
-    const holder = spawnAsk(fixture, gateway, ["--resume-id", id, "Hold the session."]);
+    const holder = spawnAsk(fixture, gateway, ["--resume", id, "Hold the session."]);
     await reachedStall;
-    const second = await ask(fixture, gateway, ["--resume-id", id, "A second process."]);
+    const second = await ask(fixture, gateway, ["--resume", id, "A second process."]);
     expect(second.code).toBe(1);
     expect(second.stdout + second.stderr).toContain("SessionBusy");
     expect(readFileSync(join(v2Root(fixture), id, "log.jsonl"), "utf8")).not.toContain("A second process.");
     holder.child.kill("SIGKILL");
     await holder.exited;
 
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "After the busy session."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "After the busy session."]);
     expect(resumed.code).toBe(0);
     expect(JSON.parse(resumed.stdout).output).toBe("AFTER_BUSY");
     expectWholeLog(fixture, id);
@@ -942,7 +942,7 @@ test("a read-only session folder fails cleanly and resumes once writable", async
     chmodSync(join(folder(), "log.jsonl"), 0o400);
     chmodSync(folder(), 0o500);
 
-    const refused = await ask(fixture, gateway, ["--resume-id", id, "While read-only."]);
+    const refused = await ask(fixture, gateway, ["--resume", id, "While read-only."]);
     expect(refused.code).toBe(1);
     // The OS cause, not a bare `Io` (D29).
     expect(JSON.parse(refused.stdout).error).toBe("AccessDenied");
@@ -951,7 +951,7 @@ test("a read-only session folder fails cleanly and resumes once writable", async
 
     chmodSync(folder(), 0o700);
     chmodSync(join(folder(), "log.jsonl"), 0o600);
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "After the read-only folder."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "After the read-only folder."]);
     expect(resumed.code).toBe(0);
     expect(JSON.parse(resumed.stdout).output).toBe("AFTER_READ_ONLY");
     expectWholeLog(fixture, id);
@@ -980,12 +980,12 @@ test("a full disk fails the turn cleanly and the session resumes after", async (
     // A file-size limit just above the log, with SIGXFSZ ignored: the next
     // growing write fails with EFBIG, as a full disk fails with ENOSPC.
     const blocks = blocksJustPast(path);
-    const full = await askWithSizeLimit(fixture, gateway, blocks, ["--resume-id", id, "The disk is full."]);
+    const full = await askWithSizeLimit(fixture, gateway, blocks, ["--resume", id, "The disk is full."]);
     // The answer was shown, but the turn could not be saved.
     expect(full.code).toBe(1);
     expect(JSON.parse(full.stdout).error).toBe("FileTooBig");
 
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "After the full disk."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "After the full disk."]);
     expect(resumed.code).toBe(0);
     expect(JSON.parse(resumed.stdout).output).toBe("AFTER_FULL_DISK");
     expect(gateway.requests.at(-1)!.body).toContain("BEFORE_FULL_DISK");
@@ -1646,7 +1646,7 @@ test("fx ask keeps an image inside its turn, and resume in a new process sends i
     const images = inlineImages(fixture, id);
     expect(images.length).toBe(1);
     expect(images[0]!.subarray(0, 8).equals(PNG_SIGNATURE)).toBe(true);
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "And again."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "And again."]);
     expect(resumed.code).toBe(0);
     // The prompt text says "image" too, so match the part's media type.
     expect(gateway.requests[0]!.body).toContain("image/png");
@@ -1956,7 +1956,7 @@ test("a named subagent keeps its id, history and instructions across fx ask runs
     expect(first.code).toBe(0);
     expect(JSON.parse(first.stdout).output).toBe("FIRST_DONE");
     const id = JSON.parse(first.stdout).session_id;
-    const second = await ask(fixture, gateway, ["--resume-id", id, "Second review."]);
+    const second = await ask(fixture, gateway, ["--resume", id, "Second review."]);
     expect(second.code).toBe(0);
     expect(second.stderr).not.toContain("panic");
     expect(JSON.parse(second.stdout).output).toBe("SECOND_DONE");
@@ -2019,7 +2019,7 @@ test("a crash while a named subagent works records it interrupted, and its next 
     await exited;
 
     phase = "again";
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "Try the job again."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "Try the job again."]);
     expect(resumed.code).toBe(0);
     expect(resumed.stderr).not.toContain("panic");
     expect(JSON.parse(resumed.stdout).output).toBe("AFTER_LOST_DONE");
@@ -2149,7 +2149,7 @@ test("fx sessions and fx session show v2 sessions by workspace, page them, and v
   ]);
   try {
     const a = JSON.parse((await ask(fixture, gateway, ["List question A."])).stdout).session_id;
-    expect((await ask(fixture, gateway, ["--resume-id", a, "List question A two."])).code).toBe(0);
+    expect((await ask(fixture, gateway, ["--resume", a, "List question A two."])).code).toBe(0);
     const inOther = await runFx(["ask", "--json", "--auto", "List question B."], { cwd: other, env: env(fixture, gateway), timeoutMs: TIMEOUT });
     const b = JSON.parse(inOther.stdout).session_id;
     const c = JSON.parse((await ask(fixture, gateway, ["List question C."])).stdout).session_id;
@@ -2323,7 +2323,7 @@ test("fx session reads a session another process holds, and reads past a torn ta
   });
   try {
     const id = JSON.parse((await ask(fixture, gateway, ["Before the held read."])).stdout).session_id;
-    const holder = spawnAsk(fixture, gateway, ["--resume-id", id, "Hold the session for reading."]);
+    const holder = spawnAsk(fixture, gateway, ["--resume", id, "Hold the session for reading."]);
     await reachedStall;
     const path = join(v2Root(fixture), id, "log.jsonl");
     const held = readFileSync(path);
@@ -2362,8 +2362,8 @@ test("fx session recover copies the good turns and side files of a damaged sessi
   ]);
   try {
     const id = JSON.parse((await ask(fixture, gateway, ["Recover question one."])).stdout).session_id;
-    expect((await ask(fixture, gateway, ["--resume-id", id, "Recover question two."])).code).toBe(0);
-    expect((await ask(fixture, gateway, ["--resume-id", id, "Recover question three."])).code).toBe(0);
+    expect((await ask(fixture, gateway, ["--resume", id, "Recover question two."])).code).toBe(0);
+    expect((await ask(fixture, gateway, ["--resume", id, "Recover question three."])).code).toBe(0);
     const path = join(v2Root(fixture), id, "log.jsonl");
     writeFileSync(path, readFileSync(path, "utf8").replace("Recover question three.", "Recover question thr3e."));
     const damaged = readFileSync(path);
@@ -2387,7 +2387,7 @@ test("fx session recover copies the good turns and side files of a damaged sessi
     expect(shown.code).toBe(0);
     expect(JSON.parse(shown.stdout).history_len).toBe(2);
     expect(shown.stdout).toContain("RECOVER_TOOL_OUTPUT_4410");
-    const resumed = await ask(fixture, gateway, ["--resume-id", copy, "After the recovery."]);
+    const resumed = await ask(fixture, gateway, ["--resume", copy, "After the recovery."]);
     expect(resumed.code).toBe(0);
     expect(JSON.parse(resumed.stdout).output).toBe("RECOVER_LOST");
     const sent = gateway.requests.at(-1)!.body;
@@ -2434,7 +2434,7 @@ test("an older session moves off its side folder on its next open, and the model
     mkdirSync(join(side, "terminal", "state"), { recursive: true, mode: 0o700 });
     writeFileSync(join(side, "terminal", "state", "note.json"), "{}", { mode: 0o600 });
 
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "Read the old result."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "Read the old result."]);
     expect(resumed.code).toBe(0);
     expect(JSON.parse(resumed.stdout).output).toBe("MOVE_READ_DONE");
     // The old name resolved through the map to the moved body.
@@ -2448,7 +2448,7 @@ test("an older session moves off its side folder on its next open, and the model
     expectWholeLog(fixture, id);
 
     // Opened again, nothing moves twice.
-    const again = await ask(fixture, gateway, ["--resume-id", id, "Once more."]);
+    const again = await ask(fixture, gateway, ["--resume", id, "Once more."]);
     expect(again.code).toBe(0);
     expect(logLines(fixture, id).filter((line) => line.kind === "set" && line.key === "moved_files")).toHaveLength(1);
   } finally {
@@ -2548,8 +2548,8 @@ test("doctor reports a session whose blob went missing, and recover copies the t
   ]);
   try {
     const id = JSON.parse((await ask(fixture, gateway, ["Recover question one."])).stdout).session_id;
-    expect((await ask(fixture, gateway, ["--resume-id", id, "Recover question two."])).code).toBe(0);
-    expect((await ask(fixture, gateway, ["--resume-id", id, "Recover question three."])).code).toBe(0);
+    expect((await ask(fixture, gateway, ["--resume", id, "Recover question two."])).code).toBe(0);
+    expect((await ask(fixture, gateway, ["--resume", id, "Recover question three."])).code).toBe(0);
     const referenced = (logLines(fixture, id) as any[]).find((line) => Array.isArray(line.blobs) && line.blobs.length === 1);
     rmSync(join(v2Root(fixture), id, "blobs", referenced.blobs[0]));
     const logPath = join(v2Root(fixture), id, "log.jsonl");
@@ -2568,7 +2568,7 @@ test("doctor reports a session whose blob went missing, and recover copies the t
     const recovered = JSON.parse(result.stdout);
     expect(recovered).toMatchObject({ kind: "session_recovery", source_id: id, status: "recovered", history_turns: 1 });
     const copy: string = recovered.recovered_id;
-    const resumed = await ask(fixture, gateway, ["--resume-id", copy, "Continue in the copy."]);
+    const resumed = await ask(fixture, gateway, ["--resume", copy, "Continue in the copy."]);
     expect(resumed.code).toBe(0);
     expect(JSON.parse(resumed.stdout).output).toBe("AFTER_RECOVER");
     const last = gateway.requests.at(-1)!.body;
@@ -2608,7 +2608,7 @@ test("fx ask keeps a piece over 256 KB as a blob, and resume sends it whole", as
     expect(sha256(readFileSync(blobPath))).toBe(hash);
     expect(readFileSync(blobPath, "utf8")).toContain("BLOB_PIECE_END");
 
-    const resumed = await ask(fixture, gateway, ["--resume-id", id, "Continue after the long answer."]);
+    const resumed = await ask(fixture, gateway, ["--resume", id, "Continue after the long answer."]);
     expect(resumed.code).toBe(0);
     expect(resumed.stderr).toBe("");
     expect(JSON.parse(resumed.stdout).output).toBe("AFTER_BLOB_RESUME");
@@ -2840,7 +2840,7 @@ test("a parent killed while a named child runs a tool records that work interrup
     const childBefore = readFileSync(join(v2Root(fixture), childId, "log.jsonl"));
 
     phase = "crash";
-    const { child, exited } = spawnAsk(fixture, gateway, ["--resume-id", id, "Give the worker a long job."]);
+    const { child, exited } = spawnAsk(fixture, gateway, ["--resume", id, "Give the worker a long job."]);
     await until(() => existsSync(started) && readFileSync(started, "utf8").trim() !== "", "the child's tool to start");
     const toolPid = Number(readFileSync(started, "utf8").trim());
     child.kill("SIGKILL");
@@ -2859,7 +2859,7 @@ test("a parent killed while a named child runs a tool records that work interrup
     expect(added.map((line) => line.kind)).toEqual(["turn_started"]);
 
     phase = "again";
-    const again = await ask(fixture, gateway, ["--resume-id", id, "Ask the worker again."]);
+    const again = await ask(fixture, gateway, ["--resume", id, "Ask the worker again."]);
     expect(again.code).toBe(0);
     expect(again.stderr).not.toContain("panic");
     expect(JSON.parse(again.stdout).output).toBe("PARENT_AGAIN_DONE");
@@ -3026,7 +3026,7 @@ async function savedTwoTurns(fixture: Fixture, gateway: any) {
   const first = await ask(fixture, gateway, ["Fault question one."]);
   expect(first.code).toBe(0);
   const id = JSON.parse(first.stdout).session_id;
-  expect((await ask(fixture, gateway, ["--resume-id", id, "Fault question two."])).code).toBe(0);
+  expect((await ask(fixture, gateway, ["--resume", id, "Fault question two."])).code).toBe(0);
   return { id, log: join(v2Root(fixture), id, "log.jsonl") };
 }
 
@@ -3646,7 +3646,7 @@ test("a named child whose log is damaged fails that message, and the parent turn
     const damaged = readFileSync(childLog);
 
     phase = 2;
-    const again = await ask(fixture, gateway, ["--resume-id", id, "Ask the worker again."]);
+    const again = await ask(fixture, gateway, ["--resume", id, "Ask the worker again."]);
     expect(again.code).toBe(0);
     expect(JSON.parse(again.stdout).output).toBe("PARENT_AFTER_CHILD_FAILED");
     expect(JSON.parse(again.stdout).tool_calls).toEqual([{ name: "subagent", status: "error" }]);
@@ -3735,9 +3735,9 @@ async function makeGridBase(exit: GridExit, by: "ask" | "app") {
     expect(first.code, `${exit} base by ${by}: signal ${first.signal}: ${first.stderr}`).toBe(0);
     const id: string = JSON.parse(first.stdout).session_id;
     if (by === "ask" && exit === "committed") {
-      expect((await ask(fixture, gateway, ["--resume-id", id, "Grid second."])).code).toBe(0);
+      expect((await ask(fixture, gateway, ["--resume", id, "Grid second."])).code).toBe(0);
     } else if (by === "ask") {
-      const run = spawnAsk(fixture, gateway, ["--resume-id", id, "Grid second."]);
+      const run = spawnAsk(fixture, gateway, ["--resume", id, "Grid second."]);
       await stalled;
       if (exit === "crashed-mid-tool") await waitForLog(fixture, id, "grid-slow-2");
       run.child.kill(exit === "cancelled" ? "SIGINT" : "SIGKILL");
@@ -3855,7 +3855,7 @@ async function gridEnter(entry: GridEntry, c: GridCase, gateway: any, token: str
   const answer = `GRID_ANSWER_${token}`;
   switch (gridHost(entry)) {
     case "ask": {
-      const args = entry === "ask-id" ? ["--resume-id", c.id, prompt] : entry === "ask-last" ? ["--resume", "last", prompt] : [prompt];
+      const args = entry === "ask-id" ? ["--resume", c.id, prompt] : entry === "ask-last" ? ["--resume", "last", prompt] : [prompt];
       const result = limit === undefined ? await ask(c.fixture, gateway, args) : await askWithSizeLimit(c.fixture, gateway, limit, args);
       let json: any;
       try {
@@ -4016,7 +4016,7 @@ async function gridRow(exit: GridExit, entry: GridEntry) {
           break;
         case "busy": {
           const held = hold(`H${token}`);
-          holder = spawnAsk(c.fixture, gateway, ["--resume-id", c.id, `Grid token H${token}.`]);
+          holder = spawnAsk(c.fixture, gateway, ["--resume", c.id, `Grid token H${token}.`]);
           await held.reached;
           clear = async () => {
             held.release();
