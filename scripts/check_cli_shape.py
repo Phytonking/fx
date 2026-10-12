@@ -5,7 +5,8 @@ The check reads the real source rather than a model of it:
   env       every FX_* name in src/ is registered with a job and a stability,
             every other env var read by name is listed, and nothing is stale
   flags     flags are kebab-case and carry no value inside their name
-  help      every flag `fx ask` and the global launch parser accept is in help
+  parsing   CLI code reads flags through cli_flags and the option lists help
+            renders, so no command compares an argument with a flag by hand
   settings  settings keys are snake_case
   warnings  every profile-only key warns when a project .fx.json sets it
 
@@ -53,6 +54,8 @@ KEY_READ = re.compile(r'\.(?:get|getPtr|contains)\("([^"]+)"\)')
 TOP_LEVEL_KEY_READ = re.compile(r'\broot\.object\.(?:get|getPtr|contains)\("([^"]+)"\)')
 LIST_ENTRY = re.compile(r'^\s*"([A-Za-z0-9_]+)",')
 TEST_START = re.compile(r"^\s*test\b")
+HAND_COMPARE = re.compile(r'(?:eql|startsWith)\(u8,\s*[^,]+,\s*"(-{1,2}[A-Za-z][A-Za-z0-9-]*=?)"')
+CLI_DIR = "src/core/cli"
 STRING = re.compile(r'"(?:\\.|[^"\\])*"')
 CHAR = re.compile(r"'(?:\\.|[^'\\])+'")
 
@@ -125,18 +128,6 @@ def function_body(lines: list[Line], name: str) -> list[Line]:
     raise ShapeSourceError(f"cannot find fn {name}")
 
 
-def region(lines: list[Line], start: re.Pattern[str], end: re.Pattern[str]) -> list[Line]:
-    for index, line in enumerate(lines):
-        if start.search(line.text):
-            out = [line]
-            for current in lines[index + 1 :]:
-                if end.search(current.text):
-                    return out
-                out.append(current)
-            return out
-    raise ShapeSourceError(f"cannot find {start.pattern}")
-
-
 def help_flags(lines: list[Line]) -> dict[str, Line]:
     """Flags named by `.flag` and flag-shaped `.usage` entries in a spec region."""
     flags: dict[str, Line] = {}
@@ -189,7 +180,7 @@ class Checker:
     def run(self) -> list[Problem]:
         self.check_env()
         self.check_flags()
-        self.check_help()
+        self.check_parsing()
         self.check_settings()
         for kind, entries in self.exceptions.items():
             for value in entries:
@@ -266,33 +257,32 @@ class Checker:
                 "pass values as an argument (shape rule S-6)",
             )
 
-    def check_help(self) -> None:
-        commands = self.lines(COMMANDS)
-        ask_help = help_flags(region(commands, re.compile(r'\.token = "ask"'), re.compile(r'\.token = "')))
-        global_help = help_flags(
-            region(commands, re.compile(r"^pub const top_level_flags\b"), re.compile(r"^};"))
-        )
-        surfaces = (
-            ("ask", function_body(self.lines(CLI_ASK), "parseOptionsWithStdin"), ask_help, "the ask spec"),
-            (
-                "global",
-                function_body(self.lines(CLI_SURFACE), "parseGlobalLaunchArgs"),
-                global_help,
-                "top_level_flags",
-            ),
-        )
-        for surface, body, documented, owner in surfaces:
-            for flag, line in sorted(parsed_flags(body).items()):
-                if flag == "--" or flag in documented:
-                    continue
-                if self.excepted("undocumented_flags", f"{surface} {flag}"):
-                    continue
-                self.report(
-                    line,
-                    "help",
-                    f"{surface} accepts {flag}, but {owner} in {COMMANDS} does not "
-                    "document it. Document it or remove it (shape rule S-6).",
-                )
+    def check_parsing(self) -> None:
+        """Commands read flags through cli_flags, from the lists help renders.
+
+        Comparing an argument with a flag literal by hand is how flags used to
+        slip past help, so each remaining comparison needs a listed reason.
+        """
+        allowed = self.registry.get("hand_parsed_flags", {})
+        seen: set[str] = set()
+        for source in sorted((self.root / CLI_DIR).glob("*.zig")):
+            path = source.relative_to(self.root).as_posix()
+            for line in self.lines(path):
+                for match in HAND_COMPARE.finditer(line.text):
+                    flag = match.group(1)
+                    seen.add(flag)
+                    if flag in allowed:
+                        continue
+                    self.report(
+                        line,
+                        "parsing",
+                        f"{flag} is compared with an argument by hand. Add it to the "
+                        f"command's option list in {COMMANDS} and read it through "
+                        "cli_flags (shape rules S-6 and S-13), or list it in "
+                        f"hand_parsed_flags in {REGISTRY} with the reason.",
+                    )
+        for flag in sorted(set(allowed) - seen):
+            self.report(None, "registry", f'hand_parsed_flags lists "{flag}", which no CLI code compares; remove it')
 
     def check_settings(self) -> None:
         config = self.lines(CONFIG_RUNTIME)

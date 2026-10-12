@@ -9,7 +9,7 @@ fx follows git and Unix conventions for how people and scripts control it. Each 
 
 ## Current versus target
 
-Several pieces the rules rely on aren't built yet: `fx config`, the generic `--config key=value` override, the settings registry, `FX_HOME`, `fx completion`, `experimental.*` settings, `--permission-mode`, and exit code 2 for usage errors. Design new work toward them, but never tell a user to run something that doesn't exist yet. Check `./zig-out/bin/fx help` and `./zig-out/bin/fx <command> --help` when unsure. When a target piece is missing, use the nearest current pattern and say what's missing.
+Several pieces the rules rely on aren't built yet: `fx config`, the generic `--config key=value` override, the settings registry, `FX_HOME`, `fx completion`, `experimental.*` settings, and the agent-run flags on `fx acp`. Design new work toward them, but never tell a user to run something that doesn't exist yet. Check `./zig-out/bin/fx help` and `./zig-out/bin/fx <command> --help` when unsure. When a target piece is missing, use the nearest current pattern and say what's missing.
 
 ## Decision order
 
@@ -46,7 +46,7 @@ These are the rules agents most often get wrong. [references/rules.md](reference
 
 **Slash commands use the setting's name.** A slash command that changes a setting uses that setting's name and values (`/fast on` writes `fast_mode`), like vim's `:set number`. A slash action uses the CLI command's name (`/workspace add` matches `fx workspace add`).
 
-**Output.** Results go to stdout and diagnostics to stderr. Every command that prints data accepts `--json`, and its fields are only added; a shape that must change goes behind `--json=v2`. Don't add a `schema_version` field: commands such as `fx status --json` name their shape with `kind`. Usage errors will exit with 2 and real failures with 1. Errors name the bad input and suggest the closest match.
+**Output.** Results go to stdout and diagnostics to stderr. Every command that prints data accepts `--json`, and its fields are only added; a shape that must change goes behind `--json=v2`. Don't add a `schema_version` field: commands such as `fx status --json` name their shape with `kind`. Usage errors exit with 2 and real failures with 1. Errors name the bad input and suggest the closest match.
 
 **Precedence.** Highest first: managed by an administrator (reserved, not built), flag, env var, the profile's entry for this folder, the profile, the project's `.fx.json`, the default.
 
@@ -79,8 +79,10 @@ Ask before inventing a rule for something these rules don't cover: keyboard shor
 
 ## Gotchas
 
-- `fx` and `fx ask` have separate hand-written parsers today: `parseGlobalLaunchArgs` in `src/core/cli/cli_surface.zig` and `parseOptionsWithStdin` in `src/core/cli/cli_ask.zig`. The global flag list is written twice, in `parseGlobalLaunchArgs` and `argsAfterGlobalLaunchArgs`. A global flag added to one and not the other breaks command detection.
-- Help comes from the specs in `src/builtins/commands.zig`, but parsing lives elsewhere, so a flag can be parsed and missing from help, or shown and rejected. CI's `python3 -m scripts.check_cli_shape` catches the first case for `fx ask` and the global launch flags only. Run `./zig-out/bin/fx <command> --help` and the command itself after changing either.
+- Every command reads its flags through `cli_flags.Parser` in `src/core/cli/cli_flags.zig`, from the same `OptionDoc` list its help renders in `src/builtins/commands.zig`. The global flags before a command read `launch_options` in prefix mode, which stops at the first argument it doesn't own.
+- To add a flag, add an `OptionDoc` to the command's list and a field to that command's flag enum in its parser. `cli_flags.idTable` fails the build when the list and the enum disagree, so a flag can't be parsed and missing from help. A new global flag also needs a `top_level_flags` row; a test in `commands.zig` checks that.
+- Don't compare an argument with a flag literal by hand. CI's `python3 -m scripts.check_cli_shape` fails on it unless `hand_parsed_flags` in `scripts/cli_shape_registry.json` lists the flag with a reason, as it does for help and version detection and the fixed resume grammar.
+- Run `./zig-out/bin/fx <command> --help` and the command itself after changing a flag.
 - `.fx.json` filtering is structural: only `parseProjectSafeFields` reads project files. The "ignored in project" warning comes from a separate hand-kept list, `isProfileOnlySettingKey`. Add a new profile-only key there too; the CI shape check fails if you don't.
 - Every `FX_*` name in `src/` must be registered, with a job and a stability, in `scripts/cli_shape_registry.json`, or CI fails. Known violations are listed there as exceptions, each with the change that removes it. A new exception needs a maintainer's approval; never add one to make a new control pass.
 - `-c` already means continue, so git's `-c key=value` can't be copied. Use the generic override's working name, `--config key=value`.

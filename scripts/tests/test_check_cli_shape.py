@@ -42,26 +42,28 @@ const specs = .{
 
 CLI_SURFACE = """\
 fn parseGlobalLaunchArgs(args: []const []const u8) void {
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--model")) {}
-        if (std.mem.eql(u8, arg, "--fast") or std.mem.eql(u8, arg, "--no-fast")) {}
-    }
+    var parser: cli_flags.Parser = .initPrefix(&builtin_commands.launch_options, args);
+    _ = &parser;
 }
 """
 
 CLI_ASK = """\
-fn parseOptionsWithStdin(args: []const []const u8) void {
+fn parseAskOptions(args: []const []const u8) void {
+    var parser: cli_flags.Parser = .init(&builtin_commands.ask_options, args);
+    _ = &parser;
+}
+
+fn wantsJson(args: []const []const u8) bool {
     for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--")) {}
-        if (std.mem.eql(u8, arg, "--model")) {}
-        if (std.mem.startsWith(u8, arg, "--model=")) {}
-        if (std.mem.eql(u8, arg, "--json")) {}
+        if (std.mem.eql(u8, arg, "--json")) return true;
     }
+    return false;
 }
 
 test "tests may use odd arguments" {
     _ = "--Weird_Flag";
     _ = "FX_ONLY_IN_TESTS";
+    _ = std.mem.eql(u8, arg, "--only-in-tests");
     _ = .{ .text = "}" };
 }
 """
@@ -100,7 +102,8 @@ def registry() -> dict:
         "env": {"FX_MODEL": {"job": "setting-override", "stability": "stable"}},
         "not_env": {},
         "external_env": ["HOME"],
-        "exceptions": {"flag_names": {}, "undocumented_flags": {}, "setting_keys": {}},
+        "hand_parsed_flags": {"--json": "picks the error format"},
+        "exceptions": {"flag_names": {}, "setting_keys": {}},
     }
 
 
@@ -176,8 +179,6 @@ class CheckCliShapeTests(unittest.TestCase):
 
     def test_flag_names_must_be_kebab_case(self) -> None:
         self.edit(check_cli_shape.COMMANDS, '"--model <id>", .description', '"--noColor", .description')
-        self.edit(check_cli_shape.CLI_ASK, '"--model")', '"--noColor")')
-        self.edit(check_cli_shape.CLI_ASK, '"--model=")', '"--noColor=")')
         self.assertOnly(self.run_check(), "flags", '"--noColor" must be kebab-case')
 
     def test_value_inside_flag_name_fails_until_excepted_and_exception_goes_stale(self) -> None:
@@ -192,20 +193,21 @@ class CheckCliShapeTests(unittest.TestCase):
         self.edit(check_cli_shape.COMMANDS, ", --resume-<id>", "")
         self.assertOnly(self.run_check(), "registry", 'flag_names "--resume-<id>" no longer matches')
 
-    def test_undocumented_ask_flag_fails(self) -> None:
-        self.edit(check_cli_shape.CLI_ASK, '"--json")) {}', '"--json")) {}\n        if (std.mem.eql(u8, arg, "--verbose")) {}')
-        problems = self.run_check()
-        self.assertOnly(problems, "help", "ask accepts --verbose")
-        self.registry["exceptions"]["undocumented_flags"]["ask --verbose"] = "internal"
-        self.assertEqual([], self.run_check())
-
-    def test_undocumented_global_flag_fails(self) -> None:
+    def test_hand_parsed_flag_fails_until_listed(self) -> None:
         self.edit(
             check_cli_shape.CLI_SURFACE,
-            '"--model")) {}',
-            '"--model")) {}\n        if (std.mem.eql(u8, arg, "--provider-order")) {}',
+            "    _ = &parser;\n",
+            '    _ = &parser;\n    if (std.mem.startsWith(u8, args[0], "--verbose=")) {}\n',
         )
-        self.assertOnly(self.run_check(), "help", "global accepts --provider-order")
+        problems = self.run_check()
+        self.assertOnly(problems, "parsing", "--verbose= is compared with an argument by hand")
+        self.assertEqual((check_cli_shape.CLI_SURFACE, 4), (problems[0].path, problems[0].number))
+        self.registry["hand_parsed_flags"]["--verbose="] = "a listed reason"
+        self.assertEqual([], self.run_check())
+
+    def test_stale_hand_parsed_entry_fails(self) -> None:
+        self.registry["hand_parsed_flags"]["--gone"] = "no longer compared"
+        self.assertOnly(self.run_check(), "registry", 'hand_parsed_flags lists "--gone"')
 
     def test_settings_keys_must_be_snake_case(self) -> None:
         self.edit(check_cli_shape.CONFIG_RUNTIME, '"model",\n', '"model",\n        "statusLine",\n')
@@ -237,13 +239,13 @@ class CheckCliShapeTests(unittest.TestCase):
         self.assertEqual([], self.run_check())
 
     def test_missing_parser_is_a_source_error(self) -> None:
-        self.edit(check_cli_shape.CLI_ASK, "fn parseOptionsWithStdin(", "fn parseOptionsRenamed(")
+        self.edit(check_cli_shape.CONFIG_RUNTIME, "fn parseProfileOnlyFields(", "fn parseProfileRenamed(")
         self.run_check_files_only()
         stdout, stderr = io.StringIO(), io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
             code = check_cli_shape.main(["--root", str(self.root)])
         self.assertEqual(2, code)
-        self.assertIn("cannot find fn parseOptionsWithStdin", stderr.getvalue())
+        self.assertIn("cannot find fn parseProfileOnlyFields", stderr.getvalue())
 
     def run_check_files_only(self) -> None:
         try:

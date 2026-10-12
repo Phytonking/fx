@@ -12,7 +12,7 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 | `fx session resume [last\|<id>]` | Same, as the full command | Keep |
 | `fx ask --resume <last\|id>` | Same, for one-shot runs | Keep |
 | `/resume` | Inside a session | Keep |
-| `fx --resume-last`, `fx --resume-<id>`, hidden `fx resume`, the `--id <id>` forms, `fx ask --resume-id`, `--resume --last` | Duplicates of the above | Being removed |
+| `fx --resume-last`, `fx --resume-<id>`, hidden `fx resume`, the `--id <id>` forms, `fx ask --resume-id`, `--resume --last` | Duplicates of the above | Removed. Each fails with exit 2 and names its replacement. `fx resume <id> --upgrade-relaunch` stays as the internal restart after an upgrade |
 
 "Newest" includes sessions `fx ask` created; "where I left off" doesn't, because `fx ask` never records the remembered session.
 

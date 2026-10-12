@@ -78,11 +78,11 @@ Flags and env vars never save. Every effective value should be able to report it
 ## Flags
 
 - Long flags are kebab-case. Short flags are scarce and keep one meaning: `-h` help, `-v` version, `-c` continue, `-r` resume picker. Because `-c` is taken, git's `-c key=value` can't be copied.
-- `--x value` and `--x=value` both work on every command. Today the global launch parser accepts `--model=x` and `fx ask` rejects it.
+- `--x value` and `--x=value` both work on every command. The shared parser in `src/core/cli/cli_flags.zig` provides both.
 - A boolean pairs `--x` with `--no-x`.
-- When a flag repeats or conflicts, the last one wins, on every command. `--fast --no-fast` means Fast mode off; `--fast --ultrafast` means Ultra mode. Today `fx ask` and the global parser reject these conflicts; the target removes those errors.
-- An enum is one flag that takes the value: `--permission-mode <ask|auto|full-access>`. Shortcut aliases stay: `--auto`, `--full-access`, `--yolo`, plus `--ask`. Today only the shortcuts exist, and only on `fx ask`, `fx pr`, and `fx issue`.
-- No flag carries a value in its name. `--resume-<id>` is being removed.
+- When a flag repeats or conflicts, the last one wins, on every command. `--fast --no-fast` means Fast mode off; `--fast --ultrafast` means Ultra mode. Every command follows this.
+- An enum is one flag that takes the value: `--permission-mode <ask|auto|full-access>`. Shortcut aliases stay: `--auto`, `--full-access`, `--yolo`, plus `--ask`. Plain `fx` and `fx ask` take the whole set; `fx acp` doesn't yet, and `fx pr` and `fx issue` take only `--auto`.
+- No flag carries a value in its name. `--resume-<id>` was removed and fails with a hint naming `--resume <id>`.
 - A flag affects only the run it's on and never saves anything. Today `fx upgrade --channel` saves the channel; the target makes it apply to that upgrade only. That change waits for `fx config set update_channel` and a rule for one-off channels, because auto-upgrade reinstalls whenever the running build's channel differs from the saved one.
 - Agent-run flags form one shared set: `--model`, `--provider`, `--effort`, `--fast`/`--no-fast`, `--ultrafast`/`--no-ultrafast`, `--provider-order`, `--provider-strict`/`--no-provider-strict`, and `--permission-mode` with its shortcuts. Every command that runs the agent accepts the whole set after the subcommand: `fx ask`, `fx acp`, `fx pr`, `fx issue`, `fx session resume`. Plain `fx` takes them directly, as do `fx -c`, `fx -r`, and `fx --resume`. Today `fx acp` lacks most of the set.
 - Before the subcommand go only launch-wide flags: `--add-dir`, `--no-additional-dirs`, `--context-limit`. Agent-run flags before a subcommand stay an error whose message shows the corrected command.
@@ -132,8 +132,8 @@ Each env var has one job and that job's namespace:
 - Results go to stdout; progress and diagnostics go to stderr.
 - Every command that prints data accepts `--json`. Failures share one shape: `{"kind": ..., "error": ..., "code": ...}`, as `fx session last --json` already does.
 - JSON fields are only added. If a shape must change, the new shape is opt-in behind a versioned flag such as `--json=v2`, following git's `--porcelain=v2`. Don't add a `schema_version` field. Commands such as `fx status`, `fx sessions`, and `fx session` already name their JSON shape with `kind`.
-- Exit codes: 0 for success, 1 when the work fails, 2 when the command line is wrong. Today every failure exits 1.
-- An error says what happened, which input caused it, and what to do, and suggests the closest match for a typo. Today an unknown command prints the full help, and a flag error prints only the usage line.
+- Exit codes: 0 for success, 1 when the work fails, 2 when the command line is wrong. `output_contracts.usage_exit_code` is the 2.
+- An error says what happened, which input caused it, and what to do, and suggests the closest match for a typo. A flag error names the flag and the closest documented flag, such as `fx status: unknown flag --jsno (did you mean --json?)`. Today an unknown command, including a mistyped global flag such as `fx --modle`, still prints the full help.
 - fx never prompts without a terminal. It fails with a message naming the flag that avoids the prompt.
 
 ## Experiments
@@ -151,7 +151,7 @@ Each env var has one job and that job's namespace:
 
 ## One source of truth
 
-- The command specs in `src/builtins/commands.zig` already drive help. The target extends them with a flag schema (name, value type, repeatable, negatable, placement, aliases, stability) so one parser replaces the hand-written comparisons in `cli_surface.zig` and `cli_ask.zig`.
+- The command specs in `src/builtins/commands.zig` drive both help and parsing: each command's `OptionDoc` list is what `cli_flags.Parser` reads. The target adds value types, placement, and stability to those entries so completion and the fx.sh tables can come from the same lists.
 - The target adds a settings registry: key, type, default, scopes, project-safe or not, env var, flag, slash command, JSON field, libfx and ACP name, stability. Parsing, help, the fx.sh tables, `fx completion <shell>`, a JSON Schema for settings files, and libfx and ACP names all come from it.
 - CI is to fail when code reads an `FX_*` env var, accepts a flag, or parses a setting that the registries don't list.
 - A new top-level command, a new stable env var, or a new project-safe setting needs a maintainer's explicit approval in the PR.
