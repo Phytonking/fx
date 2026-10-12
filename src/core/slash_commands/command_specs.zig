@@ -1638,7 +1638,7 @@ test "rendered top-level help is a complete CLI navigation page" {
     try std.testing.expect(std.mem.find(u8, text, "-r") != null);
     try std.testing.expect(std.mem.find(u8, text, "-c, -r, --continue") == null);
     try std.testing.expect(std.mem.find(u8, text, "--resume [last|<id>]") != null);
-    try std.testing.expect(std.mem.find(u8, text, "--resume-last") != null);
+    try std.testing.expect(std.mem.find(u8, text, "--resume-last") == null);
     try std.testing.expect(std.mem.find(u8, text, "-v, --version") != null);
     try std.testing.expect(std.mem.find(u8, text, "Must appear before the command. Accepted names:") == null);
     try std.testing.expect(std.mem.find(u8, text, "skill_description_bytes, skill_catalog_bytes") == null);
@@ -1701,7 +1701,7 @@ test "top-level help renders flags as compact aligned rows" {
     try std.testing.expect(lineContainsBoth(wide, "-c, --continue", "Resume the remembered workspace session"));
     try std.testing.expect(lineContainsBoth(wide, "-r", "Open the saved-session picker"));
     try std.testing.expect(lineContainsBoth(wide, "--resume [last|<id>]", "Resume the latest workspace session or an exact ID"));
-    try std.testing.expect(lineContainsBoth(wide, "--resume-last", "Resume the latest workspace session"));
+    try std.testing.expect(lineContainsBoth(wide, "--resume [last|<id>]", "Resume"));
     try std.testing.expect(std.mem.find(u8, wide, "Print the fx version and exit\n\nExamples:") != null);
     try std.testing.expect(std.mem.find(u8, wide, "List available models\n\n  setup") != null);
     try std.testing.expect(std.mem.find(u8, wide, "Show Vercel AI Gateway credits\n\n  usage") != null);

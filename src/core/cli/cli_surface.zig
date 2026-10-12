@@ -5039,7 +5039,7 @@ test "parseInteractiveLaunch shares native resume grammar" {
         .{ .args = &.{ @constCast("--resume"), @constCast("last") }, .expected_id = null },
         .{ .args = &.{ @constCast("--resume"), @constCast("session-123") }, .expected_id = "session-123" },
         .{ .args = &.{ @constCast("session"), @constCast("resume"), @constCast("last") }, .expected_id = null },
-        .{ .args = &.{ @constCast("session"), @constCast("resume"), @constCast("--id"), @constCast("session.v3") }, .expected_id = "session.v3" },
+        .{ .args = &.{ @constCast("session"), @constCast("resume"), @constCast("session.v3") }, .expected_id = "session.v3" },
     };
     for (cases) |case| {
         const parsed = try parseInteractiveLaunch(alloc, case.args, command_catalog);
@@ -5649,7 +5649,7 @@ test "runIfRequested resume no args returns last target" {
     var capture = CaptureOutput.init(std.testing.allocator);
     defer capture.deinit();
 
-    const result = try runIfRequestedWithDeps(std.testing.allocator, &.{@constCast("resume")}, testConfig(), capture.deps());
+    const result = try runIfRequestedWithDeps(std.testing.allocator, &.{ @constCast("session"), @constCast("resume") }, testConfig(), capture.deps());
     switch (result) {
         .interactive => |launch| try std.testing.expectEqual(ResumeTarget.last, launch.requested_resume.?),
         else => return error.TestExpectedEqual,
@@ -5780,7 +5780,7 @@ test "runIfRequested resume id returns owned id" {
     var capture = CaptureOutput.init(std.testing.allocator);
     defer capture.deinit();
 
-    const result = try runIfRequestedWithDeps(std.testing.allocator, &.{ @constCast("resume"), @constCast("abc123") }, testConfig(), capture.deps());
+    const result = try runIfRequestedWithDeps(std.testing.allocator, &.{ @constCast("--resume"), @constCast("abc123") }, testConfig(), capture.deps());
     switch (result) {
         .interactive => |launch_value| {
             var launch = launch_value;
