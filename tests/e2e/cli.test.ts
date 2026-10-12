@@ -505,7 +505,7 @@ With --prompt-permissions, JSON and quiet requests may prompt on stderr only whe
     async () => {
       for (const args of [["--bogus"], ["--model"], ["--log-file"]]) {
         const result = await runFx(["acp", ...args]);
-        expect(result.code).toBe(1);
+        expect(result.code).toBe(2);
         expect(result.stdout).toBe("");
         expect(result.stderr).toBe(
           "usage: fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]\n",
@@ -3054,17 +3054,20 @@ describe("cli: sessions", () => {
         const cases: Array<{
           args: string[];
           kind: string;
+          code: number;
           expectedError?: string;
         }> = [
-          { args: ["session", "last", "--json"], kind: "session" },
+          { args: ["session", "last", "--json"], kind: "session", code: 1 },
           {
             args: ["ask", "--json"],
             kind: "ask",
+            code: 2,
             expectedError: "MissingPrompt",
           },
           {
             args: ["ask", "--json", "--no-save", "--resume", "last", "hello"],
             kind: "ask",
+            code: 2,
             expectedError: "InvalidAskArgs",
           },
         ];
@@ -3075,7 +3078,7 @@ describe("cli: sessions", () => {
             env: { HOME: home, ...NO_GATEWAY_AUTH },
             timeoutMs: TIMEOUT,
           });
-          expect(result.code).toBe(1);
+          expect(result.code).toBe(item.code);
           expect(result.stdout.trim().length).toBeGreaterThan(0);
           const parsed = JSON.parse(result.stdout.trim());
           expect(parsed.kind ?? item.kind).toBe(item.kind);
@@ -3096,7 +3099,7 @@ describe("cli: removed task and background commands", () => {
     async () => {
       for (const command of ["task", "tasks", "background"]) {
         const result = await runFx([command], { env: NO_GATEWAY_AUTH });
-        expect(result.code).toBe(1);
+        expect(result.code).toBe(2);
         expect(`${result.stdout}\n${result.stderr}`).toContain("unknown subcommand");
       }
     },
@@ -4905,7 +4908,7 @@ describe("cli: error handling", () => {
           env,
           timeoutMs: TIMEOUT,
         });
-        expect(rejected.code).toBe(1);
+        expect(rejected.code).toBe(2);
         expect(rejected.stderr).toContain("usage: fx ask");
         expect(gateway.requests).toHaveLength(0);
 
@@ -4941,20 +4944,20 @@ describe("cli: error handling", () => {
   );
 
   test(
-    "fx ask with no prompt exits 1",
+    "fx ask with no prompt exits 2",
     async () => {
       const r = await runFx(["ask"]);
-      expect(r.code).toBe(1);
+      expect(r.code).toBe(2);
       expect(r.stderr).toContain("missing prompt");
     },
     TIMEOUT,
   );
 
   test(
-    "fx unknown-command exits 1",
+    "fx unknown-command exits 2",
     async () => {
       const r = await runFx(["unknown-command"]);
-      expect(r.code).toBe(1);
+      expect(r.code).toBe(2);
     },
     TIMEOUT,
   );
@@ -4988,7 +4991,7 @@ describe("cli: error handling", () => {
             env,
             timeoutMs: TIMEOUT,
           });
-          expect(rejected.code).toBe(1);
+          expect(rejected.code).toBe(2);
           expect(rejected.stdout).toBe("");
           expect(rejected.stderr).toContain(
             "fx ask: --no-save cannot be used with --resume or --resume-id",
@@ -5024,7 +5027,7 @@ describe("cli: workspace access", () => {
       expect(help.stderr).toBe("");
 
       const missing = await runFx(["--add-dir"], { env: enabled });
-      expect(missing.code).toBe(1);
+      expect(missing.code).toBe(2);
       expect(missing.stderr).toContain("--add-dir requires a directory path");
       expect(missing.stderr).not.toContain("MissingAddDirectoryValue");
 
@@ -5032,7 +5035,7 @@ describe("cli: workspace access", () => {
         ["--no-additional-dirs", "--no-additional-dirs"],
         { env: enabled },
       );
-      expect(duplicate.code).toBe(1);
+      expect(duplicate.code).toBe(2);
       expect(duplicate.stderr).toContain(
         "--no-additional-dirs may only be specified once",
       );
@@ -5510,7 +5513,7 @@ describe("cli: MCP profile add", () => {
       const missingAuthName = await runFx(["mcp", "auth"], {
         env: { HOME: home, ...NO_GATEWAY_AUTH },
       });
-      expect(missingAuthName.code).toBe(1);
+      expect(missingAuthName.code).toBe(2);
       expect(missingAuthName.stderr).toBe("usage: fx mcp auth NAME\n");
       expect(existsSync(marker)).toBe(false);
       expect(local.code).toBe(0);

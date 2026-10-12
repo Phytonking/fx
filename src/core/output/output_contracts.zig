@@ -37,6 +37,11 @@ pub const OutputFormat = enum {
     json,
 };
 
+/// Process exit status when the command line itself is wrong: an unknown
+/// command, an unknown or invalid flag, or a missing or bad argument. Work
+/// that fails after the command line is accepted exits 1.
+pub const usage_exit_code: u8 = 2;
+
 pub const CommandFailureSnapshot = struct {
     kind: []const u8,
     message: []const u8,

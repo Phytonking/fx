@@ -39,6 +39,7 @@ const compactor = @import("../compactor/compactor.zig");
 const config_runtime = @import("../config/config_runtime.zig");
 const model_capabilities = @import("../config/model_capabilities.zig");
 const model_provider = @import("../config/model_provider.zig");
+const output_contracts = @import("../output/output_contracts.zig");
 const mcp_elicitation_interaction = @import("../mcp/elicitation_interaction.zig");
 const mcp_elicitation = @import("../mcp/elicitation.zig");
 const mcp_access_policy = @import("../mcp/access_policy.zig");
@@ -1394,22 +1395,22 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
                 const json = try renderErrorJsonResult(alloc, @errorName(err));
                 defer alloc.free(json);
                 try deps.write_stdout(deps.stdout_ctx, json);
-                return 1;
+                return output_contracts.usage_exit_code;
             }
             try deps.write_stderr(deps.stderr_ctx, "fx ask: missing prompt\n");
             try writeAskUsage(deps, cfg.command_usage);
-            return 1;
+            return output_contracts.usage_exit_code;
         },
         error.NoSaveResumeConflict => {
             if (hasJsonFlag(args)) {
                 const json = try renderErrorJsonResult(alloc, "InvalidAskArgs");
                 defer alloc.free(json);
                 try deps.write_stdout(deps.stdout_ctx, json);
-                return 1;
+                return output_contracts.usage_exit_code;
             }
             try deps.write_stderr(deps.stderr_ctx, "fx ask: --no-save cannot be used with --resume or --resume-id\n");
             try writeAskUsage(deps, cfg.command_usage);
-            return 1;
+            return output_contracts.usage_exit_code;
         },
         error.PromptResourceLimitExceeded => {
             if (hasJsonFlag(args)) {
@@ -1436,10 +1437,10 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
                 const json = try renderErrorJsonResult(alloc, @errorName(err));
                 defer alloc.free(json);
                 try deps.write_stdout(deps.stdout_ctx, json);
-                return 1;
+                return output_contracts.usage_exit_code;
             }
             try writeAskUsage(deps, cfg.command_usage);
-            return 1;
+            return output_contracts.usage_exit_code;
         },
         error.InvalidPromptText => {
             if (hasJsonFlag(args)) {

@@ -441,7 +441,8 @@ fn replyParseError(
         Error.MissingFramesDirPath => "fx replay: --frames-dir requires a path\n",
         else => "fx replay: argument error\n",
     };
-    return replyError(alloc, output, json, @errorName(err), msg);
+    _ = try replyError(alloc, output, json, @errorName(err), msg);
+    return output_contracts.usage_exit_code;
 }
 
 fn argsContainJson(args: []const [:0]const u8) bool {
@@ -861,7 +862,7 @@ test "run missing tape path returns current stderr" {
     defer capture.deinit();
 
     const exit_code = try runCaptured(alloc, &.{}, &capture);
-    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expectEqual(output_contracts.usage_exit_code, exit_code);
     try testing.expect(std.mem.startsWith(u8, capture.stderr.written(), "fx replay: missing tape path\n"));
 }
 
@@ -871,7 +872,7 @@ test "json failures use stdout for missing arguments files and malformed tapes" 
     var missing_arg = CaptureOutput.init(alloc);
     defer missing_arg.deinit();
     try testing.expectEqual(
-        @as(u8, 1),
+        output_contracts.usage_exit_code,
         try runCaptured(alloc, &.{"--json"}, &missing_arg),
     );
     try testing.expectEqual(@as(usize, 0), missing_arg.stderr.written().len);

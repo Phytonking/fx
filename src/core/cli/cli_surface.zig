@@ -207,6 +207,9 @@ pub const RunResult = union(enum) {
     handled_exit: u8,
 };
 
+/// Result for a command line fx can't accept; see `output_contracts.usage_exit_code`.
+const usage_failure: RunResult = .{ .handled_exit = output_contracts.usage_exit_code };
+
 const version_usage = "usage: fx --version\n";
 
 pub const Config = struct {
@@ -1046,7 +1049,7 @@ fn runIfRequestedWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Con
     const parsed_launch = parseInteractiveLaunch(alloc, args, cfg.command_catalog) catch |err| {
         if (err == error.InvalidResumeArgs) {
             try writeTopLevelUsage(cfg.command_catalog, deps, .@"resume");
-            return .handled_failure;
+            return usage_failure;
         }
         var writer: std.Io.Writer.Allocating = .init(alloc);
         defer writer.deinit();
@@ -1057,7 +1060,7 @@ fn runIfRequestedWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Con
         }
         try writer.writer.writeAll("usage: fx [--context-limit NAME=BYTES|off] [--add-dir PATH]... [--no-additional-dirs] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] <command>\n");
         try writeStderr(deps, writer.written());
-        return .handled_failure;
+        return usage_failure;
     };
     switch (parsed_launch) {
         .interactive => |launch| {
@@ -1102,7 +1105,7 @@ fn runNonInteractiveWithDeps(
     if (isVersionFlag(effective_args[0])) {
         if (effective_args.len != 1) {
             try writeStderr(deps, version_usage);
-            return .handled_failure;
+            return usage_failure;
         }
         try writeStdout(deps, cfg.version);
         try writeStdout(deps, "\n");
@@ -1126,12 +1129,12 @@ fn runNonInteractiveWithDeps(
         .ask => |rest| {
             try writeMcpProfileWarningIfPresent(alloc, cfg, deps);
             const exit_code = try cli_ask.run(alloc, rest, workflowConfigWithLaunchModifiers(cfg, global_args.modifiers), cfg.context_registry, cfg.tool_set);
-            return if (exit_code == 0) .handled_success else .handled_failure;
+            return if (exit_code == 0) .handled_success else .{ .handled_exit = exit_code };
         },
         .acp => |rest| {
             const acp_opts = parseAcpArgs(rest) catch {
                 try writeStderr(deps, "usage: fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]\n");
-                return .handled_failure;
+                return usage_failure;
             };
             try cfg.acp_runner.run(alloc, .{
                 .auth_mode = cfg.auth_mode,
@@ -1169,7 +1172,7 @@ fn runNonInteractiveWithDeps(
         .login => |rest| {
             const maybe_login_provider = parseLoginProvider(rest) catch {
                 try writeStderr(deps, "usage: fx login [vercel|codex|grok]\n");
-                return .handled_failure;
+                return usage_failure;
             };
             if (cfg.auth_mode == .host_managed) {
                 try writeHostManagedAuthResult(deps);
@@ -1200,7 +1203,7 @@ fn runNonInteractiveWithDeps(
         .logout => |rest| {
             const maybe_login_provider = parseLoginProvider(rest) catch {
                 try writeStderr(deps, "usage: fx logout [vercel|codex|grok]\n");
-                return .handled_failure;
+                return usage_failure;
             };
             if (cfg.auth_mode == .host_managed) {
                 try writeHostManagedAuthResult(deps);
@@ -1293,7 +1296,7 @@ fn runNonInteractiveWithDeps(
         .teams => |rest| {
             if (rest.len != 0) {
                 try writeStderr(deps, "usage: fx teams\n");
-                return .handled_failure;
+                return usage_failure;
             }
             if (cfg.auth_mode == .host_managed) {
                 try writeHostManagedAuthResult(deps);
@@ -1333,7 +1336,7 @@ fn runNonInteractiveWithDeps(
         .provider => |rest| {
             if (rest.len != 1) {
                 try writeStderr(deps, "usage: fx provider <name>\n");
-                return .handled_failure;
+                return usage_failure;
             }
             const target = model_provider.parse(rest[0]) orelse {
                 try writeStderr(deps, "fx provider: expected gateway, codex, grok, or a configured name\n");
@@ -1347,7 +1350,7 @@ fn runNonInteractiveWithDeps(
         .setup => |rest| {
             if (rest.len != 0) {
                 try writeTopLevelUsage(cfg.command_catalog, deps, .setup);
-                return .handled_failure;
+                return usage_failure;
             }
             if (cfg.auth_mode == .host_managed) {
                 try writeHostManagedAuthResult(deps);
@@ -1358,7 +1361,7 @@ fn runNonInteractiveWithDeps(
         .status => |rest| {
             const opts = parseLocalSurfaceArgs(rest) catch |err| {
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .status, "status", err, rest);
-                return .handled_failure;
+                return usage_failure;
             };
             var startup = if (cfg.auth_mode == .host_managed)
                 try deps.load_startup_status_with_auth_mode(
@@ -1404,7 +1407,7 @@ fn runNonInteractiveWithDeps(
         .permissions => |rest| {
             const opts = parseLocalSurfaceArgs(rest) catch |err| {
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .permissions, "permissions", err, rest);
-                return .handled_failure;
+                return usage_failure;
             };
             var startup = try deps.load_startup_state_without_credentials(alloc, cfg.default_model, cfg.default_agent_step_limit);
             defer startup.deinit(alloc);
@@ -1432,7 +1435,7 @@ fn runNonInteractiveWithDeps(
             }
             const opts = slack_install.parse(rest) catch |err| {
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .slack, "slack", err, rest);
-                return .handled_failure;
+                return usage_failure;
             };
             var arena: std.heap.ArenaAllocator = .init(alloc);
             defer arena.deinit();
@@ -1451,7 +1454,7 @@ fn runNonInteractiveWithDeps(
         .models => |rest| {
             const opts = parseLocalSurfaceArgs(rest) catch |err| {
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .models, "models", err, rest);
-                return .handled_failure;
+                return usage_failure;
             };
 
             var startup = if (cfg.auth_mode == .host_managed)
@@ -1542,7 +1545,7 @@ fn runNonInteractiveWithDeps(
         .doctor => |rest| {
             const opts = parseLocalSurfaceArgs(rest) catch |err| {
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .doctor, "doctor", err, rest);
-                return .handled_failure;
+                return usage_failure;
             };
 
             const workspace_root = try io_mod.realpathAlloc(alloc, ".");
@@ -1589,7 +1592,7 @@ fn runNonInteractiveWithDeps(
                         err,
                         rest[1..],
                     );
-                    return .handled_failure;
+                    return usage_failure;
                 };
                 defer recovery.deinit(alloc);
                 if (sessions_v2) return runSessionRecoveryV2(alloc, deps, recovery);
@@ -1631,7 +1634,7 @@ fn runNonInteractiveWithDeps(
             if (rest.len > 0 and std.mem.eql(u8, rest[0], "migrate")) {
                 var migration = parseSessionMigrationArgs(alloc, rest[1..]) catch |err| {
                     try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .session, "session", err, rest[1..]);
-                    return .handled_failure;
+                    return usage_failure;
                 };
                 defer migration.deinit(alloc);
                 if (sessions_v2) {
@@ -1667,13 +1670,13 @@ fn runNonInteractiveWithDeps(
 
             var opts = parseSessionDetailArgs(alloc, rest) catch |err| {
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .session, "session", err, rest);
-                return .handled_failure;
+                return usage_failure;
             };
             defer opts.deinit(alloc);
 
             const target = opts.target orelse {
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .session, "session", error.InvalidSessionDetailArgs, rest);
-                return .handled_failure;
+                return usage_failure;
             };
             if (sessions_v2) return runSessionDetailV2(alloc, deps, target, opts.format);
 
@@ -1722,7 +1725,7 @@ fn runNonInteractiveWithDeps(
         .sessions => |rest| {
             const opts = parseSessionListArgs(rest) catch |err| {
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .sessions, "sessions", err, rest);
-                return .handled_failure;
+                return usage_failure;
             };
             if (sessions_v2) return runSessionListV2(alloc, deps, opts);
 
@@ -1748,7 +1751,7 @@ fn runNonInteractiveWithDeps(
         .workspace => |rest| {
             const opts = parseWorkspaceArgs(rest) catch |err| {
                 try writeWorkspaceCommandError(alloc, cfg.command_catalog, deps, rest, err);
-                return .handled_failure;
+                return usage_failure;
             };
             var startup = deps.load_startup_state_without_credentials(
                 alloc,
@@ -1803,7 +1806,7 @@ fn runNonInteractiveWithDeps(
         .credits => |rest| {
             const opts = parseLocalSurfaceArgs(rest) catch |err| {
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .credits, "credits", err, rest);
-                return .handled_failure;
+                return usage_failure;
             };
             var startup = if (cfg.auth_mode == .host_managed)
                 try deps.load_startup_state_with_auth_mode(
@@ -1854,7 +1857,7 @@ fn runNonInteractiveWithDeps(
         .usage => |rest| {
             const opts = parseUsageArgs(rest) catch |err| {
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .usage, "usage", err, rest);
-                return .handled_failure;
+                return usage_failure;
             };
             // A relative $HOME counts as unset, as everywhere else in fx.
             const home = deps.getenv(deps.env_ctx, "HOME") orelse "";
@@ -1908,7 +1911,7 @@ fn runNonInteractiveWithDeps(
             const upgrade_runtime = @import("../upgrade/upgrade_runtime.zig");
             const opts = parseUpgradeArgs(rest) catch |err| {
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .upgrade, "upgrade", err, rest);
-                return .handled_failure;
+                return usage_failure;
             };
 
             var startup = deps.load_startup_state_without_credentials(
@@ -1962,7 +1965,7 @@ fn runNonInteractiveWithDeps(
         },
         .replay => |rest| {
             const exit_code = try cli_replay.run(alloc, rest);
-            return if (exit_code == 0) .handled_success else .handled_failure;
+            return if (exit_code == 0) .handled_success else .{ .handled_exit = exit_code };
         },
         .unknown => |command| {
             try writeStderr(deps, "fx: unknown subcommand: ");
@@ -2448,7 +2451,7 @@ fn runTopLevelMcp(
             } else {
                 try writeMcpOperationFailure(alloc, deps, "add", err);
             }
-            return .handled_failure;
+            return usage_failure;
         };
         var result = cfg.add_mcp_profile_server(alloc, intent) catch |err| {
             try writeMcpOperationFailure(alloc, deps, "add", err);
@@ -2475,7 +2478,7 @@ fn runTopLevelMcp(
     if (std.mem.eql(u8, operation, "trust")) {
         const action = parseTopLevelProjectMcpAction(rest[1..]) catch {
             try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
-            return .handled_failure;
+            return usage_failure;
         };
         const workspace_root = io_mod.realpathAlloc(alloc, ".") catch |err| {
             try writeMcpOperationFailure(alloc, deps, "trust", err);
@@ -2501,7 +2504,7 @@ fn runTopLevelMcp(
     if (std.mem.eql(u8, operation, "path")) {
         if (rest.len != 1) {
             try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
-            return .handled_failure;
+            return usage_failure;
         }
         const home = deps.getenv(deps.env_ctx, "HOME") orelse {
             try writeMcpOperationFailure(alloc, deps, "path", error.HomeNotSet);
@@ -2518,7 +2521,7 @@ fn runTopLevelMcp(
     if (std.mem.eql(u8, operation, "remove")) {
         if (rest.len != 2 or rest[1].len == 0) {
             try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
-            return .handled_failure;
+            return usage_failure;
         }
         var result = cfg.remove_mcp_profile_server(alloc, rest[1]) catch |err| {
             try writeMcpOperationFailure(alloc, deps, "remove", err);
@@ -2551,7 +2554,7 @@ fn runTopLevelMcp(
     if (std.mem.eql(u8, operation, "list")) {
         const list_args = parseMcpListArgs(rest[1..]) orelse {
             try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
-            return .handled_failure;
+            return usage_failure;
         };
         var loaded = loadMcpCommandRuntime(alloc, cfg, deps) catch |err| {
             if (list_args.json) {
@@ -2584,14 +2587,14 @@ fn runTopLevelMcp(
     if (std.mem.eql(u8, operation, "auth")) {
         if (rest.len != 2 or rest[1].len == 0) {
             try writeStderr(deps, "usage: fx " ++ command_specs.mcp_auth_usage ++ "\n");
-            return .handled_failure;
+            return usage_failure;
         }
         return authenticateMcpCommand(alloc, rest[1], false, cfg, deps);
     }
     if (std.mem.eql(u8, operation, "logout")) {
         if (rest.len != 2 or rest[1].len == 0) {
             try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
-            return .handled_failure;
+            return usage_failure;
         }
         var loaded = loadMcpCommandRuntime(alloc, cfg, deps) catch |err| {
             try writeMcpOperationFailure(alloc, deps, "logout", err);
@@ -2637,7 +2640,7 @@ fn runTopLevelMcp(
     }
 
     try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
-    return .handled_failure;
+    return usage_failure;
 }
 
 /// `fx mcp` on MCP-v2: the verbs `/mcp` shares.
@@ -5314,7 +5317,7 @@ test "global workspace launch option errors use user-facing copy" {
         const deps = capture.deps();
 
         const result = try runIfRequestedWithDeps(std.testing.allocator, case.args, testConfig(), deps);
-        try std.testing.expectEqual(RunResult.handled_failure, result);
+        try std.testing.expectEqual(usage_failure, result);
         try std.testing.expectEqualStrings("", capture.stdout.written());
         try std.testing.expect(std.mem.startsWith(u8, capture.stderr.written(), case.expected));
         try std.testing.expect(std.mem.endsWith(u8, capture.stderr.written(), "<command>\n"));
@@ -5349,7 +5352,7 @@ test "runIfRequested version flags reject extra args" {
         defer capture.deinit();
 
         const result = try runIfRequestedWithDeps(std.testing.allocator, args, testConfig(), capture.deps());
-        try std.testing.expectEqual(RunResult.handled_failure, result);
+        try std.testing.expectEqual(usage_failure, result);
         try std.testing.expectEqualStrings("", capture.stdout.written());
         try std.testing.expectEqualStrings("usage: fx --version\n", capture.stderr.written());
     }
@@ -5602,7 +5605,7 @@ test "CLI surface uses the supplied command catalog for parsing usage and help" 
         cfg,
         usage_capture.deps(),
     );
-    try std.testing.expectEqual(RunResult.handled_failure, result);
+    try std.testing.expectEqual(usage_failure, result);
     try std.testing.expectEqualStrings("usage: fx start\n", usage_capture.stderr.written());
 }
 
@@ -5629,7 +5632,7 @@ test "runIfRequested invalid local flags write usage" {
     defer capture.deinit();
 
     const result = try runIfRequestedWithDeps(std.testing.allocator, &.{ @constCast("status"), @constCast("--wat") }, testConfig(), capture.deps());
-    try std.testing.expectEqual(RunResult.handled_failure, result);
+    try std.testing.expectEqual(usage_failure, result);
     try std.testing.expectEqualStrings("", capture.stdout.written());
     try std.testing.expectEqualStrings("usage: fx status [--json]\n", capture.stderr.written());
 }
@@ -5639,7 +5642,7 @@ test "runIfRequested invalid json local flags write json error" {
     defer capture.deinit();
 
     const result = try runIfRequestedWithDeps(std.testing.allocator, &.{ @constCast("status"), @constCast("--json"), @constCast("--wat") }, testConfig(), capture.deps());
-    try std.testing.expectEqual(RunResult.handled_failure, result);
+    try std.testing.expectEqual(usage_failure, result);
     try std.testing.expectEqualStrings("", capture.stderr.written());
     try std.testing.expect(std.mem.find(u8, capture.stdout.written(), "\"kind\":\"status\"") != null);
     try std.testing.expect(std.mem.find(u8, capture.stdout.written(), "\"code\":\"InvalidLocalSurfaceArgs\"") != null);
@@ -5682,7 +5685,7 @@ test "runIfRequested -r asks which session to resume" {
         testConfig(),
         extra_capture.deps(),
     );
-    try std.testing.expectEqual(RunResult.handled_failure, extra);
+    try std.testing.expectEqual(usage_failure, extra);
 }
 
 test "runIfRequested top-level resume aliases return the existing target" {
@@ -5785,7 +5788,7 @@ test "runIfRequested rejects malformed resume aliases with canonical usage" {
             testConfig(),
             capture.deps(),
         );
-        try std.testing.expectEqual(RunResult.handled_failure, result);
+        try std.testing.expectEqual(usage_failure, result);
         try std.testing.expectEqualStrings(
             "usage: fx session resume [last|<id>] | session resume --id <id> | --resume [last|<id>] | resume [last|<id>] | resume --id <id> | --resume-last | --continue | -c | -r | --resume-<id>\n",
             capture.stderr.written(),
@@ -5816,7 +5819,7 @@ test "runIfRequested invalid resume writes usage" {
     defer capture.deinit();
 
     const result = try runIfRequestedWithDeps(std.testing.allocator, &.{ @constCast("resume"), @constCast("a"), @constCast("b") }, testConfig(), capture.deps());
-    try std.testing.expectEqual(RunResult.handled_failure, result);
+    try std.testing.expectEqual(usage_failure, result);
     try std.testing.expectEqualStrings(
         "usage: fx session resume [last|<id>] | session resume --id <id> | --resume [last|<id>] | resume [last|<id>] | resume --id <id> | --resume-last | --continue | -c | -r | --resume-<id>\n",
         capture.stderr.written(),

@@ -6,6 +6,7 @@ const auto_upgrade = @import("../upgrade/auto_upgrade.zig");
 const acp_runner = @import("../cli/acp_runner.zig");
 const cli_surface = @import("../cli/cli_surface.zig");
 const config_runtime = @import("../config/config_runtime.zig");
+const output_contracts = @import("../output/output_contracts.zig");
 const credentials = @import("../auth/credentials.zig");
 const process_provider = @import("../execution/process_provider.zig");
 const gateway_provider = @import("../gateway/gateway_provider.zig");
@@ -164,7 +165,7 @@ fn runWithDeps(comptime App: type, alloc: Allocator, args: []const [:0]const u8,
 
 pub fn runBeforeInteractive(alloc: Allocator, args: []const [:0]const u8, cfg: Config) !BeforeInteractiveResult {
     const run_result = cli_surface.runIfRequested(alloc, args, cliSurfaceConfig(cfg)) catch |err| switch (err) {
-        error.UnknownCliCommand => return .{ .exit = 1 },
+        error.UnknownCliCommand => return .{ .exit = output_contracts.usage_exit_code },
         else => {
             tryWriteErrorMessage(.{}, err);
             return .{ .exit = 1 };
@@ -176,7 +177,7 @@ pub fn runBeforeInteractive(alloc: Allocator, args: []const [:0]const u8, cfg: C
 
 fn runBeforeInteractiveWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: RunDeps) !BeforeInteractiveResult {
     const run_result = deps.run_if_requested(deps.cli_ctx, alloc, args, cliSurfaceConfig(cfg)) catch |err| switch (err) {
-        error.UnknownCliCommand => return .{ .exit = 1 },
+        error.UnknownCliCommand => return .{ .exit = output_contracts.usage_exit_code },
         else => {
             tryWriteErrorMessage(deps, err);
             return .{ .exit = 1 };
