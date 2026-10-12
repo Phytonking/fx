@@ -20,6 +20,34 @@ const json_option = command_specs.OptionDoc{ .flag = "--json", .description = "E
 
 /// Options for `fx ask`. `cli_ask` parses against this list and its help is
 /// rendered from it, so the two can't disagree.
+/// Options for local commands that only take `--json`.
+pub const json_only_options = [_]command_specs.OptionDoc{json_option};
+
+pub const sessions_options = [_]command_specs.OptionDoc{
+    .{ .flag = "--all", .description = "List saved sessions across every workspace in this profile" },
+    .{ .flag = "--limit <1-100>", .description = "Set the maximum sessions returned per page" },
+    .{ .flag = "--cursor <cursor>", .description = "Continue from a prior sessions result" },
+    json_option,
+};
+
+pub const usage_options = [_]command_specs.OptionDoc{
+    .{ .flag = "--period <today|7d|month>", .description = "Select the period, in UTC days (default: month)" },
+    json_option,
+};
+
+pub const upgrade_options = [_]command_specs.OptionDoc{
+    .{ .flag = "--channel <stable|dev>", .description = "Select and remember the release channel" },
+    json_option,
+};
+
+pub const workspace_options = [_]command_specs.OptionDoc{
+    .{ .flag = "list", .description = "List the primary and additional directories (default)" },
+    .{ .flag = "add PATH", .description = "Persist an existing additional directory" },
+    .{ .flag = "remove PATH", .description = "Remove an additional directory" },
+    .{ .flag = "clear", .description = "Remove all additional directories" },
+    json_option,
+};
+
 pub const ask_options = [_]command_specs.OptionDoc{
     .{ .flag = "--permission-mode <mode>", .description = "Set the permission mode for this request: ask, auto, or full-access" },
     .{ .flag = "--ask", .description = "Ask before each action that needs permission" },
@@ -218,12 +246,7 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "sessions",
         .usage = "sessions [--all] [--limit <1-100>] [--cursor <cursor>] [--json]",
         .summary = "List saved sessions for the current workspace",
-        .options = &.{
-            .{ .flag = "--all", .description = "List saved sessions across every workspace in this profile" },
-            .{ .flag = "--limit <1-100>", .description = "Set the maximum sessions returned per page" },
-            .{ .flag = "--cursor <cursor>", .description = "Continue from a prior sessions result" },
-            json_option,
-        },
+        .options = &sessions_options,
     },
     .{
         .kind = .@"resume",
@@ -252,10 +275,7 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "usage",
         .usage = "usage [--period <today|7d|month>] [--json]",
         .summary = "Show your provider's usage and spend",
-        .options = &.{
-            .{ .flag = "--period <today|7d|month>", .description = "Select the period, in UTC days (default: month)" },
-            json_option,
-        },
+        .options = &usage_options,
         .details = &.{
             "With AI Gateway, reads its usage reports: with fx login, your spend on the team and your budget; with an API key, that key's spend.",
             "With Codex, reads your ChatGPT plan's limits and activity; with Grok, your plan's allowance and credits.",
@@ -267,10 +287,7 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "upgrade",
         .usage = "upgrade [--channel <stable|dev>] [--json]",
         .summary = "Upgrade 𝒇x on the selected release channel",
-        .options = &.{
-            .{ .flag = "--channel <stable|dev>", .description = "Select and remember the release channel" },
-            json_option,
-        },
+        .options = &upgrade_options,
     },
     .{
         .kind = .replay,
@@ -293,13 +310,7 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "workspace",
         .usage = "workspace [list|add PATH|remove PATH|clear] [--json]",
         .summary = "Manage additional workspace directories",
-        .options = &.{
-            .{ .flag = "list", .description = "List the primary and additional directories (default)" },
-            .{ .flag = "add PATH", .description = "Persist an existing additional directory" },
-            .{ .flag = "remove PATH", .description = "Remove an additional directory" },
-            .{ .flag = "clear", .description = "Remove all additional directories" },
-            json_option,
-        },
+        .options = &workspace_options,
         .details = &.{
             "Additional directories are stored for the current primary workspace.",
         },

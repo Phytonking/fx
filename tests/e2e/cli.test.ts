@@ -3973,6 +3973,39 @@ describe("cli: interactive startup", () => {
   );
 
   test(
+    "command flag errors name the flag and the last repeated flag wins",
+    async () => {
+      const failures: [string[], string][] = [
+        [["status", "--jsno"], "fx status: unknown flag --jsno (did you mean --json?)\nusage: fx status [--json]\n"],
+        [["sessions", "--limit"], "fx sessions: --limit needs a value\n"],
+        [["usage", "--perod", "7d"], "fx usage: unknown flag --perod (did you mean --period?)\n"],
+        [["workspace", "--json=1"], "fx workspace: --json doesn't take a value\n"],
+      ];
+      for (const [args, stderr] of failures) {
+        const home = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-flag-errors-")));
+        try {
+          const r = await runFx(args, { env: { HOME: home } });
+          expect(r.code).toBe(2);
+          expect(r.stdout).toBe("");
+          expect(r.stderr.startsWith(stderr)).toBe(true);
+        } finally {
+          rmSync(home, { recursive: true, force: true });
+        }
+      }
+
+      const home = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-flag-last-")));
+      try {
+        const r = await runFx(["sessions", "--limit=5", "--limit", "2", "--json", "--json"], { env: { HOME: home } });
+        expect(r.code).toBe(0);
+        expect(JSON.parse(r.stdout).kind).toBe("sessions");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
     "removed resume spellings exit two and name the replacement",
     async () => {
       const cases: [string[], string][] = [

@@ -2966,8 +2966,35 @@ fn writeUsageOrJsonError(
     if (argsContainJson(args)) {
         try writeCommandFailure(alloc, deps, output_kind, err, .json);
     } else {
+        try writeFlagFailure(alloc, deps, usage_kind, args);
         try writeTopLevelUsage(command_catalog, deps, usage_kind);
     }
+}
+
+/// The options a command's parser reads through `cli_flags`, so a usage
+/// error can say which flag was wrong. Commands with their own parser are
+/// absent.
+fn parsedOptions(kind: TopLevelKind) ?[]const command_specs.OptionDoc {
+    return switch (kind) {
+        .status, .doctor, .models, .permissions => &builtin_commands.json_only_options,
+        .sessions => &builtin_commands.sessions_options,
+        .usage => &builtin_commands.usage_options,
+        .upgrade => &builtin_commands.upgrade_options,
+        .workspace => &builtin_commands.workspace_options,
+        else => null,
+    };
+}
+
+/// Writes `fx <command>: <problem>` when a flag in `args` is malformed.
+fn writeFlagFailure(alloc: Allocator, deps: RunDeps, kind: TopLevelKind, args: anytype) !void {
+    const docs = parsedOptions(kind) orelse return;
+    const failure = cli_flags.firstFailure(docs, args) orelse return;
+    var writer: std.Io.Writer.Allocating = .init(alloc);
+    defer writer.deinit();
+    try writer.writer.print("fx {s}: ", .{@tagName(kind)});
+    try failure.write(&writer.writer);
+    try writer.writer.writeAll("\n");
+    try writeStderr(deps, writer.written());
 }
 
 fn writeUsageCommandFailure(
@@ -3015,6 +3042,7 @@ fn writeWorkspaceCommandError(
             try writeStderr(deps, "\n");
             return;
         }
+        try writeFlagFailure(alloc, deps, .workspace, args);
         try writeTopLevelUsage(command_catalog, deps, .workspace);
         return;
     }
@@ -3833,124 +3861,77 @@ test "ACP arguments accept an explicit ultrafast override" {
 
 fn parseLocalSurfaceArgs(args: []const [:0]const u8) !LocalSurfaceOptions {
     var options = LocalSurfaceOptions{};
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--json")) {
-            options.format = .json;
-            continue;
-        }
-        return error.InvalidLocalSurfaceArgs;
-    }
+    var parser: cli_flags.Parser = .init(&builtin_commands.json_only_options, args);
+    while (parser.next() catch return error.InvalidLocalSurfaceArgs) |item| switch (item) {
+        .positional => return error.InvalidLocalSurfaceArgs,
+        .option => options.format = .json,
+    };
     return options;
 }
+
+const UpgradeFlag = enum { channel, json };
+const upgrade_flag_ids = cli_flags.idTable(UpgradeFlag, &builtin_commands.upgrade_options);
 
 fn parseUpgradeArgs(args: []const [:0]const u8) !UpgradeOptions {
     var options = UpgradeOptions{};
-    var format_seen = false;
-    var channel_seen = false;
-    var index: usize = 0;
-    while (index < args.len) : (index += 1) {
-        const arg = args[index];
-        if (std.mem.eql(u8, arg, "--json")) {
-            if (format_seen) return error.InvalidUpgradeArgs;
-            format_seen = true;
-            options.format = .json;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--channel")) {
-            if (channel_seen or index + 1 >= args.len) return error.InvalidUpgradeArgs;
-            channel_seen = true;
-            index += 1;
-            options.channel = update_target.Channel.parse(args[index]) orelse
-                return error.InvalidUpgradeArgs;
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--channel=")) {
-            if (channel_seen) return error.InvalidUpgradeArgs;
-            channel_seen = true;
-            options.channel = update_target.Channel.parse(arg["--channel=".len..]) orelse
-                return error.InvalidUpgradeArgs;
-            continue;
-        }
-        return error.InvalidUpgradeArgs;
-    }
+    var parser: cli_flags.Parser = .init(&builtin_commands.upgrade_options, args);
+    while (parser.next() catch return error.InvalidUpgradeArgs) |item| switch (item) {
+        .positional => return error.InvalidUpgradeArgs,
+        .option => |match| switch (upgrade_flag_ids[match.index].?) {
+            .channel => options.channel = update_target.Channel.parse(match.value.?) orelse
+                return error.InvalidUpgradeArgs,
+            .json => options.format = .json,
+        },
+    };
     return options;
 }
+
+const SessionListFlag = enum { all, limit, cursor, json };
+const session_list_flag_ids = cli_flags.idTable(SessionListFlag, &builtin_commands.sessions_options);
 
 fn parseSessionListArgs(args: []const [:0]const u8) !SessionListOptions {
     var options = SessionListOptions{};
-    var format_seen = false;
-    var limit_seen = false;
-    var cursor_seen = false;
-    var scope_seen = false;
-    var index: usize = 0;
-    while (index < args.len) : (index += 1) {
-        const arg = args[index];
-        if (std.mem.eql(u8, arg, "--json")) {
-            if (format_seen) return error.InvalidLocalSurfaceArgs;
-            format_seen = true;
-            options.format = .json;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--all")) {
-            if (scope_seen) return error.InvalidLocalSurfaceArgs;
-            scope_seen = true;
-            options.scope = .all_workspaces;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--limit")) {
-            if (limit_seen or index + 1 >= args.len) return error.InvalidLocalSurfaceArgs;
-            limit_seen = true;
-            index += 1;
-            options.limit = std.fmt.parseUnsigned(usize, args[index], 10) catch
-                return error.InvalidLocalSurfaceArgs;
-            if (options.limit == 0 or
-                options.limit > session_store.session_list_max_limit)
-            {
-                return error.InvalidLocalSurfaceArgs;
-            }
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--cursor")) {
-            if (cursor_seen or index + 1 >= args.len) return error.InvalidLocalSurfaceArgs;
-            cursor_seen = true;
-            index += 1;
-            options.continuation = try parseSessionListCursor(args[index]);
-            continue;
-        }
-        return error.InvalidLocalSurfaceArgs;
-    }
+    var parser: cli_flags.Parser = .init(&builtin_commands.sessions_options, args);
+    while (parser.next() catch return error.InvalidLocalSurfaceArgs) |item| switch (item) {
+        .positional => return error.InvalidLocalSurfaceArgs,
+        .option => |match| switch (session_list_flag_ids[match.index].?) {
+            .all => options.scope = .all_workspaces,
+            .limit => {
+                options.limit = std.fmt.parseUnsigned(usize, match.value.?, 10) catch
+                    return error.InvalidLocalSurfaceArgs;
+                if (options.limit == 0 or options.limit > session_store.session_list_max_limit)
+                    return error.InvalidLocalSurfaceArgs;
+            },
+            .cursor => options.continuation = try parseSessionListCursor(match.value.?),
+            .json => options.format = .json,
+        },
+    };
     return options;
 }
 
+const UsageFlag = enum { period, json };
+const usage_flag_ids = cli_flags.idTable(UsageFlag, &builtin_commands.usage_options);
+
 fn parseUsageArgs(args: []const [:0]const u8) !UsageOptions {
     var options = UsageOptions{};
-    var period_seen = false;
-    var json_seen = false;
-    var index: usize = 0;
-    while (index < args.len) : (index += 1) {
-        const arg = args[index];
-        if (std.mem.eql(u8, arg, "--json")) {
-            if (json_seen) return error.InvalidUsageArgs;
-            json_seen = true;
-            options.format = .json;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--period")) {
-            if (period_seen or index + 1 >= args.len) return error.InvalidUsageArgs;
-            period_seen = true;
-            index += 1;
-            options.period = if (std.mem.eql(u8, args[index], "today"))
-                .today
-            else if (std.mem.eql(u8, args[index], "7d"))
-                .days_7
-            else if (std.mem.eql(u8, args[index], "month"))
-                .month
-            else
-                return error.InvalidUsageArgs;
-            continue;
-        }
-        return error.InvalidUsageArgs;
-    }
+    var parser: cli_flags.Parser = .init(&builtin_commands.usage_options, args);
+    while (parser.next() catch return error.InvalidUsageArgs) |item| switch (item) {
+        .positional => return error.InvalidUsageArgs,
+        .option => |match| switch (usage_flag_ids[match.index].?) {
+            .period => {
+                const period = match.value.?;
+                options.period = if (std.mem.eql(u8, period, "today"))
+                    .today
+                else if (std.mem.eql(u8, period, "7d"))
+                    .days_7
+                else if (std.mem.eql(u8, period, "month"))
+                    .month
+                else
+                    return error.InvalidUsageArgs;
+            },
+            .json => options.format = .json,
+        },
+    };
     return options;
 }
 
@@ -3990,16 +3971,16 @@ fn parseWorkspaceArgs(args: []const [:0]const u8) !WorkspaceOptions {
     var positional: [2][]const u8 = undefined;
     var positional_len: usize = 0;
     var options = WorkspaceOptions{};
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--json")) {
-            if (options.format == .json) return error.InvalidWorkspaceArgs;
-            options.format = .json;
-            continue;
-        }
-        if (positional_len >= positional.len) return error.InvalidWorkspaceArgs;
-        positional[positional_len] = arg;
-        positional_len += 1;
-    }
+    var parser: cli_flags.Parser = .init(&builtin_commands.workspace_options, args);
+    while (parser.next() catch return error.InvalidWorkspaceArgs) |item| switch (item) {
+        // `--json` is the only flag.
+        .option => options.format = .json,
+        .positional => |arg| {
+            if (positional_len >= positional.len) return error.InvalidWorkspaceArgs;
+            positional[positional_len] = arg;
+            positional_len += 1;
+        },
+    };
 
     if (positional_len == 0) return options;
     if (std.mem.eql(u8, positional[0], "list")) {
@@ -4323,18 +4304,24 @@ test "usage arguments accept today, 7d or 30d and one JSON flag" {
     });
     try std.testing.expectEqual(usage.Period.days_7, selected.period);
     try std.testing.expectEqual(usage.Period.today, (try parseUsageArgs(&.{ @constCast("--period"), @constCast("today") })).period);
+    // A repeated flag follows the shared parser: the last one wins.
+    try std.testing.expectEqual(usage.Period.days_7, (try parseUsageArgs(&.{ @constCast("--period"), @constCast("today"), @constCast("--period"), @constCast("7d") })).period);
     try std.testing.expectEqual(output_contracts.OutputFormat.json, selected.format);
 
     for ([_][]const [:0]const u8{
         &.{@constCast("--period")},
         &.{ @constCast("--period"), @constCast("session") },
         &.{ @constCast("--period"), @constCast("24h") },
-        &.{ @constCast("--period"), @constCast("today"), @constCast("--period"), @constCast("7d") },
-        &.{ @constCast("--json"), @constCast("--json") },
+        &.{@constCast("--period=")},
+        &.{@constCast("--json=1")},
         &.{@constCast("30d")},
     }) |invalid| {
         try std.testing.expectError(error.InvalidUsageArgs, parseUsageArgs(invalid));
     }
+
+    const last = try parseUsageArgs(&.{ "--period", "24h", "--period=7d", "--json", "--json" });
+    try std.testing.expectEqual(usage_report.Scope.days_7, last.scope);
+    try std.testing.expectEqual(output_contracts.OutputFormat.json, last.format);
 }
 
 test "global launch modifiers preserve repeatable context limits before the command" {
@@ -4713,10 +4700,8 @@ test "parse upgrade args accepts a remembered release channel" {
         error.InvalidUpgradeArgs,
         parseUpgradeArgs(&.{ @constCast("--channel"), @constCast("nightly") }),
     );
-    try std.testing.expectError(
-        error.InvalidUpgradeArgs,
-        parseUpgradeArgs(&.{ @constCast("--channel=dev"), @constCast("--channel=stable") }),
-    );
+    const last = try parseUpgradeArgs(&.{ "--channel=dev", "--channel", "stable" });
+    try std.testing.expectEqual(update_target.Channel.stable, last.channel.?);
 }
 
 test "parse session list args supports bounded canonical pagination" {
@@ -4739,10 +4724,9 @@ test "parse session list args supports bounded canonical pagination" {
     try std.testing.expectEqual(@as(i64, 20), paged.continuation.?.updated_at_ms);
     try std.testing.expectEqualStrings("session-a", paged.continuation.?.id);
 
-    try std.testing.expectError(
-        error.InvalidLocalSurfaceArgs,
-        parseSessionListArgs(&.{ @constCast("--all"), @constCast("--all") }),
-    );
+    const repeated = try parseSessionListArgs(&.{ "--all", "--all", "--limit=5", "--limit", "3" });
+    try std.testing.expectEqual(session_store.SessionListScope.all_workspaces, repeated.scope);
+    try std.testing.expectEqual(@as(usize, 3), repeated.limit);
     try std.testing.expectError(
         error.InvalidLocalSurfaceArgs,
         parseSessionListArgs(&.{ @constCast("--limit"), @constCast("0") }),

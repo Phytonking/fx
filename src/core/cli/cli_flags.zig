@@ -23,8 +23,9 @@ pub fn takesValue(doc: OptionDoc) bool {
 }
 
 /// Maps each entry of `docs` to the field of `Id` with the same name, where
-/// `--full-access` is `full_access`. The `--` entry maps to null. Compilation
-/// fails when a flag has no field or a field has no flag.
+/// `--full-access` is `full_access`. The `--` entry and entries that document
+/// a positional argument, such as `add PATH`, map to null. Compilation fails
+/// when a flag has no field or a field has no flag.
 pub fn idTable(comptime Id: type, comptime docs: []const OptionDoc) [docs.len]?Id {
     comptime {
         @setEvalBranchQuota(100_000);
@@ -32,7 +33,7 @@ pub fn idTable(comptime Id: type, comptime docs: []const OptionDoc) [docs.len]?I
         var used: [@typeInfo(Id).@"enum".field_names.len]bool = @splat(false);
         for (docs, 0..) |doc, index| {
             const name = flagName(doc);
-            if (std.mem.eql(u8, name, "--")) {
+            if (std.mem.eql(u8, name, "--") or name[0] != '-') {
                 table[index] = null;
                 continue;
             }
@@ -174,7 +175,7 @@ pub const Parser = struct {
         for (self.docs) |doc| {
             if (doc.replacement != null) continue;
             const candidate = flagName(doc);
-            if (std.mem.eql(u8, candidate, "--")) continue;
+            if (std.mem.eql(u8, candidate, "--") or candidate[0] != '-') continue;
             const distance = editDistance(name, candidate) orelse continue;
             if (distance < best_distance) {
                 best = candidate;
@@ -189,6 +190,13 @@ pub const Parser = struct {
         return error.InvalidFlag;
     }
 };
+
+/// Why `args` fail to parse against `docs`, or null when they parse.
+pub fn firstFailure(docs: []const OptionDoc, args: []const [:0]const u8) ?Failure {
+    var parser: Parser = .init(docs, args);
+    while (parser.next() catch return parser.failure) |_| {}
+    return null;
+}
 
 /// Levenshtein distance for names up to 64 bytes; null for longer names.
 pub fn editDistance(a: []const u8, b: []const u8) ?usize {
