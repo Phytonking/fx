@@ -34,7 +34,7 @@ pub const ParsedCommand = union(enum) {
     alias: []const u8,
     credits,
     paste,
-    fast,
+    fast: []const u8,
     ultrafast: []const u8,
     statusline: []const u8,
     notifications: []const u8,
@@ -74,7 +74,7 @@ pub const CommandHandlers = struct {
     handle_alias: *const fn (ctx: *anyopaque, rest: []const u8) anyerror!void,
     show_credits: *const fn (ctx: *anyopaque) anyerror!void,
     paste_clipboard: *const fn (ctx: *anyopaque) anyerror!void,
-    toggle_fast: *const fn (ctx: *anyopaque) anyerror!void,
+    handle_fast: *const fn (ctx: *anyopaque, rest: []const u8) anyerror!void,
     handle_ultrafast: *const fn (ctx: *anyopaque, rest: []const u8) anyerror!void,
     handle_statusline: *const fn (ctx: *anyopaque, rest: []const u8) anyerror!void,
     rename_session: *const fn (ctx: *anyopaque, rest: []const u8) anyerror!void,
@@ -120,7 +120,7 @@ fn parsedCommand(kind: SlashKind, payload: []const u8) ParsedCommand {
         .alias => .{ .alias = payload },
         .credits => .credits,
         .paste => .paste,
-        .fast => .fast,
+        .fast => .{ .fast = payload },
         .ultrafast => .{ .ultrafast = payload },
         .statusline => .{ .statusline = payload },
         .notifications => .{ .notifications = payload },
@@ -174,7 +174,7 @@ pub fn route(registry: SlashRegistry, handlers: *const CommandHandlers, cmd: []c
         .alias => |rest| try handlers.handle_alias(handlers.ctx, rest),
         .credits => try handlers.show_credits(handlers.ctx),
         .paste => try handlers.paste_clipboard(handlers.ctx),
-        .fast => try handlers.toggle_fast(handlers.ctx),
+        .fast => |rest| try handlers.handle_fast(handlers.ctx, rest),
         .ultrafast => |rest| try handlers.handle_ultrafast(handlers.ctx, rest),
         .statusline => |rest| try handlers.handle_statusline(handlers.ctx, rest),
         .notifications => |rest| try handlers.handle_notifications(handlers.ctx, rest),
@@ -287,8 +287,18 @@ test "parse recognizes exact no-payload commands" {
     try std.testing.expectEqual(ParsedCommand.credits, parse(testSlashRegistry(), "/credits"));
     try std.testing.expectEqual(ParsedCommand.credits, parse(testSlashRegistry(), "/balance"));
     try std.testing.expectEqual(ParsedCommand.paste, parse(testSlashRegistry(), "/paste"));
-    try std.testing.expectEqual(ParsedCommand.fast, parse(testSlashRegistry(), "/fast"));
     try std.testing.expectEqual(ParsedCommand.version, parse(testSlashRegistry(), "/version"));
+}
+
+test "parse extracts fast command payload" {
+    switch (parse(testSlashRegistry(), "/fast")) {
+        .fast => |rest| try std.testing.expectEqualStrings("", rest),
+        else => return error.TestExpectedEqual,
+    }
+    switch (parse(testSlashRegistry(), "/fast off")) {
+        .fast => |rest| try std.testing.expectEqualStrings("off", rest),
+        else => return error.TestExpectedEqual,
+    }
 }
 
 test "parse extracts ultrafast command payload" {
@@ -499,7 +509,7 @@ fn testHandlers(ctx: *TestContext) CommandHandlers {
         .handle_alias = unexpectedPayload,
         .show_credits = unexpectedNoPayload,
         .paste_clipboard = unexpectedNoPayload,
-        .toggle_fast = unexpectedNoPayload,
+        .handle_fast = unexpectedPayload,
         .handle_ultrafast = unexpectedPayload,
         .handle_statusline = unexpectedPayload,
         .rename_session = unexpectedPayload,

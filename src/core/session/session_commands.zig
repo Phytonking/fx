@@ -695,6 +695,25 @@ pub fn Commands(comptime App: type) type {
             try toggleFastForModel(app, provider_runtime.model(app), true);
         }
 
+        /// `/fast` toggles; `/fast on` and `/fast off` set the mode and are
+        /// idempotent. Turning it on still checks that the model supports it.
+        pub fn handleFast(app: *App, rest: []const u8) !void {
+            const command = std.mem.trim(u8, rest, " \t");
+            if (command.len == 0) return toggleFast(app);
+            if (std.ascii.eqlIgnoreCase(command, "on")) {
+                if (app.fast_mode) return applyFastMode(app, true, true, true);
+                return toggleFast(app);
+            }
+            if (std.ascii.eqlIgnoreCase(command, "off")) {
+                return applyFastMode(app, false, true, true);
+            }
+            try app.writeDomainNotice(.{
+                .topic = "",
+                .tone = .@"error",
+                .body = "usage: /fast [on|off]",
+            }, true);
+        }
+
         pub fn handleUltrafast(app: *App, rest: []const u8) !void {
             const command = std.mem.trim(u8, rest, " \t");
             if (command.len == 0 or std.ascii.eqlIgnoreCase(command, "status")) {

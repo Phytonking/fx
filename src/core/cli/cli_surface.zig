@@ -2549,24 +2549,33 @@ fn runTopLevelMcp(
         return .handled_success;
     }
     if (std.mem.eql(u8, operation, "list")) {
-        const connect = rest.len == 2 and std.mem.eql(u8, rest[1], "--connect");
-        if (rest.len != 1 and !connect) {
+        const list_args = parseMcpListArgs(rest[1..]) orelse {
             try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
             return .handled_failure;
-        }
+        };
         var loaded = loadMcpCommandRuntime(alloc, cfg, deps) catch |err| {
-            try writeMcpOperationFailure(alloc, deps, "list", err);
+            if (list_args.json) {
+                try writeJsonCommandFailure(alloc, deps, "mcp_list", err, mcp_auth.authentication_error_message(err));
+            } else {
+                try writeMcpOperationFailure(alloc, deps, "list", err);
+            }
             return .handled_failure;
         };
         defer loaded.deinit(alloc);
         try writeConfigDiagnostics(alloc, deps, loaded.startup.config_diagnostics);
         const listing = if (loaded.runtime) |runtime| listing: {
-            if (connect) {
+            if (list_args.connect) {
                 runtime.connectAll(cfg.tool_set.registry);
             } else {
                 try runtime.loadStoredCredentialsForHealthSnapshot();
             }
-            break :listing try runtime.listServersAndTools(alloc);
+            break :listing if (list_args.json)
+                try runtime.listServersAndToolsJson(alloc)
+            else
+                try runtime.listServersAndTools(alloc);
+        } else if (list_args.json) json: {
+            var no_servers = [_]mcp_health.ServerSnapshot{};
+            break :json try mcp_health.renderJson(alloc, .{ .captured_at_ms = 0, .servers = &no_servers });
         } else try alloc.dupe(u8, "No MCP servers configured.\n");
         defer alloc.free(listing);
         try writeStdout(deps, listing);
@@ -2895,6 +2904,35 @@ fn writeMcpAddUsage(deps: RunDeps) !void {
         deps,
         "usage: fx " ++ command_specs.mcp_add_usage ++ "\n",
     );
+}
+
+const McpListArgs = struct {
+    connect: bool = false,
+    json: bool = false,
+};
+
+/// Parses `fx mcp list [--connect] [--json]`: either flag in any order, each at
+/// most once. Returns null for anything else so the caller prints usage.
+fn parseMcpListArgs(args: []const [:0]const u8) ?McpListArgs {
+    var parsed: McpListArgs = .{};
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--connect") and !parsed.connect) {
+            parsed.connect = true;
+        } else if (std.mem.eql(u8, arg, "--json") and !parsed.json) {
+            parsed.json = true;
+        } else return null;
+    }
+    return parsed;
+}
+
+test "mcp list accepts --connect and --json in any order, each once" {
+    try std.testing.expectEqual(McpListArgs{}, parseMcpListArgs(&.{}).?);
+    try std.testing.expectEqual(McpListArgs{ .json = true }, parseMcpListArgs(&.{"--json"}).?);
+    try std.testing.expectEqual(McpListArgs{ .connect = true, .json = true }, parseMcpListArgs(&.{ "--connect", "--json" }).?);
+    try std.testing.expectEqual(McpListArgs{ .connect = true, .json = true }, parseMcpListArgs(&.{ "--json", "--connect" }).?);
+    try std.testing.expectEqual(@as(?McpListArgs, null), parseMcpListArgs(&.{ "--json", "--json" }));
+    try std.testing.expectEqual(@as(?McpListArgs, null), parseMcpListArgs(&.{"--bogus"}));
+    try std.testing.expectEqual(@as(?McpListArgs, null), parseMcpListArgs(&.{"extra"}));
 }
 
 fn writeMcpOperationFailure(

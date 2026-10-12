@@ -399,7 +399,7 @@ pub fn Handlers(comptime App: type) type {
                 .handle_alias = commandHandleAlias,
                 .show_credits = commandShowCredits,
                 .paste_clipboard = commandPasteClipboard,
-                .toggle_fast = commandToggleFast,
+                .handle_fast = commandHandleFast,
                 .handle_ultrafast = commandHandleUltrafast,
                 .handle_statusline = commandHandleStatusline,
                 .rename_session = commandRenameSession,
@@ -1953,9 +1953,9 @@ pub fn Handlers(comptime App: type) type {
             try image_commands.Commands(App).attachClipboard(app);
         }
 
-        fn commandToggleFast(ctx: *anyopaque) !void {
+        fn commandHandleFast(ctx: *anyopaque, rest: []const u8) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
-            try session_commands.Commands(App).toggleFast(app);
+            try session_commands.Commands(App).handleFast(app, rest);
         }
 
         fn commandHandleUltrafast(ctx: *anyopaque, rest: []const u8) !void {

@@ -855,6 +855,7 @@ fn isProfileOnlySettingKey(key: []const u8) bool {
         "context_limits",
         "skill_match_fuzzy",
         "first_call_tool_choice",
+        "auto_compact_percent",
         "auto_upgrade",
         "update_channel",
         "permission_mode",
@@ -3743,6 +3744,27 @@ test "project profile-only settings are ignored and diagnosed by key" {
     }) |key| {
         try expectIgnoredProjectKey(result.diagnostics, key);
     }
+}
+
+test "project auto_compact_percent is ignored with a diagnostic" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
+    try writeFixtureFile(tmp.dir, "home/.fx/settings.json", "{}\n");
+    try writeFixtureFile(tmp.dir, "workspace/.fx.json", "{\"auto_compact_percent\":20}\n");
+
+    const home_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "home");
+    defer std.testing.allocator.free(home_root);
+    const workspace_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "workspace");
+    defer std.testing.allocator.free(workspace_root);
+
+    var result = try loadMergedSettingsDetailedFromHome(std.testing.allocator, home_root, workspace_root);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(?u8, null), result.settings.auto_compact_percent);
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostics.len);
+    try expectIgnoredProjectKey(result.diagnostics, "auto_compact_percent");
 }
 
 test "malformed project profile-only settings are ignored before value parsing" {

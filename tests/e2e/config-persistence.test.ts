@@ -360,6 +360,11 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
         await session.waitForText("* Switched to anthropic/claude-opus-4.7", TIMEOUT);
         await session.sendText("/fast");
         await session.waitForText("* fast: on", TIMEOUT);
+        await session.sendText("/fast off");
+        await session.waitForText("* fast: off", TIMEOUT);
+        await session.sendText("/fast on");
+        await session.sendText("/fast sometimes");
+        await session.waitForText("usage: /fast [on|off]", TIMEOUT);
         await session.sendText("/statusline context");
         await session.waitForText("* statusline: context:", TIMEOUT);
         await session.sendText("/statusline session");

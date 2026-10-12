@@ -365,16 +365,7 @@ test "tmux history clear preserves pane modes with a server-owned target" {
 }
 
 pub fn detectSyncUpdatesEnabled(_: Allocator) bool {
-    const override = io_mod.getenv("FX_SYNC_UPDATES");
-
-    const fallback_override = if (override == null)
-        io_mod.getenv("FLASH_SYNC_UPDATES")
-    else
-        null;
-
-    const term = io_mod.getenv("TERM");
-
-    return syncUpdatesEnabledForValues(override orelse fallback_override, term);
+    return syncUpdatesEnabledForValues(io_mod.getenv("FX_SYNC_UPDATES"), io_mod.getenv("TERM"));
 }
 
 pub fn detectHistoryResetUsesRis(_: Allocator) bool {

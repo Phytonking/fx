@@ -158,6 +158,32 @@ describe("configured providers", () => {
     } finally { f.close(); }
   }, 25000);
 
+  test("ask --provider picks a connection for one request, beats FX_PROVIDER, and is never saved", async () => {
+    const f = fixture();
+    try {
+      const first = await runFx(["ask", "--json", "--provider", "remote", "remember this"], { cwd: f.workspace, env: f.env, timeoutMs: 20000 });
+      if (first.code !== 0) throw new Error(first.stdout + first.stderr);
+      expect(f.requests).toHaveLength(1);
+      expect(f.requests[0].authorization).toBe("Bearer own-provider-token");
+      expect(f.requests[0].body.model).toBe("remote-model");
+      expect(JSON.parse(readFileSync(f.settingsPath, "utf8")).provider).toBe("local");
+      const saved = JSON.parse(first.stdout);
+
+      const flagWins = await runFx(["ask", "--json", "--no-save", "--provider=local", "say hello"], { cwd: f.workspace, env: { ...f.env, FX_PROVIDER: "remote" }, timeoutMs: 20000 });
+      if (flagWins.code !== 0) throw new Error(flagWins.stdout + flagWins.stderr);
+      expect(f.requests).toHaveLength(2);
+      expect(f.requests[1].authorization).toBeNull();
+      expect(f.requests[1].body.model).toBe("local-model");
+
+      const resumed = await runFx(["ask", "--json", "--resume", saved.session_id, "--provider", "local", "continue"], { cwd: f.workspace, env: f.env, timeoutMs: 20000 });
+      if (resumed.code !== 0) throw new Error(resumed.stdout + resumed.stderr);
+      expect(f.requests).toHaveLength(3);
+      expect(f.requests[2].authorization).toBeNull();
+      expect(f.requests[2].body.model).toBe("local-model");
+      expect(JSON.parse(readFileSync(f.settingsPath, "utf8")).provider).toBe("local");
+    } finally { f.close(); }
+  }, 65000);
+
   test("CLI selection creates an owned model key from workspace-only preferences", async () => {
     const f = fixture();
     try {

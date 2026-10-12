@@ -2587,6 +2587,7 @@ fn loadConfiguredStartupState(state: *const ServerState, alloc: Allocator) !app_
         state.cfg.default_model,
         state.cfg.default_agent_step_limit,
         state.cfg.auth_mode,
+        null,
         state.cfg.model_override,
     );
 }

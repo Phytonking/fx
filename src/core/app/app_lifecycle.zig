@@ -414,9 +414,11 @@ pub fn loadStartupStateWithAuthMode(
     default_agent_step_limit: usize,
     auth_mode: credentials.AuthMode,
 ) !StartupState {
-    return loadStartupStateForRun(alloc, transport, secret_store, default_model, default_agent_step_limit, auth_mode, null);
+    return loadStartupStateForRun(alloc, transport, secret_store, default_model, default_agent_step_limit, auth_mode, null, null);
 }
 
+/// `provider_override` is the run's `--provider`; it wins over FX_PROVIDER and
+/// settings and binds configured provider names like the launch flag does.
 /// `model_override` is the run's `--model`. It stands in for a provider without
 /// a saved model; callers still apply it over the selected or resumed model.
 pub fn loadStartupStateForRun(
@@ -426,10 +428,11 @@ pub fn loadStartupStateForRun(
     default_model: []const u8,
     default_agent_step_limit: usize,
     auth_mode: credentials.AuthMode,
+    provider_override: ?model_provider.ProviderId,
     model_override: ?[]const u8,
 ) !StartupState {
     const workspace_root = try io_mod.realpathAlloc(alloc, ".");
-    return loadStartupStateFromOwnedWorkspace(alloc, transport, secret_store, workspace_root, default_model, default_agent_step_limit, auth_mode, null, .refresh_if_needed, null, model_override);
+    return loadStartupStateFromOwnedWorkspace(alloc, transport, secret_store, workspace_root, default_model, default_agent_step_limit, auth_mode, null, .refresh_if_needed, provider_override, model_override);
 }
 
 pub fn loadStartupStateWithoutCredentials(alloc: Allocator, default_model: []const u8, default_agent_step_limit: usize) !StartupState {
