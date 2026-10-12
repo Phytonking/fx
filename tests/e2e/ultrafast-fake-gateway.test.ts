@@ -398,7 +398,7 @@ describe("ultrafast fake Gateway", () => {
           ["ask", "--auto", "--no-save", "--ultrafast", "--no-ultrafast", "Conflicting flags must not spend."],
           { cwd: root.workspace, env: fakeGatewayEnv(root, gateway), timeoutMs: TIMEOUT },
         );
-        expect(result.code, result.stderr).toBe(1);
+        expect(result.code, result.stderr).toBe(2);
         expect(result.stdout).toBe("");
         expect(result.stderr).toMatch(/ultrafast/i);
         expect(result.stderr).not.toMatch(/panic|segmentation fault|aborted/i);
