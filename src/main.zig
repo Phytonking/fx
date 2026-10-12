@@ -699,6 +699,7 @@ const App = struct {
                 .ultrafast = launch.modifiers.ultrafast_override,
                 .provider_order = launch.modifiers.provider_order_override,
                 .provider_strict = launch.modifiers.provider_strict_override,
+                .permission_mode = launch.modifiers.permission_override,
             },
         );
         errdefer app.deinit();

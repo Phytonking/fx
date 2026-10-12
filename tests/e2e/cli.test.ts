@@ -5057,20 +5057,25 @@ describe("cli: workspace access", () => {
 
       const missing = await runFx(["--add-dir"], { env: enabled });
       expect(missing.code).toBe(2);
-      expect(missing.stderr).toContain("--add-dir requires a directory path");
-      expect(missing.stderr).not.toContain("MissingAddDirectoryValue");
+      expect(missing.stderr).toContain("fx: --add-dir needs a value\n");
+      expect(missing.stderr).not.toContain("InvalidFlag");
 
+      // A repeated flag is not an error: the launch gets past parsing and
+      // stops only because this run has no terminal.
       const duplicate = await runFx(
         ["--no-additional-dirs", "--no-additional-dirs"],
         { env: enabled },
       );
-      expect(duplicate.code).toBe(2);
-      expect(duplicate.stderr).toContain(
-        "--no-additional-dirs may only be specified once",
-      );
-      expect(duplicate.stderr).not.toContain(
-        "DuplicateAdditionalDirectorySuppression",
-      );
+      expect(duplicate.code).toBe(1);
+      expect(duplicate.stderr).toBe("fx requires an interactive terminal (TTY).\n");
+
+      const badMode = await runFx(["--permission-mode", "never"], { env: enabled });
+      expect(badMode.code).toBe(2);
+      expect(badMode.stderr).toContain("fx: --permission-mode accepts ask, auto, or full-access\n");
+
+      const beforeCommand = await runFx(["--auto", "status"], { env: enabled });
+      expect(beforeCommand.code).toBe(2);
+      expect(beforeCommand.stderr).toContain("for one-shot runs pass them after `fx ask`");
     },
     TIMEOUT,
   );

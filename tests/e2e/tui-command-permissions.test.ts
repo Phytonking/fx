@@ -1046,6 +1046,38 @@ describe("effect-aware command permissions", () => {
   );
 
   test.skipIf(!tmuxAvailable())(
+    "TUI --ask launch flag overrides FX_PERMISSION_MODE without saving it",
+    async () => {
+      const root = createIsolatedRoot();
+      const gateway = startFakeGateway([
+        toolCall("touch launch-flag-ask.txt"),
+        finalText("launch flag complete"),
+      ]);
+      const stderrPath = join(root.root, "stderr.log");
+      writeFileSync(stderrPath, "");
+      const settingsPath = join(root.home, ".fx", "settings.json");
+      const settingsBefore = readFileSync(settingsPath, "utf8");
+
+      activeSession = await TmuxSession.create({
+        cmd: `${FX_BIN} --ask`,
+        cwd: root.workspace,
+        env: gatewayEnv(root, gateway, { FX_PERMISSION_MODE: "yolo" }),
+        stderrPath,
+        width: 120,
+        height: 40,
+      });
+      await activeSession.waitForComposer(TIMEOUT);
+      await activeSession.sendText("Create the launch flag marker.");
+      await activeSession.waitForText(COMMAND_APPROVAL_PROMPT, TIMEOUT);
+
+      expect(existsSync(join(root.workspace, "launch-flag-ask.txt"))).toBe(false);
+      expect(readFileSync(settingsPath, "utf8")).toBe(settingsBefore);
+      expect(readFileSync(stderrPath, "utf8")).toBe("");
+    },
+    TIMEOUT,
+  );
+
+  test.skipIf(!tmuxAvailable())(
     "TUI yolo user-profile command waits for authoritative arguments after streamed text",
     async () => {
       const root = createIsolatedRoot();

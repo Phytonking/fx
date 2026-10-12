@@ -352,6 +352,31 @@ pub const top_level_help_groups = [_]TopLevelHelpGroup{
     } },
 };
 
+/// The flags `fx` reads before a command or an interactive launch, in the
+/// form the shared flag parser reads. `top_level_flags` documents them in
+/// `fx --help`, and a test checks that every flag here appears there.
+pub const launch_options = [_]command_specs.OptionDoc{
+    .{ .flag = "--context-limit <spec>", .description = "" },
+    .{ .flag = "--add-dir <path>", .description = "" },
+    .{ .flag = "--no-additional-dirs", .description = "" },
+    .{ .flag = "--provider <name>", .description = "" },
+    .{ .flag = "--provider-order <a,b,...>", .description = "" },
+    .{ .flag = "--provider-strict", .description = "" },
+    .{ .flag = "--no-provider-strict", .description = "" },
+    .{ .flag = "--model <id>", .description = "" },
+    .{ .flag = "--effort <level>", .description = "" },
+    .{ .flag = "--fast", .description = "" },
+    .{ .flag = "--no-fast", .description = "" },
+    .{ .flag = "--ultrafast", .description = "" },
+    .{ .flag = "--no-ultrafast", .description = "" },
+    .{ .flag = "--permission-mode <mode>", .description = "" },
+    .{ .flag = "--ask", .description = "" },
+    .{ .flag = "--auto", .description = "" },
+    .{ .flag = "--full-access", .description = "" },
+    .{ .flag = "--yolo", .description = "" },
+    .{ .flag = "--sessions-v2", .description = "" },
+};
+
 pub const top_level_flags = [_]TopLevelFlag{
     .{
         .usage = "--context-limit <spec>",
@@ -392,6 +417,14 @@ pub const top_level_flags = [_]TopLevelFlag{
     .{
         .usage = "--ultrafast, --no-ultrafast",
         .description = "Request Ultra mode on or off for an interactive session",
+    },
+    .{
+        .usage = "--permission-mode <mode>",
+        .description = "Set the permission mode for an interactive session: ask, auto, or full-access",
+    },
+    .{
+        .usage = "--ask, --auto, --full-access",
+        .description = "Shortcuts for --permission-mode; --yolo is an alias for --full-access",
     },
     .{
         .usage = "-c, --continue",
@@ -656,4 +689,21 @@ test "built-in statusline help and completion include workspace" {
         "/statusline workspace",
         nthSlashCompletion("/statusline w", 0).?,
     );
+}
+
+test "every launch flag appears in fx --help" {
+    const cli_flags = @import("../core/cli/cli_flags.zig");
+    outer: for (launch_options) |doc| {
+        const name = cli_flags.flagName(doc);
+        if (std.mem.eql(u8, name, "--yolo")) continue;
+        for (top_level_flags) |flag| {
+            var parts = std.mem.splitSequence(u8, flag.usage, ", ");
+            while (parts.next()) |part| {
+                const end = std.mem.findScalar(u8, part, ' ') orelse part.len;
+                if (std.mem.eql(u8, part[0..end], name)) continue :outer;
+            }
+        }
+        std.debug.print("{s} is parsed but missing from top_level_flags\n", .{name});
+        return error.TestExpectedEqual;
+    }
 }

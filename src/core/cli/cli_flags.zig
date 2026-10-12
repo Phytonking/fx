@@ -99,11 +99,19 @@ pub const Parser = struct {
     args: []const [:0]const u8,
     index: usize = 0,
     options_ended: bool = false,
+    /// Stop at the first positional argument, `--`, or unknown flag instead
+    /// of failing, leaving `index` on it. The global flags before a command
+    /// use this, because whatever follows them belongs to the command.
+    prefix: bool = false,
     /// Set when `next` returns `error.InvalidFlag`.
     failure: ?Failure = null,
 
     pub fn init(docs: []const OptionDoc, args: []const [:0]const u8) Parser {
         return .{ .docs = docs, .args = args };
+    }
+
+    pub fn initPrefix(docs: []const OptionDoc, args: []const [:0]const u8) Parser {
+        return .{ .docs = docs, .args = args, .prefix = true };
     }
 
     /// Returns the next option or positional argument, or null at the end.
@@ -112,22 +120,29 @@ pub const Parser = struct {
     pub fn next(self: *Parser) error{InvalidFlag}!?Item {
         while (self.index < self.args.len) {
             const arg = self.args[self.index];
+            const is_flag = arg.len >= 2 and arg[0] == '-' and !std.mem.eql(u8, arg, "--");
+            if (self.prefix and (!is_flag or self.find(optionName(arg)) == null)) return null;
             self.index += 1;
             if (self.options_ended) return .{ .positional = arg };
             if (std.mem.eql(u8, arg, "--")) {
                 self.options_ended = true;
                 continue;
             }
-            if (arg.len < 2 or arg[0] != '-') return .{ .positional = arg };
+            if (!is_flag) return .{ .positional = arg };
             return try self.option(arg);
         }
         return null;
     }
 
+    fn optionName(arg: []const u8) []const u8 {
+        if (!std.mem.startsWith(u8, arg, "--")) return arg;
+        const at = std.mem.findScalar(u8, arg, '=') orelse return arg;
+        return arg[0..at];
+    }
+
     fn option(self: *Parser, arg: []const u8) error{InvalidFlag}!Item {
-        const equals = if (std.mem.startsWith(u8, arg, "--")) std.mem.findScalar(u8, arg, '=') else null;
-        const name = if (equals) |at| arg[0..at] else arg;
-        const inline_value = if (equals) |at| arg[at + 1 ..] else null;
+        const name = optionName(arg);
+        const inline_value = if (name.len < arg.len) arg[name.len + 1 ..] else null;
         const index = self.find(name) orelse
             return self.fail(.{ .unknown = .{ .flag = name, .suggestion = self.closest(name) } });
         const doc = self.docs[index];
@@ -263,4 +278,26 @@ test "edit distance" {
     try std.testing.expectEqual(@as(?usize, 0), editDistance("abc", "abc"));
     try std.testing.expectEqual(@as(?usize, 1), editDistance("--verbos", "--verbose"));
     try std.testing.expectEqual(@as(?usize, 3), editDistance("kitten", "sitting"));
+}
+
+test "prefix mode stops at the first argument it does not own" {
+    const docs = [_]OptionDoc{
+        .{ .flag = "--model <id>", .description = "" },
+        .{ .flag = "--fast", .description = "" },
+    };
+    const cases = [_]struct { args: []const [:0]const u8, stop: usize }{
+        .{ .args = &.{ "--model", "m", "ask", "--fast" }, .stop = 2 },
+        .{ .args = &.{ "--fast", "-c" }, .stop = 1 },
+        .{ .args = &.{ "--model=m", "--", "x" }, .stop = 1 },
+        .{ .args = &.{ "--fast", "--fast" }, .stop = 2 },
+    };
+    for (cases) |case| {
+        var parser: Parser = .initPrefix(&docs, case.args);
+        while (try parser.next()) |_| {}
+        try std.testing.expectEqual(case.stop, parser.index);
+    }
+
+    var missing: Parser = .initPrefix(&docs, &.{"--model"});
+    try std.testing.expectError(error.InvalidFlag, missing.next());
+    try std.testing.expectEqualStrings("--model", missing.failure.?.missing_value);
 }

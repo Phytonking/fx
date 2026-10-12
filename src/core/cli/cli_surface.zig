@@ -8,6 +8,8 @@ const grok_oauth = @import("../auth/grok_oauth.zig");
 const acp_runner = @import("acp_runner.zig");
 const cli_ask = @import("cli_ask.zig");
 const cli_replay = @import("cli_replay.zig");
+const cli_flags = @import("cli_flags.zig");
+const builtin_commands = @import("../../builtins/commands.zig");
 const command_specs = @import("../slash_commands/command_specs.zig");
 const collections = @import("../shared/collections.zig");
 const config_runtime = @import("../config/config_runtime.zig");
@@ -147,6 +149,8 @@ pub const LaunchModifiers = struct {
     ultrafast_override: ?bool = null,
     provider_order_override: ?[][]const u8 = null,
     provider_strict_override: ?bool = null,
+    /// `--permission-mode` and its shortcuts; never saved.
+    permission_override: ?types.PermissionMode = null,
     /// `--sessions-v2`: keep this process's sessions in the v2 store.
     sessions_v2: bool = false,
 
@@ -166,7 +170,8 @@ pub const LaunchModifiers = struct {
     pub fn hasModelOverrides(self: LaunchModifiers) bool {
         return self.provider_override != null or self.model_override != null or
             self.effort_override != null or self.fast_override != null or
-            self.ultrafast_override != null or self.provider_order_override != null or self.provider_strict_override != null;
+            self.ultrafast_override != null or self.provider_order_override != null or
+            self.provider_strict_override != null or self.permission_override != null;
     }
 
     pub fn hasOnlyUltrafastOverride(self: LaunchModifiers) bool {
@@ -409,10 +414,34 @@ const GlobalLaunchArgs = struct {
     }
 };
 
-fn parseGlobalLaunchArgs(
-    alloc: Allocator,
-    args: []const [:0]const u8,
-) !GlobalLaunchArgs {
+const LaunchFlag = enum {
+    context_limit,
+    add_dir,
+    no_additional_dirs,
+    provider,
+    provider_order,
+    provider_strict,
+    no_provider_strict,
+    model,
+    effort,
+    fast,
+    no_fast,
+    ultrafast,
+    no_ultrafast,
+    permission_mode,
+    ask,
+    auto,
+    full_access,
+    yolo,
+    sessions_v2,
+};
+
+const launch_flag_ids = cli_flags.idTable(LaunchFlag, &builtin_commands.launch_options);
+
+/// Reads the global flags before a command or an interactive launch. When a
+/// flag repeats or conflicts, the last one wins. A malformed flag returns
+/// `error.InvalidFlag`; `launchFlagFailure` describes it.
+fn parseGlobalLaunchArgs(alloc: Allocator, args: []const [:0]const u8) !GlobalLaunchArgs {
     var overrides: std.ArrayList(config_runtime.context_limits.Override) = .empty;
     errdefer overrides.deinit(alloc);
     var directories: std.ArrayList([]u8) = .empty;
@@ -420,118 +449,62 @@ fn parseGlobalLaunchArgs(
         for (directories.items) |path| alloc.free(path);
         directories.deinit(alloc);
     }
-    var suppress_saved = false;
-    var provider_override: ?model_provider.ProviderId = null;
-    var model_override: ?[]u8 = null;
-    errdefer if (model_override) |model| alloc.free(model);
-    var effort_override: ?types.ReasoningEffort = null;
-    var fast_override: ?bool = null;
-    var ultrafast_override: ?bool = null;
-    var provider_order_override: ?[][]const u8 = null;
-    errdefer if (provider_order_override) |order| freeProviderOrderOverride(alloc, order);
-    var provider_strict_override: ?bool = null;
-    var sessions_v2 = false;
+    var modifiers: LaunchModifiers = .{};
+    errdefer {
+        if (modifiers.model_override) |model| alloc.free(model);
+        if (modifiers.provider_order_override) |order| freeProviderOrderOverride(alloc, order);
+    }
 
-    var index: usize = 0;
-    while (index < args.len) {
-        const arg = args[index];
-        if (std.mem.eql(u8, arg, sessions_v2_arg)) {
-            sessions_v2 = true;
-        } else if (std.mem.eql(u8, arg, "--context-limit")) {
-            index += 1;
-            if (index >= args.len) return error.MissingContextLimitValue;
-            try overrides.append(alloc, try config_runtime.context_limits.parseOverride(args[index]));
-        } else if (std.mem.startsWith(u8, arg, "--context-limit=")) {
-            try overrides.append(alloc, try config_runtime.context_limits.parseOverride(arg["--context-limit=".len..]));
-        } else if (std.mem.eql(u8, arg, "--add-dir")) {
-            index += 1;
-            if (index >= args.len or args[index].len == 0) return error.MissingAddDirectoryValue;
-            try directories.append(alloc, try alloc.dupe(u8, args[index]));
-        } else if (std.mem.startsWith(u8, arg, "--add-dir=")) {
-            const value = arg["--add-dir=".len..];
-            if (value.len == 0) return error.MissingAddDirectoryValue;
-            try directories.append(alloc, try alloc.dupe(u8, value));
-        } else if (std.mem.eql(u8, arg, "--no-additional-dirs")) {
-            if (suppress_saved) return error.DuplicateAdditionalDirectorySuppression;
-            suppress_saved = true;
-        } else if (std.mem.eql(u8, arg, "--provider")) {
-            index += 1;
-            if (index >= args.len) return error.MissingProviderValue;
-            provider_override = model_provider.parse(args[index]) orelse
-                return error.InvalidProviderValue;
-        } else if (std.mem.startsWith(u8, arg, "--provider=")) {
-            provider_override = model_provider.parse(arg["--provider=".len..]) orelse
-                return error.InvalidProviderValue;
-        } else if (std.mem.eql(u8, arg, "--model")) {
-            index += 1;
-            if (index >= args.len) return error.MissingModelValue;
-            const model = std.mem.trim(u8, args[index], " \t\r\n");
-            if (model.len == 0) return error.MissingModelValue;
-            const owned_model = try alloc.dupe(u8, model);
-            if (model_override) |old| alloc.free(old);
-            model_override = owned_model;
-        } else if (std.mem.startsWith(u8, arg, "--model=")) {
-            const model = std.mem.trim(u8, arg["--model=".len..], " \t\r\n");
-            if (model.len == 0) return error.MissingModelValue;
-            const owned_model = try alloc.dupe(u8, model);
-            if (model_override) |old| alloc.free(old);
-            model_override = owned_model;
-        } else if (std.mem.eql(u8, arg, "--effort")) {
-            index += 1;
-            if (index >= args.len) return error.MissingEffortValue;
-            effort_override = types.ReasoningEffort.parse(args[index]) orelse
-                return error.InvalidEffortValue;
-        } else if (std.mem.startsWith(u8, arg, "--effort=")) {
-            effort_override = types.ReasoningEffort.parse(arg["--effort=".len..]) orelse
-                return error.InvalidEffortValue;
-        } else if (std.mem.eql(u8, arg, "--fast") or std.mem.eql(u8, arg, "--no-fast")) {
-            const enabled = std.mem.eql(u8, arg, "--fast");
-            if (fast_override != null and fast_override.? != enabled)
-                return error.ConflictingFastFlags;
-            fast_override = enabled;
-            if (enabled) ultrafast_override = false;
-        } else if (std.mem.eql(u8, arg, "--ultrafast") or std.mem.eql(u8, arg, "--no-ultrafast")) {
-            const enabled = std.mem.eql(u8, arg, "--ultrafast");
-            if (ultrafast_override != null and ultrafast_override.? != enabled)
-                return error.ConflictingUltrafastFlags;
-            ultrafast_override = enabled;
-            if (enabled) fast_override = false;
-        } else if (std.mem.eql(u8, arg, "--provider-order")) {
-            index += 1;
-            if (index >= args.len) return error.MissingProviderOrderValue;
-            provider_order_override = try parseProviderOrderFlag(alloc, args[index], provider_order_override);
-        } else if (std.mem.startsWith(u8, arg, "--provider-order=")) {
-            provider_order_override = try parseProviderOrderFlag(alloc, arg["--provider-order=".len..], provider_order_override);
-        } else if (std.mem.eql(u8, arg, "--provider-strict") or std.mem.eql(u8, arg, "--no-provider-strict")) {
-            const strict = std.mem.eql(u8, arg, "--provider-strict");
-            if (provider_strict_override != null and provider_strict_override.? != strict)
-                return error.ConflictingProviderStrictFlags;
-            provider_strict_override = strict;
-        } else {
-            break;
+    var parser: cli_flags.Parser = .initPrefix(&builtin_commands.launch_options, args);
+    while (try parser.next()) |item| {
+        // Prefix mode stops at positionals, so every item is an option.
+        const match = item.option;
+        const value = match.value orelse "";
+        switch (launch_flag_ids[match.index].?) {
+            .sessions_v2 => modifiers.sessions_v2 = true,
+            .context_limit => try overrides.append(alloc, try config_runtime.context_limits.parseOverride(value)),
+            .add_dir => {
+                if (value.len == 0) return error.MissingAddDirectoryValue;
+                try directories.append(alloc, try alloc.dupe(u8, value));
+            },
+            .no_additional_dirs => modifiers.saved_directories_suppressed = true,
+            .provider => modifiers.provider_override = model_provider.parse(value) orelse
+                return error.InvalidProviderValue,
+            .model => {
+                const model = std.mem.trim(u8, value, " \t\r\n");
+                if (model.len == 0) return error.MissingModelValue;
+                const owned_model = try alloc.dupe(u8, model);
+                if (modifiers.model_override) |old| alloc.free(old);
+                modifiers.model_override = owned_model;
+            },
+            .effort => modifiers.effort_override = types.ReasoningEffort.parse(value) orelse
+                return error.InvalidEffortValue,
+            .fast => {
+                modifiers.fast_override = true;
+                modifiers.ultrafast_override = false;
+            },
+            .no_fast => modifiers.fast_override = false,
+            .ultrafast => {
+                modifiers.ultrafast_override = true;
+                modifiers.fast_override = false;
+            },
+            .no_ultrafast => modifiers.ultrafast_override = false,
+            .provider_order => modifiers.provider_order_override = try parseProviderOrderFlag(alloc, value, modifiers.provider_order_override),
+            .provider_strict => modifiers.provider_strict_override = true,
+            .no_provider_strict => modifiers.provider_strict_override = false,
+            .permission_mode => modifiers.permission_override = types.PermissionMode.parse(value) orelse
+                return error.InvalidPermissionModeValue,
+            .ask => modifiers.permission_override = .ask,
+            .auto => modifiers.permission_override = .auto,
+            .full_access, .yolo => modifiers.permission_override = .yolo,
         }
-        index += 1;
     }
 
     const override_slice = try overrides.toOwnedSlice(alloc);
     errdefer if (override_slice.len > 0) alloc.free(override_slice);
-    const directory_slice = try directories.toOwnedSlice(alloc);
-    return .{
-        .remaining = args[index..],
-        .modifiers = .{
-            .context_limit_overrides = override_slice,
-            .additional_directories = directory_slice,
-            .saved_directories_suppressed = suppress_saved,
-            .provider_override = provider_override,
-            .model_override = model_override,
-            .effort_override = effort_override,
-            .fast_override = fast_override,
-            .ultrafast_override = ultrafast_override,
-            .provider_order_override = provider_order_override,
-            .provider_strict_override = provider_strict_override,
-            .sessions_v2 = sessions_v2,
-        },
-    };
+    modifiers.context_limit_overrides = override_slice;
+    modifiers.additional_directories = try directories.toOwnedSlice(alloc);
+    return .{ .remaining = args[parser.index..], .modifiers = modifiers };
 }
 
 /// Returns the command that follows the supported global launch modifiers.
@@ -542,39 +515,17 @@ pub fn commandAfterGlobalLaunchArgs(args: []const [:0]const u8) ?[]const u8 {
     return if (remaining.len > 0) remaining[0] else null;
 }
 
+/// Why the global flags in `args` failed to parse, or null when they parse.
+fn launchFlagFailure(args: []const [:0]const u8) ?cli_flags.Failure {
+    var parser: cli_flags.Parser = .initPrefix(&builtin_commands.launch_options, args);
+    while (parser.next() catch return parser.failure) |_| {}
+    return null;
+}
+
 pub fn argsAfterGlobalLaunchArgs(args: []const [:0]const u8) []const [:0]const u8 {
-    var index: usize = 0;
-    while (index < args.len) {
-        const arg = args[index];
-        if (std.mem.eql(u8, arg, "--context-limit") or
-            std.mem.eql(u8, arg, "--add-dir") or
-            std.mem.eql(u8, arg, "--provider") or
-            std.mem.eql(u8, arg, "--provider-order") or
-            std.mem.eql(u8, arg, "--model") or
-            std.mem.eql(u8, arg, "--effort"))
-        {
-            index += 1;
-            if (index >= args.len) return &.{};
-        } else if (!std.mem.startsWith(u8, arg, "--context-limit=") and
-            !std.mem.startsWith(u8, arg, "--add-dir=") and
-            !std.mem.startsWith(u8, arg, "--provider=") and
-            !std.mem.startsWith(u8, arg, "--provider-order=") and
-            !std.mem.startsWith(u8, arg, "--model=") and
-            !std.mem.startsWith(u8, arg, "--effort=") and
-            !std.mem.eql(u8, arg, "--no-additional-dirs") and
-            !std.mem.eql(u8, arg, "--fast") and
-            !std.mem.eql(u8, arg, "--no-fast") and
-            !std.mem.eql(u8, arg, "--ultrafast") and
-            !std.mem.eql(u8, arg, "--no-ultrafast") and
-            !std.mem.eql(u8, arg, "--provider-strict") and
-            !std.mem.eql(u8, arg, "--no-provider-strict") and
-            !std.mem.eql(u8, arg, sessions_v2_arg))
-        {
-            return args[index..];
-        }
-        index += 1;
-    }
-    return &.{};
+    var parser: cli_flags.Parser = .initPrefix(&builtin_commands.launch_options, args);
+    while (parser.next() catch return &.{}) |_| {}
+    return args[parser.index..];
 }
 
 pub fn parse(command_catalog: CommandCatalog, args: []const [:0]const u8) Command {
@@ -1063,12 +1014,16 @@ fn runIfRequestedWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Con
         }
         var writer: std.Io.Writer.Allocating = .init(alloc);
         defer writer.deinit();
-        if (globalLaunchErrorMessage(err)) |message| {
+        if (err == error.InvalidFlag) {
+            try writer.writer.writeAll("fx: ");
+            if (launchFlagFailure(args)) |failure| try failure.write(&writer.writer);
+            try writer.writer.writeAll("\n");
+        } else if (globalLaunchErrorMessage(err)) |message| {
             try writer.writer.print("fx: {s}\n", .{message});
         } else {
             try writer.writer.print("fx: invalid global launch option: {s}\n", .{@errorName(err)});
         }
-        try writer.writer.writeAll("usage: fx [--context-limit NAME=BYTES|off] [--add-dir PATH]... [--no-additional-dirs] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] <command>\n");
+        try writer.writer.writeAll("usage: fx [--context-limit NAME=BYTES|off] [--add-dir PATH]... [--no-additional-dirs] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--permission-mode <mode>] <command>\n");
         try writeStderr(deps, writer.written());
         return usage_failure;
     };
@@ -1100,7 +1055,7 @@ fn runNonInteractiveWithDeps(
         !commandSupportsWorkspaceModifiers(parsed_command))
     {
         try writeWorkspaceModifierUsage(deps);
-        return .handled_failure;
+        return usage_failure;
     }
 
     const acp_ultrafast_override = switch (parsed_command) {
@@ -1109,7 +1064,7 @@ fn runNonInteractiveWithDeps(
     };
     if (global_args.modifiers.hasModelOverrides() and !acp_ultrafast_override) {
         try writeModelModifierUsage(deps);
-        return .handled_failure;
+        return usage_failure;
     }
 
     if (isVersionFlag(effective_args[0])) {
@@ -3820,24 +3775,18 @@ fn writeWorkspaceModifierUsage(deps: RunDeps) !void {
 fn writeModelModifierUsage(deps: RunDeps) !void {
     try writeStderr(
         deps,
-        "fx: --provider, --model, --effort, --fast, --ultrafast, --provider-order, and --provider-strict apply to interactive sessions; for one-shot runs pass model flags after `fx ask`\n",
+        "fx: --provider, --model, --effort, --fast, --ultrafast, --provider-order, --provider-strict, and --permission-mode apply to interactive sessions; for one-shot runs pass them after `fx ask`\n",
     );
 }
 
 fn globalLaunchErrorMessage(err: anyerror) ?[]const u8 {
     return switch (err) {
         error.MissingAddDirectoryValue => "--add-dir requires a directory path",
-        error.DuplicateAdditionalDirectorySuppression => "--no-additional-dirs may only be specified once",
         error.MissingModelValue => "--model requires a model id",
-        error.MissingEffortValue => "--effort requires a value",
         error.InvalidEffortValue => "--effort value is not a valid reasoning effort",
-        error.ConflictingFastFlags => "--fast and --no-fast cannot be used together",
-        error.ConflictingUltrafastFlags => "--ultrafast and --no-ultrafast cannot be used together",
-        error.MissingProviderValue => "--provider requires a provider name",
         error.InvalidProviderValue => "--provider accepts gateway, codex, grok, or a configured provider name",
-        error.MissingProviderOrderValue => "--provider-order requires a comma-separated provider list",
         error.InvalidProviderOrderValue => "--provider-order accepts comma-separated provider slugs (letters, digits, '-')",
-        error.ConflictingProviderStrictFlags => "--provider-strict and --no-provider-strict cannot be used together",
+        error.InvalidPermissionModeValue => "--permission-mode accepts ask, auto, or full-access",
         else => null,
     };
 }
@@ -4258,7 +4207,6 @@ fn isVersionFlag(arg: []const u8) bool {
 }
 
 fn testCommandCatalog() CommandCatalog {
-    const builtin_commands = @import("../../builtins/commands.zig");
     return builtin_commands.top_level_registry;
 }
 
@@ -4410,7 +4358,7 @@ test "global launch modifiers preserve repeatable context limits before the comm
 
 test "global context limits reject missing values and stop at the command" {
     try std.testing.expectError(
-        error.MissingContextLimitValue,
+        error.InvalidFlag,
         parseGlobalLaunchArgs(std.testing.allocator, &.{@constCast("--context-limit")}),
     );
     var parsed = try parseGlobalLaunchArgs(std.testing.allocator, &.{
@@ -4506,7 +4454,7 @@ test "global launch modifiers accept configured provider names" {
 
 test "global model overrides fail closed when malformed" {
     try std.testing.expectError(
-        error.MissingProviderValue,
+        error.InvalidFlag,
         parseGlobalLaunchArgs(std.testing.allocator, &.{@constCast("--provider")}),
     );
     try std.testing.expectError(
@@ -4514,7 +4462,7 @@ test "global model overrides fail closed when malformed" {
         parseGlobalLaunchArgs(std.testing.allocator, &.{ @constCast("--provider"), @constCast("bogus name") }),
     );
     try std.testing.expectError(
-        error.MissingModelValue,
+        error.InvalidFlag,
         parseGlobalLaunchArgs(std.testing.allocator, &.{@constCast("--model")}),
     );
     try std.testing.expectError(
@@ -4522,7 +4470,7 @@ test "global model overrides fail closed when malformed" {
         parseGlobalLaunchArgs(std.testing.allocator, &.{@constCast("--model=")}),
     );
     try std.testing.expectError(
-        error.MissingEffortValue,
+        error.InvalidFlag,
         parseGlobalLaunchArgs(std.testing.allocator, &.{@constCast("--effort")}),
     );
     try std.testing.expectError(
@@ -4530,15 +4478,7 @@ test "global model overrides fail closed when malformed" {
         parseGlobalLaunchArgs(std.testing.allocator, &.{@constCast("--effort=not an effort")}),
     );
     try std.testing.expectError(
-        error.ConflictingFastFlags,
-        parseGlobalLaunchArgs(std.testing.allocator, &.{ @constCast("--fast"), @constCast("--no-fast") }),
-    );
-    try std.testing.expectError(
-        error.ConflictingFastFlags,
-        parseGlobalLaunchArgs(std.testing.allocator, &.{ @constCast("--no-fast"), @constCast("--fast") }),
-    );
-    try std.testing.expectError(
-        error.MissingProviderOrderValue,
+        error.InvalidFlag,
         parseGlobalLaunchArgs(std.testing.allocator, &.{@constCast("--provider-order")}),
     );
     try std.testing.expectError(
@@ -4550,9 +4490,50 @@ test "global model overrides fail closed when malformed" {
         parseGlobalLaunchArgs(std.testing.allocator, &.{@constCast("--provider-order=azure,azure")}),
     );
     try std.testing.expectError(
-        error.ConflictingProviderStrictFlags,
-        parseGlobalLaunchArgs(std.testing.allocator, &.{ @constCast("--provider-strict"), @constCast("--no-provider-strict") }),
+        error.InvalidPermissionModeValue,
+        parseGlobalLaunchArgs(std.testing.allocator, &.{@constCast("--permission-mode=never")}),
     );
+    try std.testing.expectError(
+        error.InvalidFlag,
+        parseGlobalLaunchArgs(std.testing.allocator, &.{@constCast("--fast=1")}),
+    );
+    try std.testing.expectEqualStrings("--model", launchFlagFailure(&.{@constCast("--model")}).?.missing_value);
+    try std.testing.expectEqualStrings("--fast", launchFlagFailure(&.{@constCast("--fast=1")}).?.unexpected_value);
+    try std.testing.expect(launchFlagFailure(&.{ @constCast("--fast"), @constCast("ask") }) == null);
+}
+
+test "global launch flags let the last one win" {
+    const cases = [_]struct {
+        args: []const [:0]const u8,
+        fast: ?bool = null,
+        ultrafast: ?bool = null,
+        strict: ?bool = null,
+        permission: ?types.PermissionMode = null,
+    }{
+        .{ .args = &.{ "--fast", "--no-fast" }, .fast = false },
+        .{ .args = &.{ "--no-fast", "--fast" }, .fast = true, .ultrafast = false },
+        .{ .args = &.{ "--ultrafast", "--fast" }, .fast = true, .ultrafast = false },
+        .{ .args = &.{ "--fast", "--ultrafast" }, .fast = false, .ultrafast = true },
+        .{ .args = &.{ "--provider-strict", "--no-provider-strict" }, .strict = false },
+        .{ .args = &.{ "--ask", "--full-access" }, .permission = .yolo },
+        .{ .args = &.{ "--yolo", "--permission-mode", "auto" }, .permission = .auto },
+        .{ .args = &.{ "--permission-mode=full-access", "--ask" }, .permission = .ask },
+    };
+    for (cases) |case| {
+        var parsed = try parseGlobalLaunchArgs(std.testing.allocator, case.args);
+        defer parsed.deinit(std.testing.allocator);
+        try std.testing.expectEqual(case.fast, parsed.modifiers.fast_override);
+        try std.testing.expectEqual(case.ultrafast, parsed.modifiers.ultrafast_override);
+        try std.testing.expectEqual(case.strict, parsed.modifiers.provider_strict_override);
+        try std.testing.expectEqual(case.permission, parsed.modifiers.permission_override);
+        try std.testing.expectEqual(@as(usize, 0), parsed.remaining.len);
+    }
+
+    var repeated = try parseGlobalLaunchArgs(std.testing.allocator, &.{ "--model=a", "--model", "b", "--no-additional-dirs", "--no-additional-dirs", "-c" });
+    defer repeated.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("b", repeated.modifiers.model_override.?);
+    try std.testing.expect(repeated.modifiers.saved_directories_suppressed);
+    try std.testing.expectEqualStrings("-c", repeated.remaining[0]);
 }
 
 test "argsAfterGlobalLaunchArgs skips provider routing flags" {
@@ -4582,10 +4563,6 @@ test "additional directory flags fail closed when malformed" {
     try std.testing.expectError(
         error.MissingAddDirectoryValue,
         parseGlobalLaunchArgs(std.testing.allocator, &.{@constCast("--add-dir=")}),
-    );
-    try std.testing.expectError(
-        error.DuplicateAdditionalDirectorySuppression,
-        parseGlobalLaunchArgs(std.testing.allocator, &.{ @constCast("--no-additional-dirs"), @constCast("--no-additional-dirs") }),
     );
 }
 
@@ -5512,15 +5489,6 @@ test "global ultrafast launch modifier is ACP-only" {
     try std.testing.expectEqual(@as(?bool, true), acp.modifiers.ultrafast_override);
     try std.testing.expect(acp.modifiers.hasOnlyUltrafastOverride());
     try std.testing.expectEqualStrings("acp", acp.remaining[0]);
-
-    try std.testing.expectError(error.ConflictingFastFlags, parseGlobalLaunchArgs(
-        std.testing.allocator,
-        &.{ @constCast("--ultrafast"), @constCast("--fast"), @constCast("acp") },
-    ));
-    try std.testing.expectError(error.ConflictingUltrafastFlags, parseGlobalLaunchArgs(
-        std.testing.allocator,
-        &.{ @constCast("--fast"), @constCast("--ultrafast"), @constCast("acp") },
-    ));
 }
 
 test "runNoConfigIfRequested handles help without config" {
