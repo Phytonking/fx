@@ -869,7 +869,7 @@ describe.skipIf(SKIP)("tui: slash menu", () => {
       gateway.stop();
       gateway = startFakeGateway([]);
       session = await TmuxSession.create({
-        cmd: `${FX_BIN} resume ${sessionIds[0]}`,
+        cmd: `${FX_BIN} --resume ${sessionIds[0]}`,
         cwd: resumedWorkspace,
         env: {
           ...env,
@@ -962,7 +962,7 @@ describe.skipIf(SKIP)("tui: slash menu", () => {
       gateway.stop();
       gateway = startFakeGateway([]);
       session = await TmuxSession.create({
-        cmd: `${FX_BIN} resume ${sessionIds[0]}`,
+        cmd: `${FX_BIN} --resume ${sessionIds[0]}`,
         cwd: workspace,
         env: {
           HOME: home,

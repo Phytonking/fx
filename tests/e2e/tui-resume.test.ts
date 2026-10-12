@@ -4894,7 +4894,7 @@ test.skipIf(!tmuxAvailable())(
       active = null;
 
       active = await TmuxSession.create({
-        cmd: `${FX_BIN} resume last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: workspaceRoot,
         env: gatewayEnv(home, resumeGateway),
         stderrPath: resumeStderrPath,
@@ -7196,7 +7196,7 @@ test.skipIf(!tmuxAvailable())(
       gateways.push(resumedGateway);
       writeFileSync(stderrPath, "");
       active = await TmuxSession.create({
-        cmd: `${FX_BIN} resume ${sessionId}`,
+        cmd: `${FX_BIN} --resume ${sessionId}`,
         cwd: workspaceRoot,
         env: {
           ...gatewayEnv(home, resumedGateway),
@@ -7293,7 +7293,7 @@ test.skipIf(!tmuxAvailable())(
       const resumedGateway = startFakeGateway([]);
       gateways.push(resumedGateway);
       active = await TmuxSession.create({
-        cmd: `${FX_BIN} resume last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: workspaceRoot,
         env: gatewayEnv(home, resumedGateway),
         stderrPath,
@@ -7450,7 +7450,7 @@ while :; do sleep 1; done
       expect(readFileSync(initialStderrPath, "utf8")).toBe("");
 
       active = await TmuxSession.create({
-        cmd: `${FX_BIN} resume last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: realpathSync(workspace),
         env: gatewayEnv(home, resumedGateway),
         stderrPath: resumedStderrPath,
@@ -7571,7 +7571,7 @@ test.skipIf(!tmuxAvailable())(
       expect(readFileSync(initialStderrPath, "utf8")).toBe("");
 
       active = await TmuxSession.create({
-        cmd: `${FX_BIN} resume last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: realpathSync(workspace),
         env: gatewayEnv(home, resumedGateway),
         stderrPath: resumedStderrPath,

@@ -709,7 +709,7 @@ async function launchPermissionResumeHarness(initialResponses: Response[]) {
 
       const gateway = startFakeGateway(responses);
       const session = await TmuxSession.create({
-        cmd: `${FX_BIN} resume last`,
+        cmd: `${FX_BIN} --resume last`,
         cwd: root.workspace,
         env: gatewayEnv(root, gateway, { FX_PERMISSION_MODE: undefined }),
         stderrPath: resumedStderrPath,
@@ -2413,7 +2413,7 @@ describe("effect-aware command permissions", () => {
         { force: true },
       );
       activeSession = await TmuxSession.create({
-        cmd: `${FX_BIN} resume ${sessionId}`,
+        cmd: `${FX_BIN} --resume ${sessionId}`,
         cwd: root.workspace,
         env: gatewayEnv(root, gateway, { TMPDIR: root.root }),
         stderrPath,
