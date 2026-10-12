@@ -505,12 +505,18 @@ With --prompt-permissions, JSON and quiet requests may prompt on stderr only whe
   test(
     "fx acp rejects unknown options and missing option values",
     async () => {
-      for (const args of [["--bogus"], ["--model"], ["--log-file"]]) {
+      const cases: [string[], string][] = [
+        [["--bogus"], "fx acp: unknown flag --bogus\n"],
+        [["--model"], "fx acp: --model needs a value\n"],
+        [["--log-file"], "fx acp: --log-file needs a value\n"],
+      ];
+      for (const [args, problem] of cases) {
         const result = await runFx(["acp", ...args]);
         expect(result.code).toBe(2);
         expect(result.stdout).toBe("");
         expect(result.stderr).toBe(
-          "usage: fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]\n",
+          problem +
+            "usage: fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]\n",
         );
       }
     },

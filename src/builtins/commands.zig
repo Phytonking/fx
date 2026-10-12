@@ -48,6 +48,41 @@ pub const workspace_options = [_]command_specs.OptionDoc{
     json_option,
 };
 
+pub const session_options = [_]command_specs.OptionDoc{
+    .{ .flag = "last", .description = "Inspect the current workspace session" },
+    .{ .flag = "--id <id>", .description = "Inspect a saved session by exact id" },
+    .{ .flag = "resume [last|<id>]", .description = "Resume the latest workspace session or a session by id" },
+    .{ .flag = "migrate <id>", .description = "Migrate a saved session to the current format" },
+    .{ .flag = "recover <id>", .description = "Copy a recoverable corrupt session into a new session" },
+    .{ .flag = "--allow-large", .description = "Permit migrating an oversized session" },
+    json_option,
+};
+
+pub const acp_options = [_]command_specs.OptionDoc{
+    .{ .flag = "--model <id>", .description = "Override the default model" },
+    .{ .flag = "--ultrafast", .description = "Request Ultra mode when the model supports it" },
+    .{ .flag = "--no-ultrafast", .description = "Disable Ultra mode" },
+    .{ .flag = "--log-file <path>", .description = "Write ACP logs to a file" },
+};
+
+pub const pr_options = [_]command_specs.OptionDoc{
+    .{ .flag = "--auto", .description = "Automatically review unresolved permission requests" },
+    .{ .flag = "--create", .description = "Publish the drafted pull request via the GitHub CLI" },
+};
+
+pub const replay_options = [_]command_specs.OptionDoc{
+    .{ .flag = "--frames", .description = "Render each captured frame" },
+    .{ .flag = "--golden <path>", .description = "Write the final rendered grid to a file" },
+    .{ .flag = "--frames-dir <path>", .description = "Write rendered frames to a directory" },
+    json_option,
+};
+
+/// `fx mcp list` options; `fx mcp --help` shows them in its usage line.
+pub const mcp_list_options = [_]command_specs.OptionDoc{
+    .{ .flag = "--connect", .description = "Connect to each server and list its tools" },
+    json_option,
+};
+
 pub const ask_options = [_]command_specs.OptionDoc{
     .{ .flag = "--permission-mode <mode>", .description = "Set the permission mode for this request: ask, auto, or full-access" },
     .{ .flag = "--ask", .description = "Ask before each action that needs permission" },
@@ -107,22 +142,14 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "acp",
         .usage = "acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]",
         .summary = "Start an ACP server over stdio",
-        .options = &.{
-            .{ .flag = "--model <id>", .description = "Override the default model" },
-            .{ .flag = "--ultrafast", .description = "Request Ultra mode when the model supports it" },
-            .{ .flag = "--no-ultrafast", .description = "Disable Ultra mode" },
-            .{ .flag = "--log-file <path>", .description = "Write ACP logs to a file" },
-        },
+        .options = &acp_options,
     },
     .{
         .kind = .pr,
         .token = "pr",
         .usage = "pr [--auto] [--create] [context]",
         .summary = "Draft or publish a pull request",
-        .options = &.{
-            .{ .flag = "--auto", .description = "Automatically review unresolved permission requests" },
-            .{ .flag = "--create", .description = "Publish the drafted pull request via the GitHub CLI" },
-        },
+        .options = &pr_options,
         .details = &.{
             "Must run inside a git repository. Without --create, the drafted PR is printed only.",
         },
@@ -231,15 +258,7 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "session",
         .usage = "session <last|id>|--id <id> [--json] | session resume [last|<id>] | session migrate <id>|--id <id> [--allow-large] [--json] | session recover <id>|--id <id> [--json]",
         .summary = "Inspect, resume, migrate, or recover saved sessions",
-        .options = &.{
-            .{ .flag = "last", .description = "Inspect the current workspace session" },
-            .{ .flag = "--id <id>", .description = "Inspect a saved session by exact id" },
-            .{ .flag = "resume [last|<id>]", .description = "Resume the latest workspace session or a session by id" },
-            .{ .flag = "migrate <id>", .description = "Migrate a saved session to the current format" },
-            .{ .flag = "recover <id>", .description = "Copy a recoverable corrupt session into a new session" },
-            .{ .flag = "--allow-large", .description = "Permit migrating an oversized session" },
-            json_option,
-        },
+        .options = &session_options,
     },
     .{
         .kind = .sessions,
@@ -295,12 +314,7 @@ pub const top_level_specs = [_]TopLevelSpec{
         .usage = "replay <tape> [--frames] [--json] [--golden <path>] [--frames-dir <path>]",
         .summary = "Replay a recorded terminal session",
         .hidden_from_top_level_help = true,
-        .options = &.{
-            .{ .flag = "--frames", .description = "Render each captured frame" },
-            .{ .flag = "--golden <path>", .description = "Write the final rendered grid to a file" },
-            .{ .flag = "--frames-dir <path>", .description = "Write rendered frames to a directory" },
-            json_option,
-        },
+        .options = &replay_options,
         .details = &.{
             "Developer tool for reproducing terminal rendering bugs from FX_RECORD and FX_DEBUG_RECORD tapes. It is not listed in `fx help`.",
         },

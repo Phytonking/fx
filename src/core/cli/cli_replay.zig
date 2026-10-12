@@ -4,6 +4,8 @@
 //! the top-level CLI dispatch.
 
 const std = @import("std");
+const builtin_commands = @import("../../builtins/commands.zig");
+const cli_flags = @import("cli_flags.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
 const output_contracts = @import("../output/output_contracts.zig");
@@ -28,39 +30,38 @@ pub const Error = error{
     MissingFramesDirPath,
 } || std.mem.Allocator.Error;
 
+const ReplayFlag = enum { frames, golden, frames_dir, json };
+const replay_flag_ids = cli_flags.idTable(ReplayFlag, &builtin_commands.replay_options);
+
 pub fn parseArgs(args: []const [:0]const u8) Error!Options {
     var opts: Options = .{};
     var positional_seen = false;
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "--frames")) {
-            opts.frames = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--json")) {
-            opts.json = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--golden")) {
-            i += 1;
-            if (i >= args.len) return Error.MissingGoldenPath;
-            opts.golden_path = args[i];
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--frames-dir")) {
-            i += 1;
-            if (i >= args.len) return Error.MissingFramesDirPath;
-            opts.frames_dir = args[i];
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--")) return Error.UnknownFlag;
-        if (positional_seen) return Error.TooManyArgs;
-        opts.path = arg;
-        positional_seen = true;
-    }
+    var parser: cli_flags.Parser = .init(&builtin_commands.replay_options, args);
+    while (parser.next() catch return flagError(parser.failure.?)) |item| switch (item) {
+        .positional => |arg| {
+            if (positional_seen) return Error.TooManyArgs;
+            opts.path = arg;
+            positional_seen = true;
+        },
+        .option => |match| switch (replay_flag_ids[match.index].?) {
+            .frames => opts.frames = true,
+            .json => opts.json = true,
+            .golden => opts.golden_path = match.value.?,
+            .frames_dir => opts.frames_dir = match.value.?,
+        },
+    };
     if (!positional_seen) return Error.MissingTapePath;
     return opts;
+}
+
+fn flagError(failure: cli_flags.Failure) Error {
+    return switch (failure) {
+        .missing_value => |flag| if (std.mem.eql(u8, flag, "--golden"))
+            Error.MissingGoldenPath
+        else
+            Error.MissingFramesDirPath,
+        else => Error.UnknownFlag,
+    };
 }
 
 pub fn run(alloc: std.mem.Allocator, args: []const [:0]const u8) !u8 {

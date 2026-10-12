@@ -1098,6 +1098,7 @@ fn runNonInteractiveWithDeps(
         },
         .acp => |rest| {
             const acp_opts = parseAcpArgs(rest) catch {
+                try writeFlagFailure(alloc, deps, .acp, rest);
                 try writeStderr(deps, "usage: fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]\n");
                 return usage_failure;
             };
@@ -1972,7 +1973,18 @@ fn runGithubWorkflow(
     deps: RunDeps,
     workflow: github_workflows.Workflow,
 ) !RunResult {
-    const opts = try parseWorkflowArgs(alloc, args);
+    const opts = parseWorkflowArgs(alloc, args) catch |err| switch (err) {
+        error.InvalidWorkflowArgs => {
+            const kind: TopLevelKind = switch (workflow) {
+                .pull_request => .pr,
+                .issue => .issue,
+            };
+            try writeFlagFailure(alloc, deps, kind, args);
+            try writeTopLevelUsage(cfg.command_catalog, deps, kind);
+            return usage_failure;
+        },
+        else => return err,
+    };
     defer opts.deinit(alloc);
 
     const prompt = switch (workflow) {
@@ -2518,6 +2530,7 @@ fn runTopLevelMcp(
     }
     if (std.mem.eql(u8, operation, "list")) {
         const list_args = parseMcpListArgs(rest[1..]) orelse {
+            try writeFlagFailure(alloc, deps, .mcp, rest[1..]);
             try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
             return usage_failure;
         };
@@ -2881,15 +2894,19 @@ const McpListArgs = struct {
 
 /// Parses `fx mcp list [--connect] [--json]`: either flag in any order, each at
 /// most once. Returns null for anything else so the caller prints usage.
+const McpListFlag = enum { connect, json };
+const mcp_list_flag_ids = cli_flags.idTable(McpListFlag, &builtin_commands.mcp_list_options);
+
 fn parseMcpListArgs(args: []const [:0]const u8) ?McpListArgs {
     var parsed: McpListArgs = .{};
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--connect") and !parsed.connect) {
-            parsed.connect = true;
-        } else if (std.mem.eql(u8, arg, "--json") and !parsed.json) {
-            parsed.json = true;
-        } else return null;
-    }
+    var parser: cli_flags.Parser = .init(&builtin_commands.mcp_list_options, args);
+    while (parser.next() catch return null) |item| switch (item) {
+        .positional => return null,
+        .option => |match| switch (mcp_list_flag_ids[match.index].?) {
+            .connect => parsed.connect = true,
+            .json => parsed.json = true,
+        },
+    };
     return parsed;
 }
 
@@ -2898,7 +2915,8 @@ test "mcp list accepts --connect and --json in any order, each once" {
     try std.testing.expectEqual(McpListArgs{ .json = true }, parseMcpListArgs(&.{"--json"}).?);
     try std.testing.expectEqual(McpListArgs{ .connect = true, .json = true }, parseMcpListArgs(&.{ "--connect", "--json" }).?);
     try std.testing.expectEqual(McpListArgs{ .connect = true, .json = true }, parseMcpListArgs(&.{ "--json", "--connect" }).?);
-    try std.testing.expectEqual(@as(?McpListArgs, null), parseMcpListArgs(&.{ "--json", "--json" }));
+    try std.testing.expectEqual(McpListArgs{ .json = true }, parseMcpListArgs(&.{ "--json", "--json" }).?);
+    try std.testing.expectEqual(@as(?McpListArgs, null), parseMcpListArgs(&.{"--json=1"}));
     try std.testing.expectEqual(@as(?McpListArgs, null), parseMcpListArgs(&.{"--bogus"}));
     try std.testing.expectEqual(@as(?McpListArgs, null), parseMcpListArgs(&.{"extra"}));
 }
@@ -2981,6 +2999,11 @@ fn parsedOptions(kind: TopLevelKind) ?[]const command_specs.OptionDoc {
         .usage => &builtin_commands.usage_options,
         .upgrade => &builtin_commands.upgrade_options,
         .workspace => &builtin_commands.workspace_options,
+        .session => &builtin_commands.session_options,
+        .acp => &builtin_commands.acp_options,
+        .pr, .issue => &builtin_commands.pr_options,
+        // Only `fx mcp list` reads flags through the shared parser.
+        .mcp => &builtin_commands.mcp_list_options,
         else => null,
     };
 }
@@ -3819,26 +3842,21 @@ fn globalLaunchErrorMessage(err: anyerror) ?[]const u8 {
     };
 }
 
+const AcpFlag = enum { model, ultrafast, no_ultrafast, log_file };
+const acp_flag_ids = cli_flags.idTable(AcpFlag, &builtin_commands.acp_options);
+
 fn parseAcpArgs(args: []const [:0]const u8) !AcpOptions {
     var opts = AcpOptions{};
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--model")) {
-            if (opts.model != null or i + 1 >= args.len) return error.InvalidAcpArgs;
-            i += 1;
-            opts.model = args[i];
-        } else if (std.mem.eql(u8, args[i], "--ultrafast") or std.mem.eql(u8, args[i], "--no-ultrafast")) {
-            const enabled = std.mem.eql(u8, args[i], "--ultrafast");
-            if (opts.ultrafast_override != null and opts.ultrafast_override.? != enabled) return error.InvalidAcpArgs;
-            opts.ultrafast_override = enabled;
-        } else if (std.mem.eql(u8, args[i], "--log-file")) {
-            if (opts.log_file != null or i + 1 >= args.len) return error.InvalidAcpArgs;
-            i += 1;
-            opts.log_file = args[i];
-        } else {
-            return error.InvalidAcpArgs;
-        }
-    }
+    var parser: cli_flags.Parser = .init(&builtin_commands.acp_options, args);
+    while (parser.next() catch return error.InvalidAcpArgs) |item| switch (item) {
+        .positional => return error.InvalidAcpArgs,
+        .option => |match| switch (acp_flag_ids[match.index].?) {
+            .model => opts.model = match.value.?,
+            .ultrafast => opts.ultrafast_override = true,
+            .no_ultrafast => opts.ultrafast_override = false,
+            .log_file => opts.log_file = match.value.?,
+        },
+    };
     return opts;
 }
 
@@ -3853,10 +3871,9 @@ test "ACP arguments accept an explicit ultrafast override" {
 
     const disabled = try parseAcpArgs(&.{@constCast("--no-ultrafast")});
     try std.testing.expectEqual(@as(?bool, false), disabled.ultrafast_override);
-    try std.testing.expectError(
-        error.InvalidAcpArgs,
-        parseAcpArgs(&.{ @constCast("--ultrafast"), @constCast("--no-ultrafast") }),
-    );
+    const last = try parseAcpArgs(&.{ "--ultrafast", "--no-ultrafast", "--model=a", "--model", "b" });
+    try std.testing.expectEqual(@as(?bool, false), last.ultrafast_override);
+    try std.testing.expectEqualStrings("b", last.model.?);
 }
 
 fn parseLocalSurfaceArgs(args: []const [:0]const u8) !LocalSurfaceOptions {
@@ -4005,33 +4022,58 @@ fn parseWorkspaceArgs(args: []const [:0]const u8) !WorkspaceOptions {
     return error.InvalidWorkspaceArgs;
 }
 
+const SessionFlag = enum { id, allow_large, json };
+const session_flag_ids = cli_flags.idTable(SessionFlag, &builtin_commands.session_options);
+
+/// The flags and the one target shared by `fx session`, `fx session migrate`,
+/// and `fx session recover`. A repeated `--id` keeps its last value; two
+/// targets, or a positional target with `--id`, are an error.
+const SessionTargetArgs = struct {
+    format: output_contracts.OutputFormat = .text,
+    allow_large: bool = false,
+    /// Trimmed and non-empty; null when no target was given.
+    target: ?[]const u8 = null,
+    /// The target came from `--id`, so `last` is a literal ID.
+    exact_id: bool = false,
+};
+
+fn parseSessionTargetArgs(args: []const [:0]const u8) error{InvalidSessionArgs}!SessionTargetArgs {
+    var parsed: SessionTargetArgs = .{};
+    var positional: ?[]const u8 = null;
+    var id_flag: ?[]const u8 = null;
+    var parser: cli_flags.Parser = .init(&builtin_commands.session_options, args);
+    while (parser.next() catch return error.InvalidSessionArgs) |item| switch (item) {
+        .positional => |arg| {
+            if (positional != null) return error.InvalidSessionArgs;
+            positional = arg;
+        },
+        .option => |match| switch (session_flag_ids[match.index].?) {
+            .id => id_flag = match.value.?,
+            .allow_large => parsed.allow_large = true,
+            .json => parsed.format = .json,
+        },
+    };
+    if (positional != null and id_flag != null) return error.InvalidSessionArgs;
+    const raw = id_flag orelse positional orelse return parsed;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return error.InvalidSessionArgs;
+    parsed.target = trimmed;
+    parsed.exact_id = id_flag != null;
+    return parsed;
+}
+
 fn parseSessionDetailArgs(
     alloc: Allocator,
     args: []const [:0]const u8,
 ) !SessionDetailOptions {
-    var options = SessionDetailOptions{};
-    errdefer options.deinit(alloc);
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "--json")) {
-            options.format = .json;
-            continue;
-        }
-        if (options.target != null) return error.InvalidSessionDetailArgs;
-        const exact_id = std.mem.eql(u8, arg, "--id");
-        if (exact_id) {
-            i += 1;
-            if (i >= args.len) return error.InvalidSessionDetailArgs;
-        }
-        const trimmed = std.mem.trim(u8, args[i], " \t\r\n");
-        if (trimmed.len == 0) return error.InvalidSessionDetailArgs;
-        if (!exact_id and std.mem.eql(u8, trimmed, "last")) {
-            options.target = .last;
-            continue;
-        }
-        options.target = .{ .id = try alloc.dupe(u8, trimmed) };
-    }
+    const parsed = parseSessionTargetArgs(args) catch return error.InvalidSessionDetailArgs;
+    if (parsed.allow_large) return error.InvalidSessionDetailArgs;
+    var options = SessionDetailOptions{ .format = parsed.format };
+    const target = parsed.target orelse return options;
+    options.target = if (!parsed.exact_id and std.mem.eql(u8, target, "last"))
+        .last
+    else
+        .{ .id = try alloc.dupe(u8, target) };
     return options;
 }
 
@@ -4039,35 +4081,12 @@ fn parseSessionMigrationArgs(
     alloc: Allocator,
     args: []const [:0]const u8,
 ) !SessionMigrationOptions {
-    var format: output_contracts.OutputFormat = .text;
-    var allow_large = false;
-    var session_id: ?[]u8 = null;
-    errdefer if (session_id) |id| alloc.free(id);
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "--json")) {
-            format = .json;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--allow-large")) {
-            allow_large = true;
-            continue;
-        }
-        if (session_id != null) return error.InvalidSessionMigrationArgs;
-        const exact_id = std.mem.eql(u8, arg, "--id");
-        if (exact_id) {
-            i += 1;
-            if (i >= args.len) return error.InvalidSessionMigrationArgs;
-        }
-        const trimmed = std.mem.trim(u8, args[i], " \t\r\n");
-        if (trimmed.len == 0) return error.InvalidSessionMigrationArgs;
-        session_id = try alloc.dupe(u8, trimmed);
-    }
+    const parsed = parseSessionTargetArgs(args) catch return error.InvalidSessionMigrationArgs;
+    const target = parsed.target orelse return error.InvalidSessionMigrationArgs;
     return .{
-        .format = format,
-        .session_id = session_id orelse return error.InvalidSessionMigrationArgs,
-        .allow_large = allow_large,
+        .format = parsed.format,
+        .session_id = try alloc.dupe(u8, target),
+        .allow_large = parsed.allow_large,
     };
 }
 
@@ -4075,30 +4094,12 @@ fn parseSessionRecoveryArgs(
     alloc: Allocator,
     args: []const [:0]const u8,
 ) !SessionRecoveryOptions {
-    var format: output_contracts.OutputFormat = .text;
-    var session_id: ?[]u8 = null;
-    errdefer if (session_id) |id| alloc.free(id);
-
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "--json")) {
-            format = .json;
-            continue;
-        }
-        if (session_id != null) return error.InvalidSessionRecoveryArgs;
-        const exact_id = std.mem.eql(u8, arg, "--id");
-        if (exact_id) {
-            i += 1;
-            if (i >= args.len) return error.InvalidSessionRecoveryArgs;
-        }
-        const trimmed = std.mem.trim(u8, args[i], " \t\r\n");
-        if (trimmed.len == 0) return error.InvalidSessionRecoveryArgs;
-        session_id = try alloc.dupe(u8, trimmed);
-    }
+    const parsed = parseSessionTargetArgs(args) catch return error.InvalidSessionRecoveryArgs;
+    if (parsed.allow_large) return error.InvalidSessionRecoveryArgs;
+    const target = parsed.target orelse return error.InvalidSessionRecoveryArgs;
     return .{
-        .format = format,
-        .session_id = session_id orelse return error.InvalidSessionRecoveryArgs,
+        .format = parsed.format,
+        .session_id = try alloc.dupe(u8, target),
     };
 }
 
@@ -4148,26 +4149,25 @@ fn removedResumeHint(err: anyerror) ?[]const u8 {
     };
 }
 
+const WorkflowFlag = enum { auto, create };
+// `fx issue` documents the same flags as `fx pr`.
+const workflow_flag_ids = cli_flags.idTable(WorkflowFlag, &builtin_commands.pr_options);
+
+/// Reads `--auto` and `--create`, then joins the rest into the context.
 fn parseWorkflowArgs(alloc: Allocator, args: []const [:0]const u8) !WorkflowOptions {
     var auto_permission = false;
     var create = false;
-    var start_index: usize = 0;
-    while (start_index < args.len) : (start_index += 1) {
-        if (std.mem.eql(u8, args[start_index], "--auto")) {
-            auto_permission = true;
-            continue;
-        }
-        if (std.mem.eql(u8, args[start_index], "--create")) {
-            create = true;
-            continue;
-        }
-        break;
-    }
+    var parser: cli_flags.Parser = .initPrefix(&builtin_commands.pr_options, args);
+    // Prefix mode stops at positionals, so every item is an option.
+    while (parser.next() catch return error.InvalidWorkflowArgs) |item| switch (workflow_flag_ids[item.option.index].?) {
+        .auto => auto_permission = true,
+        .create => create = true,
+    };
 
     return .{
         .auto_permission = auto_permission,
         .create = create,
-        .context = try joinArgs(alloc, args[start_index..]),
+        .context = try joinArgs(alloc, args[parser.index..]),
     };
 }
 
@@ -4568,7 +4568,7 @@ test "parse acp args extracts known flags and rejects invalid arguments" {
     try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(&.{@constCast("--log-file")}));
     try std.testing.expectError(
         error.InvalidAcpArgs,
-        parseAcpArgs(&.{ @constCast("--model"), @constCast("first"), @constCast("--model"), @constCast("second") }),
+        parseAcpArgs(&.{ @constCast("--model"), @constCast("first"), @constCast("stray") }),
     );
 }
 
@@ -4737,10 +4737,6 @@ test "parse session list args supports bounded canonical pagination" {
     );
     try std.testing.expectError(
         error.InvalidLocalSurfaceArgs,
-        parseSessionListArgs(&.{ @constCast("--limit"), @constCast("2"), @constCast("--limit"), @constCast("3") }),
-    );
-    try std.testing.expectError(
-        error.InvalidLocalSurfaceArgs,
         parseSessionListArgs(&.{@constCast("--cursor")}),
     );
     try std.testing.expectError(
@@ -4772,6 +4768,25 @@ test "parse session detail args owns string ids and frees through deinit" {
 
     try std.testing.expectError(error.InvalidSessionDetailArgs, parseSessionDetailArgs(std.testing.allocator, &.{ @constCast("a"), @constCast("b") }));
     try std.testing.expectError(error.InvalidSessionDetailArgs, parseSessionDetailArgs(std.testing.allocator, &.{@constCast("")}));
+}
+
+test "session target flags keep the last --id and reject two targets" {
+    var repeated = try parseSessionDetailArgs(std.testing.allocator, &.{ "--id=a", "--id", "last", "--json" });
+    defer repeated.deinit(std.testing.allocator);
+    switch (repeated.target.?) {
+        .id => |value| try std.testing.expectEqualStrings("last", value),
+        else => return error.TestExpectedEqual,
+    }
+    try std.testing.expectEqual(output_contracts.OutputFormat.json, repeated.format);
+
+    try std.testing.expectError(error.InvalidSessionDetailArgs, parseSessionDetailArgs(std.testing.allocator, &.{ "last", "--id", "a" }));
+    try std.testing.expectError(error.InvalidSessionDetailArgs, parseSessionDetailArgs(std.testing.allocator, &.{"--allow-large"}));
+    try std.testing.expectError(error.InvalidSessionRecoveryArgs, parseSessionRecoveryArgs(std.testing.allocator, &.{ "x", "--allow-large" }));
+
+    const migration = try parseSessionMigrationArgs(std.testing.allocator, &.{ "--allow-large", "--id=x" });
+    defer std.testing.allocator.free(migration.session_id);
+    try std.testing.expect(migration.allow_large);
+    try std.testing.expectEqualStrings("x", migration.session_id);
 }
 
 test "parse session detail args accepts explicit id flag" {
@@ -5587,7 +5602,7 @@ test "runIfRequested invalid local flags write usage" {
     const result = try runIfRequestedWithDeps(std.testing.allocator, &.{ @constCast("status"), @constCast("--wat") }, testConfig(), capture.deps());
     try std.testing.expectEqual(usage_failure, result);
     try std.testing.expectEqualStrings("", capture.stdout.written());
-    try std.testing.expectEqualStrings("usage: fx status [--json]\n", capture.stderr.written());
+    try std.testing.expectEqualStrings("fx status: unknown flag --wat\nusage: fx status [--json]\n", capture.stderr.written());
 }
 
 test "runIfRequested invalid json local flags write json error" {
