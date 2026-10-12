@@ -424,7 +424,7 @@ pub const top_level_flags = [_]TopLevelFlag{
     },
     .{
         .usage = "--ask, --auto, --full-access",
-        .description = "Shortcuts for --permission-mode; --yolo is an alias for --full-access",
+        .description = "Shortcuts for each permission mode; --yolo means --full-access",
     },
     .{
         .usage = "-c, --continue",

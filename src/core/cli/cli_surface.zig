@@ -4510,7 +4510,7 @@ test "global launch flags let the last one win" {
         strict: ?bool = null,
         permission: ?types.PermissionMode = null,
     }{
-        .{ .args = &.{ "--fast", "--no-fast" }, .fast = false },
+        .{ .args = &.{ "--fast", "--no-fast" }, .fast = false, .ultrafast = false },
         .{ .args = &.{ "--no-fast", "--fast" }, .fast = true, .ultrafast = false },
         .{ .args = &.{ "--ultrafast", "--fast" }, .fast = true, .ultrafast = false },
         .{ .args = &.{ "--fast", "--ultrafast" }, .fast = false, .ultrafast = true },
@@ -4557,7 +4557,7 @@ test "argsAfterGlobalLaunchArgs skips provider routing flags" {
 
 test "additional directory flags fail closed when malformed" {
     try std.testing.expectError(
-        error.MissingAddDirectoryValue,
+        error.InvalidFlag,
         parseGlobalLaunchArgs(std.testing.allocator, &.{@constCast("--add-dir")}),
     );
     try std.testing.expectError(
@@ -5265,7 +5265,7 @@ test "workspace launch modifiers still reject unsupported local command help" {
         testConfig(),
         deps,
     );
-    try std.testing.expectEqual(RunResult.handled_failure, result);
+    try std.testing.expectEqual(usage_failure, result);
     try std.testing.expectEqualStrings("", capture.stdout.written());
     try std.testing.expect(std.mem.find(u8, capture.stderr.written(), "only supported for interactive, resume, ask, ACP, PR, and issue launches") != null);
 }
@@ -5277,11 +5277,15 @@ test "global workspace launch option errors use user-facing copy" {
     }{
         .{
             .args = &.{@constCast("--add-dir")},
+            .expected = "fx: --add-dir needs a value\n",
+        },
+        .{
+            .args = &.{@constCast("--add-dir=")},
             .expected = "fx: --add-dir requires a directory path\n",
         },
         .{
-            .args = &.{ @constCast("--no-additional-dirs"), @constCast("--no-additional-dirs") },
-            .expected = "fx: --no-additional-dirs may only be specified once\n",
+            .args = &.{@constCast("--fast=on")},
+            .expected = "fx: --fast doesn't take a value\n",
         },
     };
 
