@@ -1822,9 +1822,15 @@ fn parseProfileOnlyFields(
 
     // `status_line` and `sound` were `statusLine` and `notifications`. The
     // older name is read first, so the current one wins any value both set.
-    for ([_]?std.json.Value{ root.object.get("statusLine"), root.object.get("status_line") }) |group| {
+    // The current names were unknown keys before, which startup ignores, so a
+    // value under one that isn't an object is still ignored.
+    for ([_]?std.json.Value{ root.object.get("statusLine"), root.object.get("status_line") }, 0..) |group, index| {
         if (group) |value| {
             if (value != .object) {
+                if (index == 1) {
+                    debug_trace.logf("config", "ignoring status_line: not an object", .{});
+                    continue;
+                }
                 if (!tolerate_non_object_user_containers) return error.InvalidStatusLineType;
             } else {
                 if (value.object.get("context")) |v| {
@@ -1845,9 +1851,13 @@ fn parseProfileOnlyFields(
         }
     }
 
-    for ([_]?std.json.Value{ root.object.get("notifications"), root.object.get("sound") }) |group| {
+    for ([_]?std.json.Value{ root.object.get("notifications"), root.object.get("sound") }, 0..) |group, index| {
         if (group) |sound_value| {
-            if (sound_value != .object) return error.InvalidNotificationsType;
+            if (sound_value != .object) {
+                if (index == 0) return error.InvalidNotificationsType;
+                debug_trace.logf("config", "ignoring sound: not an object", .{});
+                continue;
+            }
             if (sound_value.object.get("turn_end")) |value| {
                 if (value != .bool) return error.InvalidNotificationTurnEndType;
                 settings.notification_turn_end = value.bool;
@@ -2991,7 +3001,13 @@ test "renamed groups read either spelling and the current one wins" {
     try std.testing.expect(older.statusline_session.?);
     try std.testing.expect(!older.notification_attention_required.?);
 
-    try std.testing.expectError(error.InvalidNotificationsType, parseSettingsJson(alloc, "{\"sound\":\"on\"}"));
+    // The current names were unknown keys before the rename, so a stray value
+    // of another type under one is ignored, not a startup failure.
+    var stray = try parseSettingsJson(alloc, "{\"sound\":false,\"status_line\":7,\"notifications\":{\"max\":true}}");
+    defer stray.deinit(alloc);
+    try std.testing.expect(stray.notification_max.?);
+    try std.testing.expect(stray.statusline_context == null);
+    try std.testing.expectError(error.InvalidNotificationsType, parseSettingsJson(alloc, "{\"notifications\":\"on\"}"));
 }
 
 test "setting overrides sit above the files, nest dotted keys, and keep the last value" {

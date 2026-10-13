@@ -1767,7 +1767,9 @@ fn putStringArray(
 /// The object a renamed settings group is saved under, such as `status_line`
 /// for the older `statusLine`. Values that only the older key sets move into
 /// the current one, and the older key is removed, so the file keeps one
-/// spelling. Sets `changed` when the older key was there.
+/// spelling. Sets `changed` when the older key was there. The current name
+/// was an unknown key before the rename, so a value under it that isn't an
+/// object is one fx never used, and saving replaces it.
 fn renamedGroup(
     arena: Allocator,
     root: *std.json.ObjectMap,
@@ -1775,9 +1777,12 @@ fn renamedGroup(
     current: []const u8,
     changed: *bool,
 ) !*std.json.ObjectMap {
-    if (root.get(current)) |value| {
-        if (value != .object) return error.InvalidSettingsFormat;
-    } else {
+    const existing = root.get(current);
+    if (existing == null or existing.? != .object) {
+        if (existing != null) {
+            debug_trace.logf("config", "replacing {s}={s} that fx ignored, to save the {s} settings", .{ current, @tagName(existing.?), current });
+            changed.* = true;
+        }
         try root.put(arena, current, .{ .object = .empty });
     }
     if (root.get(older)) |value| {
@@ -2206,7 +2211,8 @@ fn validateKnownSettingsObject(
                         if (enabled != .bool) return error.InvalidSettingsFormat;
                     }
                 }
-            } else if (!tolerate_non_object_user_containers) {
+            } else if (!tolerate_non_object_user_containers and comptime std.mem.eql(u8, name, "statusLine")) {
+                // A non-object `status_line` predates the rename; saving replaces it.
                 return error.InvalidSettingsFormat;
             }
         }
@@ -2535,6 +2541,34 @@ test "saving moves a renamed group, and remove clears either spelling" {
     defer alloc.free(bytes);
     try std.testing.expect(std.mem.find(u8, bytes, "notifications") == null);
     try std.testing.expect(std.mem.find(u8, bytes, "\"max\"") == null);
+}
+
+test "saving a renamed group replaces a stray value fx ignored under its current name" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try writeStoreFixture(tmp.dir, "home/.fx/settings.json", "{\"sound\":false,\"status_line\":7,\"notifications\":{\"max\":true}}\n");
+    const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home");
+    defer alloc.free(home);
+    var store = try Store.initFromHome(alloc, home, .writable);
+    defer store.deinit(alloc);
+
+    var outcome = try store.applyUserPatch(alloc, .{
+        .notification_turn_end = false,
+        .statusline_item = .{ .item = .context, .enabled = true },
+    });
+    defer outcome.deinit(alloc);
+    try std.testing.expect(outcome == .committed);
+    const bytes = try store.readPrimaryForTest(alloc);
+    defer alloc.free(bytes);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, bytes, .{});
+    defer parsed.deinit();
+    const sound = parsed.value.object.get("sound").?.object;
+    try std.testing.expect(sound.get("max").?.bool);
+    try std.testing.expect(!sound.get("turn_end").?.bool);
+    try std.testing.expect(parsed.value.object.get("status_line").?.object.get("context").?.bool);
+    try std.testing.expect(parsed.value.object.get("notifications") == null);
 }
 
 test "durable validation rejects malformed workspace statusline" {
