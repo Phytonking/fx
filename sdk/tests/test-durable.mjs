@@ -151,6 +151,7 @@ const lookup = {
 const send = {
   name: "send",
   description: "Sends an invoice",
+  idempotent: false,
   inputSchema: { type: "object", properties: { key: { type: "string" } } },
   execute: async (_input, { executionId }) => {
     runs.push(["send", executionId]);
@@ -160,6 +161,24 @@ const send = {
       await held.promise;
     }
     return "sent";
+  },
+};
+// An idempotent writer: a service that dedupes on the execution id, so a
+// call that runs again under the same id changes nothing twice.
+const save = {
+  name: "save",
+  description: "Saves a key",
+  idempotent: true,
+  writes: true,
+  inputSchema: { type: "object", properties: { key: { type: "string" } } },
+  execute: async (_input, { executionId }) => {
+    runs.push(["save", executionId]);
+    const held = gates.get("save");
+    if (held) {
+      held.markStarted();
+      await held.promise;
+    }
+    return "saved";
   },
 };
 
@@ -307,7 +326,7 @@ const agentOptions = (durability, extra = {}) => ({
   apiKey: "durable-key",
   gatewayChatUrl: `http://127.0.0.1:${port}/chat`,
   model: "durable/model",
-  tools: [lookup, send],
+  tools: [lookup, send, save],
   durability,
   ...extra,
 });
@@ -354,6 +373,10 @@ const until = async (check, what, ms = 10_000) => {
   }
 };
 
+// A prompt the fake model echoes back, so its turn stores more than 64 KiB
+// and its end saves a checkpoint.
+const bulky = "x".repeat(40 * 1024);
+
 // A child process for the crash tests. With a tool, it starts a turn whose
 // tool never finishes and prints the session id once the tool runs. With
 // `accepted`, it dies the moment its prompt is accepted.
@@ -371,10 +394,12 @@ if (childMode) {
   const agent = createFxAgent(agentOptions(process.argv[7] === "leased" ? await leasedAt(dir) : await durabilityAt(dir)));
   const session = agent.session();
   void session.prompt(`use ${tool}`, { messageId: "crash-turn" }).result.catch(() => {});
-  // A call starts only after its record lands, so the crash comes the moment
-  // the tool runs.
   await gates.get(tool).started;
-  console.log(JSON.stringify({ sessionId: session.id }));
+  // A lookup starts before its intent is stored: wait for the intent, so the
+  // crash comes after the log holds the call. Any other call starts only
+  // after its intent lands, so the crash comes the moment it runs.
+  if (tool === "lookup") await agent[Symbol.for("libfx.durableInternals")].settled(session.id);
+  console.log(JSON.stringify({ sessionId: session.id, executionId: runs.find(([name]) => name === tool)?.[1] }));
   await new Promise(() => {});
 }
 
@@ -594,16 +619,20 @@ if (durabilityKind === "memory") {
 }
 
 if (durabilityKind !== "memory") {
-  test("a session's log reads stay one small page however long its history grows", async () => {
+  test("a session's log reads stop at its newest checkpoint, so they stay one small page however long its history grows", async () => {
     const [durability, listed] = listingsOf(await durabilityFor());
-    const agent = createFxAgent(agentOptions(durability));
+    let saves = 0;
+    const agent = createFxAgent(agentOptions(durability, { onEvent: (event) => { if (event.type === "checkpoint.save") saves += 1; } }));
     const session = agent.session();
     for (let turn = 0; turn < 8; turn += 1) assert.equal((await session.prompt(`turn ${turn}`).result).stopReason, "end_turn");
+    // Short turns save no checkpoint; one that stores more than 64 KiB does.
+    assert.equal((await session.prompt(bulky).result).stopReason, "end_turn");
+    await until(() => saves === 1, "the checkpoint after 64 KiB");
     listed.length = 0;
     const { text } = await collect(session.prompt("one more"));
     assert.equal(text, "echo: one more");
     assert.ok(listed.length > 0, "the turn read its log");
-    assert.ok(Math.max(...listed) <= 10, `each read stopped at the newest checkpoint within one page: ${listed.join(", ")}`);
+    assert.ok(Math.max(...listed) <= 10, `each read stopped at the newest checkpoint within one page, before the turns under it: ${listed.join(", ")}`);
     await agent.close();
   });
 }
@@ -714,7 +743,7 @@ test("cancel stops the running turn; dropping its view does not", async () => {
   await agent.close();
 });
 
-test("every turn's end saves a checkpoint, and the next turn starts from it", async () => {
+test("a turn's end saves a checkpoint once the records since the last reach 64 KiB, and the next turn starts from it", async () => {
   const saves = [];
   const opens = [];
   const agent = createFxAgent(agentOptions(await durabilityFor(), {
@@ -725,8 +754,16 @@ test("every turn's end saves a checkpoint, and the next turn starts from it", as
   }));
   const session = agent.session();
   for (const text of ["use lookup", "hello again"]) assert.equal((await collect(session.prompt(text))).result.stopReason, "end_turn");
+  assert.equal(saves.length, 0, `short turns save no checkpoint: ${JSON.stringify(saves)}`);
+  const short = opens.filter((open) => open.turns > 0);
+  assert.ok(short.length >= 1 && short.every((open) => !open.checkpoint && open.events > 0), JSON.stringify(opens));
+  // The save follows the turn's end.
+  assert.equal((await collect(session.prompt(bulky))).result.stopReason, "end_turn");
+  await until(() => saves.length > 0, "the checkpoint after 64 KiB");
+  assert.equal(saves.length, 1, `the turn that crossed 64 KiB saved one: ${JSON.stringify(saves)}`);
+  opens.length = 0;
+  assert.equal((await collect(session.prompt("after the checkpoint"))).result.stopReason, "end_turn");
   await agent.close();
-  assert.equal(saves.length, 2, JSON.stringify(saves));
   const later = opens.filter((open) => open.turns > 0);
   assert.ok(later.length >= 1 && later.every((open) => open.checkpoint && open.events === 0), JSON.stringify(opens));
 });
@@ -789,10 +826,10 @@ test("a turn longer than a function's time limit continues in the next delivery"
   const lines = await readLines(session.stream(0), 32);
   assert.equal(lines.filter((line) => line.type === "turn_yield").length, 3);
   assert.equal(lines.filter((line) => line.type === "turn_resume").length, 3);
-  // A checkpoint at each yield and at the turn's end, and each delivery
-  // after a yield loaded its checkpoint with no record after it.
+  // A checkpoint at each yield, and none at the turn's short end; each
+  // delivery after a yield loaded its checkpoint with no record after it.
   assert.deepEqual(errors, []);
-  assert.equal(saves.length, 4, JSON.stringify(saves));
+  assert.equal(saves.length, 3, JSON.stringify(saves));
   const resumed = opens.filter((open) => open.resumable);
   assert.equal(resumed.length, 3);
   assert.ok(resumed.every((open) => open.checkpoint && open.events === 0), JSON.stringify(resumed));
@@ -824,8 +861,20 @@ for (const tool of ["lookup", "send"]) {
     assert.equal(lines.filter((line) => line.type === "turn_yield").length, 1);
     assert.equal(lines.filter((line) => line.type === "turn_resume").length, 1);
     assert.equal(lines.filter((line) => line.type === "turn_end").length, 1);
+    if (tool === "send") assertEndedAsPossiblyRun(lines, lines.find((line) => line.type === "tool_start" && line.name === "send").id);
     await agent.close();
   });
+}
+
+// A call the resume answers as possibly run ends on the session stream, once,
+// with what the model heard, so a viewer never shows it running for good.
+function assertEndedAsPossiblyRun(lines, id) {
+  const ends = lines.filter((line) => line.type === "tool_end" && line.id === id);
+  assert.equal(ends.length, 1, `the call's tool_end shows once: ${JSON.stringify(lines.filter((line) => line.id === id))}`);
+  assert.equal(ends[0].isError, true);
+  assert.equal(ends[0].name, "send");
+  assert.ok(typeof ends[0].content === "string" && ends[0].content.includes("may have partly run"), JSON.stringify(ends[0]));
+  assert.ok(JSON.stringify(requests.at(-1)).includes(JSON.stringify(ends[0].content).slice(1, -1)), "the line says what the model heard");
 }
 
 test("a call the deadline cuts off 3 times in a row is not run again, and the model hears it may have partly run", async () => {
@@ -908,8 +957,8 @@ test("a worker that froze is replaced, and its next write is refused", async () 
 });
 
 if (durabilityKind !== "memory") {
-  for (const tool of ["lookup", "send"]) {
-    test(`a crash during ${tool} ${tool === "send" ? "never sends twice, and the turn goes on" : "reruns the idempotent call"}`, async () => {
+  for (const tool of ["lookup", "send", "save"]) {
+    test(`a crash during ${tool} ${tool === "send" ? "never sends twice, and the turn goes on" : "reruns the idempotent call under the same execution id"}`, async () => {
       const dir = await mkdtemp(join(tmpdir(), "libfx-durable-crash-"));
       dirs.push(dir);
       const child = spawn(process.execPath, [
@@ -924,7 +973,7 @@ if (durabilityKind !== "memory") {
       let output = "";
       child.stdout.on("data", (chunk) => { output += chunk; });
       await until(() => output.includes("\n"), "the child to start its tool", 30_000);
-      const { sessionId } = JSON.parse(output.trim().split("\n")[0]);
+      const { sessionId, executionId } = JSON.parse(output.trim().split("\n")[0]);
       child.kill("SIGKILL");
       await new Promise((exited) => child.once("exit", exited));
       const runsBefore = runs.filter(([name]) => name === tool).length;
@@ -938,9 +987,22 @@ if (durabilityKind !== "memory") {
         // The turn went on at once, and the model was told the call may have
         // partly run.
         assert.ok(JSON.stringify(requests.at(-1)).includes("may have partly run"), "the model hears the call may have run");
+        // Its viewers see the call end as the model does, once the turn
+        // resumed. The dead worker's `tool_start` may not have landed.
+        const lines = await readLines(session.stream(0), 64);
+        const ended = lines.filter((line) => line.type === "tool_end" && line.name === "send");
+        assert.equal(ended.length, 1, "the call ended once");
+        assert.equal(ended[0].isError, true);
+        const answer = toolResults(requests.at(-1)).find((part) => part.toolName === "send");
+        assert.equal(ended[0].id, answer?.toolCallId, "the end names the call the model heard about");
+        assert.ok(JSON.stringify(answer).includes(ended[0].content), `the line says what the model heard: ${ended[0].content}`);
+        assert.ok(lines.indexOf(ended[0]) > lines.findIndex((line) => line.type === "turn_resume"), "the end comes after the turn resumed");
+        for (const start of lines.filter((line) => line.type === "tool_start" && line.name === "send")) assert.equal(start.id, ended[0].id);
       } else {
         // The last request shows how the resumed turn saw the call, if not.
         assert.equal(reran, 1, `the idempotent call ran again; the model last saw ${JSON.stringify(requests.at(-1)).slice(-600)}`);
+        // Under the id it started with, so a service keyed on it dedupes.
+        assert.deepEqual(runs.filter(([name]) => name === tool).slice(runsBefore).map(([, id]) => id), [executionId]);
       }
       await agent.close();
     });
@@ -1172,11 +1234,25 @@ test("a session object's model and instructions reach its model requests, over t
   await agent.close();
 });
 
+test("createFxAgent() refuses a host tool that does not say whether it is idempotent", async () => {
+  const durability = await durabilityFor();
+  const { idempotent: _idempotent, ...unmarked } = send;
+  const refusal = /tool send must set idempotent: true if running a call twice is safe, or idempotent: false if it is not/;
+  assert.throws(() => createFxAgent(agentOptions(durability, { tools: [lookup, unmarked] })), refusal);
+  const { name: _name, ...keyed } = unmarked;
+  assert.throws(() => createFxAgent(agentOptions(durability, { tools: { send: keyed } })), refusal);
+  assert.throws(() => createFxAgent(agentOptions(durability, { tools: [{ ...send, idempotent: "yes" }] })), refusal);
+  // A tool the provider runs has nothing to say.
+  const agent = createFxAgent(agentOptions(durability, { tools: [lookup, { name: "web_search", providerExecuted: true }] }));
+  await agent.close();
+});
+
 test("a tool that stops being idempotent changes the tools a checkpoint names", async () => {
   const durability = await durabilityFor();
   const first = createFxAgent(agentOptions(durability));
   const session = first.session();
-  assert.equal((await session.prompt("hello").result).stopReason, "end_turn");
+  assert.equal((await session.prompt(bulky).result).stopReason, "end_turn");
+  // Closing waits for the checkpoint that turn's end saves.
   await first.close();
 
   const mismatches = [];
@@ -1192,7 +1268,7 @@ test("a checkpoint names the libfx, tools and model that saved it, and a resume 
   const mismatches = (list) => (event) => { if (event.type === "checkpoint.mismatch") list.push(event); };
   const first = createFxAgent(agentOptions(durability));
   const session = first.session();
-  assert.equal((await session.prompt("hello").result).stopReason, "end_turn");
+  assert.equal((await session.prompt(bulky).result).stopReason, "end_turn");
   await first.close();
 
   const same = [];

@@ -108,10 +108,10 @@ test("tools may be an object keyed by name", async () => {
 
 test("calls run together until a writer, and results keep the model's order", async () => {
   const agent = await createFxEngine(options({
-    first: timed("first"),
-    second: timed("second"),
-    save: timed("save", { writes: true }),
-    after: timed("after"),
+    first: timed("first", { idempotent: true }),
+    second: timed("second", { writes: false }),
+    save: timed("save", { idempotent: true, writes: true }),
+    after: timed("after", { idempotent: true }),
   }));
   requests.length = 0;
   spans.length = 0;
@@ -129,6 +129,16 @@ test("calls run together until a writer, and results keep the model's order", as
   assert.ok(span.after.start >= span.save.end);
   const results = toolResults(requests.at(-1)).map((part) => part.toolName);
   assert.deepEqual(results, ["first", "second", "save", "after"]);
+});
+
+test("a tool that is not idempotent writes unless it says it does not", async () => {
+  const agent = await createFxEngine(options({ one: timed("one"), two: timed("two") }));
+  requests.length = 0;
+  spans.length = 0;
+  await run(agent, "call one two");
+  await agent.close();
+  const span = Object.fromEntries(spans.map((value) => [value.name, value]));
+  assert.ok(span.two.start >= span.one.end, "unmarked tools run one at a time");
 });
 
 test("execute receives the model's call id as its execution id", async () => {

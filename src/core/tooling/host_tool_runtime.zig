@@ -88,12 +88,20 @@ pub const Runtime = struct {
 
             const description_value = entry.object.get("description") orelse return error.InvalidHostTool;
             const schema_value = entry.object.get("inputSchema") orelse return error.InvalidHostTool;
-            // A tool that writes is a fence: earlier calls finish before it
-            // starts, and later calls wait for it.
-            const writes = if (entry.object.get("writes")) |value_| switch (value_) {
+            // A tool whose calls are safe to run twice says so. Its calls may
+            // run again after a crash, and only its calls run beside others
+            // unless it declares otherwise.
+            const idempotent = if (entry.object.get("idempotent")) |value_| switch (value_) {
                 .bool => |declared| declared,
                 else => return error.InvalidHostTool,
             } else false;
+            // A tool that writes is a fence: earlier calls finish before it
+            // starts, and later calls wait for it. A tool that does not say
+            // writes unless it is idempotent.
+            const writes = if (entry.object.get("writes")) |value_| switch (value_) {
+                .bool => |declared| declared,
+                else => return error.InvalidHostTool,
+            } else !idempotent;
             if (description_value != .string or schema_value != .object) return error.InvalidHostTool;
             if (description_value.string.len > max_description_bytes) {
                 return error.HostToolDescriptionTooLarge;
@@ -129,6 +137,7 @@ pub const Runtime = struct {
                 .model_schema = .{ .name = name, .description = "" },
                 .model_visible = false,
                 .host_concurrent = !writes,
+                .host_idempotent = idempotent,
                 .executor_kind = .host,
                 .activity_kind = .command,
                 .action_label = "Running",
@@ -354,22 +363,31 @@ test "host tool runtime bounds descriptions at 64 KiB" {
     }
 }
 
-test "host tools run concurrently unless they declare writes" {
+test "host tools write unless they are idempotent or say they do not" {
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
-        \\[{"name":"read","description":"Read","inputSchema":{}},
-        \\ {"name":"write","description":"Write","inputSchema":{},"writes":true}]
+        \\[{"name":"lookup","description":"Look up","inputSchema":{},"idempotent":true},
+        \\ {"name":"save","description":"Save","inputSchema":{},"idempotent":true,"writes":true},
+        \\ {"name":"send","description":"Send","inputSchema":{}},
+        \\ {"name":"read","description":"Read","inputSchema":{},"writes":false}]
     , .{});
     defer parsed.deinit();
     var runtime = try Runtime.init(std.testing.allocator, parsed.value);
     defer runtime.deinit();
-    try std.testing.expect(runtime.tools[0].host_concurrent);
-    try std.testing.expect(!runtime.tools[1].host_concurrent);
+    try std.testing.expect(runtime.tools[0].host_concurrent and runtime.tools[0].host_idempotent);
+    try std.testing.expect(!runtime.tools[1].host_concurrent and runtime.tools[1].host_idempotent);
+    try std.testing.expect(!runtime.tools[2].host_concurrent and !runtime.tools[2].host_idempotent);
+    try std.testing.expect(runtime.tools[3].host_concurrent and !runtime.tools[3].host_idempotent);
 
-    const invalid = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+    for ([_][]const u8{
         \\[{"name":"write","description":"Write","inputSchema":{},"writes":"yes"}]
-    , .{});
-    defer invalid.deinit();
-    try std.testing.expectError(error.InvalidHostTool, Runtime.init(std.testing.allocator, invalid.value));
+        ,
+        \\[{"name":"lookup","description":"Look up","inputSchema":{},"idempotent":"yes"}]
+        ,
+    }) |json| {
+        const invalid = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json, .{});
+        defer invalid.deinit();
+        try std.testing.expectError(error.InvalidHostTool, Runtime.init(std.testing.allocator, invalid.value));
+    }
 }
 
 test "host tool runtime rejects duplicate and invalid names" {

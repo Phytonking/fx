@@ -1847,10 +1847,14 @@ fn handleKernelRestore(
         .code = ErrorCode.invalid_request,
         .message = "A journaled libfx session cannot restore a checkpoint",
     });
-    const saved = active.session_rt.agent.restoreCheckpoint(alloc, bytes) catch
+    const saved = active.session_rt.agent.restoreCheckpoint(alloc, bytes) catch |err|
         return state.writer.writeError(alloc, msg.id, .{
             .code = ErrorCode.invalid_params,
-            .message = "Invalid or non-fresh libfx checkpoint",
+            // The host reports a newer checkpoint as it reports a newer journal.
+            .message = if (err == error.UnsupportedCheckpointVersion)
+                "libfx checkpoint was written by a newer fx"
+            else
+                "Invalid or non-fresh libfx checkpoint",
         });
     defer saved.free(alloc);
     if (saved.isEmpty()) return state.writer.writeResponse(alloc, msg.id, "null");

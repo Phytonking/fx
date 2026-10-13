@@ -3343,7 +3343,9 @@ test "ACP host-disabled new load and resume skip project MCP effects" {
         .{},
     );
     defer captured_file.close(io_mod.getIo());
-    const captured = try io_mod.readFileToEnd(alloc, &captured_file, 64 * 1024);
+    // Each session response lists the model catalog, which grows with the
+    // Gateway's, so the whole capture is read rather than a fixed slice.
+    const captured = try io_mod.readFileToEnd(alloc, &captured_file, 1024 * 1024);
     defer alloc.free(captured);
     try std.testing.expectEqual(
         @as(usize, 3),

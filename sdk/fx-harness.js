@@ -5,6 +5,9 @@ import { coreAnswered, engineInternals, journalMarksWanted, normalizeInstruction
 import { createCredentialMemory, credentialMemory } from "./subscription.js";
 
 const encoder = new TextEncoder();
+// Every worker reads each record since the session's last checkpoint, so a
+// durable session checkpoints far sooner than the engine's default.
+const durableCheckpointAfterBytes = 64 * 1024;
 
 /**
  * The fx harness for `createDurableAgentFactory`. `createEngine(options)`
@@ -36,9 +39,11 @@ export function fxHarness({ createEngine, defaultApiKey = async () => undefined 
           // The core folds the session from the marks on each record.
           persistence: { ...store, [journalMarksWanted]: true },
           inputsDurable: true,
-          // A checkpoint at every turn end; where a turn yields the core
-          // saves one itself before it lets the session go.
-          checkpointAfterBytes: 0,
+          // A turn's end saves a checkpoint once the records since the last
+          // one reach this many bytes, so a short turn writes none and a
+          // worker reads back little; where a turn yields, the core saves
+          // one itself before it lets the session go.
+          checkpointAfterBytes: durableCheckpointAfterBytes,
           ...(context === undefined || context === null ? {} : { toolContext: context }),
         });
         return fxSession(engine, idempotent);
@@ -172,9 +177,20 @@ function claimedTools(tools, ready) {
   return tools;
 }
 
+// The tools whose cut-off calls run again. Every tool the host runs must say
+// whether that is safe, so the choice is never a default: `idempotent: true`
+// when running a call twice is harmless, `false` when it is not. A tool that
+// is not an object is left for the engine to refuse.
 function idempotentTools(tools) {
   const names = new Set();
-  for (const tool of toolEntries(tools)) if (tool?.idempotent === true && typeof tool.name === "string") names.add(tool.name);
+  for (const [index, tool] of toolEntries(tools).entries()) {
+    if (!tool || typeof tool !== "object" || tool.providerExecuted === true) continue;
+    if (typeof tool.idempotent !== "boolean") {
+      const name = typeof tool.name === "string" ? tool.name : index;
+      throw new TypeError(`tool ${name} must set idempotent: true if running a call twice is safe, or idempotent: false if it is not`);
+    }
+    if (tool.idempotent && typeof tool.name === "string") names.add(tool.name);
+  }
   return names;
 }
 

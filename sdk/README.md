@@ -54,7 +54,7 @@ agent.session(sessionId).prompt("Start with the schema.");
 ```
 
 - **One turn at a time.** A prompt sent while a turn runs waits behind it, even when it reaches a different server.
-- **Turns finish on their own.** A turn runs to the end whether or not anyone reads its events. Stop it with `session.cancel()`, or with the `signal` you passed to `prompt()`.
+- **Turns finish on their own.** A turn runs to the end whether or not anyone reads its events, and a turn nobody reads holds no connection open: its view starts reading only once you use its events, `readable` or `result`. Stop it with `session.cancel()`, or with the `signal` you passed to `prompt()`.
 - **Steering.** `session.steer(text)` adds guidance to the running turn at its next model request. When no turn is running, the text becomes the next turn.
 - **Retries are safe.** Give a prompt a `messageId`, and a repeated request with the same id runs nothing new. It follows the original turn, and its result has `repeated: true`.
 
@@ -145,19 +145,18 @@ Then subscribe it to libfx's topic in `vercel.json`:
 {
   "functions": {
     "app/api/libfx/route.js": {
-      "experimentalTriggers": [{ "type": "queue/v2beta", "topic": "__libfx_wkf_workflow_session" }]
+      "experimentalTriggers": [{ "type": "queue/v2beta", "topic": "__libfx_wkf_workflow_session", "retryAfterSeconds": 5 }]
     }
   }
 }
 ```
 
-That's all. `prompt()` sends each turn to Vercel Queues, and this route runs it:
+That's all. When no other invocation holds the session, `prompt()` runs the turn in the request that called it, so the first model request goes out without a queue hop, and the function stays alive for the turn after the route responds. Vercel Queues keeps the prompt until after that request's time limit, and if the request dies mid-turn, that delivery continues the turn. Other turns go through Vercel Queues to this route:
 
-- When a turn gets within 30 seconds of the function's time limit, libfx stops it, and the next invocation continues it.
-- The function running a turn renews a 15-second lease on its session. If the function dies, the session frees when the lease runs out, and the turn continues in a new invocation.
+- When a turn gets within 30 seconds of the function's time limit, libfx stops it, and the next invocation continues it. `vercel({ reserveMs })` from `libfx/durable-vercel` changes that margin.
+- A function holds its session for as long as Vercel Queues keeps the turn's message for it, so nothing is written while a turn runs to show the function is alive. If the function's process exits mid-turn, Vercel runs the same delivery again about a second later, and that invocation continues the turn.
+- A function that stops without its process exiting holds the message until the queue's hold on it runs out, up to five minutes. A prompt sent to the session meanwhile continues the turn at that function's time limit, if that comes sooner. `vercel({ leaseMs: 15_000 })` bounds that case: the function renews a 15-second lease on its session every 5 seconds, and the session frees about 15 seconds after the last renewal. With it, every prompt goes through the queue instead of running in the request.
 - A function that only stalled and wakes up after that is refused at its next write, so two processes never write one session.
-
-`vercel({ reserveMs, leaseMs })` from `libfx/durable-vercel` changes both timings.
 
 ### Tools that change things
 
@@ -178,14 +177,18 @@ const tools = [
     name: "refund_order",
     description: "Refund an order.",
     inputSchema: byId,
+    idempotent: true, // keyed on executionId, so running it again refunds once
+    writes: true,
     execute: ({ id }, { executionId }) => payments.refund(id, { idempotencyKey: executionId }),
   },
 ];
 ```
 
-When the turn continues, a call to an `idempotent: true` tool runs again. A call to any other tool never runs twice on its own: the model gets an error saying the call may have partly run, and decides whether to check, try again or ask the user.
+When the turn continues, a call to an `idempotent: true` tool runs again. A call to any other tool never runs twice on its own: the model gets an error saying the call may have partly run, and decides whether to check, try again or ask the user. The turn's events end the call with that error too, as a `tool_end` with `isError: true`. libfx refuses a tool that doesn't set `idempotent`, so each one makes that choice. A call that finished before the process died keeps its result, whichever kind of tool it is: libfx stores each result as the call finishes.
 
-Each call's `executionId` stays the same when it runs again. Pass it to the service your tool calls as an idempotency key, and a service that honors idempotency keys won't refund twice.
+Each call's `executionId` stays the same when it runs again. Pass it to the service your tool calls as an idempotency key, and a service that honors idempotency keys won't refund twice. That makes the tool safe to mark `idempotent: true` with `writes: true`.
+
+A tool marked `idempotent: true` without `writes: true` starts as soon as the model asks for it, while libfx stores the call. If the process dies before the call is stored, the model asks again and the call gets a new `executionId`, which is harmless for a lookup. Every other tool starts only once its call is stored, so its `executionId` never changes.
 
 ### Your own store
 
@@ -209,6 +212,8 @@ export const agent = createFxAgent({
 ```
 
 A World that delivers queue messages over HTTP needs `agent.wakeHandler()` at the address it posts to. Workflow's Postgres World 5.0.2 posts every message to `/.well-known/workflow/v1/flow` on your app. `world()` takes options for what libfx can't learn from the World itself, such as how long a lease lasts and whether the queue keeps a message across crashes. The `WorldOptions` type documents each one.
+
+On a World with Workflow's in-band writer fence, libfx writes each claim and record so that the World itself refuses a write from a worker another has replaced, and nothing of it is stored. libfx finds the fence in the World's capabilities, so there's nothing to configure. On a World without it, libfx detects the replaced worker after its write instead, and the session's log ignores what that worker wrote.
 
 ## Tools
 
@@ -241,6 +246,8 @@ On the native backend, the calls from one model response run at the same time, u
 
 Validate the input and authorize the action inside `execute`. libfx orders the calls but grants nothing itself.
 
+On the native backend, calls to idempotent tools from one model response run at the same time. A tool that isn't idempotent runs alone, and so does one marked `writes: true`. Mark a tool `writes: false` to let it overlap with others anyway.
+
 `tools` can also be an object keyed by tool name. Add `{ name: "web_search", providerExecuted: true }` for AI Gateway's web search, which runs at the provider instead of in your code.
 
 ### MCP and skills
@@ -264,6 +271,8 @@ await mcp.close();
 ```
 
 libfx doesn't own the MCP connection. You create the client, handle its auth and close it after the agent. `loadSkillFile()` reads one `SKILL.md` and nothing it references.
+
+Every MCP tool comes with `idempotent: false`, since a server's hints can't be trusted. Set it to `true` on a tool you know is safe to run twice. A skill's tools set `idempotent` themselves.
 
 ## Models
 
@@ -414,9 +423,11 @@ interface Persistence {
   load(): Promise<{
     checkpoint?: { data: Uint8Array; through: string };
     journal?: Iterable<JournalRecord> | AsyncIterable<JournalRecord>;
+    head?: string | null;
   }>;
-  append(input: { expected: string | null; idempotencyKey: string; data: Uint8Array }): Promise<{ cursor: string }>;
+  append(input: { expected: string | null; idempotencyKey: string; data: Uint8Array; barrier: boolean; marks?: object[] }): Promise<{ cursor: string }>;
   saveCheckpoint?(input: { through: string; data: Uint8Array }): Promise<void>;
+  marks?: boolean;
 }
 
 interface JournalRecord {
@@ -425,7 +436,13 @@ interface JournalRecord {
 }
 ```
 
-Reject an `append()` whose `expected` isn't the last stored cursor with `FxFencedError`, so two processes can't write the same conversation. `createMemoryPersistence()` is a reference store for tests. When a resumed turn left a tool call running, `resume({ onAmbiguous })` lets you return `"rerun"` to run it again under the same `executionId`.
+Reject an `append()` whose `expected` isn't the last stored cursor with `FxFencedError`, so two processes can't write the same conversation. If your store keeps entries of its own after the last record, return the cursor the next `append()` should name as `head`. When a resumed turn left a tool call running, `resume({ onAmbiguous })` lets you return `"rerun"` to run it again under the same `executionId`.
+
+The engine sends one `append()` at a time, and everything that happens while one is in flight goes in the next record. `barrier` is `true` when the engine waits for the record before it goes on, such as before a tool call with effects. A store may acknowledge a record with `barrier: false` before it is durable, as long as it keeps records in order and acknowledges a barrier only once it and every record before it are durable. Set `marks: true` to receive each record's `marks`, which say where turns start (`{ start: turnId }`), yield and end, and which inputs a turn took (`{ accepted: id }`), so a store can track turns without reading records.
+
+`prompt()` and `resume()` take `yieldAt`, a time in milliseconds since the epoch: the turn stops before its next model request after that time, with the stop reason `yielded`, and the next `resume()` continues it without telling the model it was interrupted.
+
+A journal or `checkpoint` from a newer libfx fails with `FxJournalVersionError`. `createMemoryPersistence()` is a reference store for tests.
 
 ## Runtimes
 
@@ -483,6 +500,8 @@ Every entry point ships TypeScript types, and the package has no runtime depende
 ## Upgrading from 0.0.13
 
 In libfx 0.0.13 and earlier, `createFxAgent()` created the engine. It now creates the durable agent, so rename those calls to `createFxEngine()`. Old code keeps running against the agent, with a few differences: breaking out of a turn's events no longer cancels it, turns have no `cancel()` or `steer()` (the session does), and `persistence` and `sessionId` throw because the durability holds the session.
+
+`libfxApiVersion` is now 3. Every tool given to `createFxAgent()` must set `idempotent`, and a tool's `writes` now defaults to the opposite of `idempotent`, in the engine too, so a tool that isn't marked idempotent runs alone. A journal written by this libfx can't be loaded by an older one, which fails with `FxJournalVersionError`.
 
 ## Security
 

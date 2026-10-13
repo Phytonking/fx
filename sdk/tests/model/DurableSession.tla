@@ -34,6 +34,13 @@
 (* one that lands after a worker wakes keeps its lease when it still heads *)
 (* the chain, and stops it when another worker took the session over.      *)
 (*                                                                         *)
+(* With QueueHeld, the queue shows whether a holder lives, as Vercel       *)
+(* Queues does: a holder's delivery keeps its message from every other     *)
+(* delivery while it runs, and nothing is renewed. A freeze is the queue   *)
+(* giving up on that delivery, and only the delivery it hands the holder's *)
+(* message to treats the lease as dead; every other worker still finds it  *)
+(* held.                                                                   *)
+(*                                                                         *)
 (* Shortly before its deadline a worker's own timer stops it: it cuts off  *)
 (* the call still running, hands the open turn back to the log, and the    *)
 (* same message comes back for a new delivery. So a lease that runs out at *)
@@ -47,6 +54,16 @@
 (* as possibly run, and a model request cancels the turn. With             *)
 (* CutoffBound = FALSE it is run again forever (Witness-NoCutoffBound).    *)
 (*                                                                         *)
+(* The tool is one of three kinds. A "lookup" is idempotent and does not   *)
+(* write, so its call runs ahead: it starts at once and its intent follows *)
+(* it to the chain. A crash before that intent lands loses the call, and   *)
+(* the next worker asks the model again, which names a new execution id.   *)
+(* A "write" is idempotent but writes, keying its effect on the execution  *)
+(* id, and a "send" has effects: both start only once their intent counts, *)
+(* so a call with effects is never unrecorded and a write reruns only      *)
+(* under the id its intent names. With WritesWait = FALSE a write runs     *)
+(* ahead too, and runs under two ids (Witness-WriteRunsAhead).             *)
+(*                                                                         *)
 (* `act` names each step and its worker, so a driver can replay any path   *)
 (* of the state graph against the real code and compare every state:       *)
 (* sdk/tests/model/drive.mjs.                                              *)
@@ -55,26 +72,41 @@ EXTENDS Naturals, Sequences
 
 CONSTANTS
     Workers,     \* the processes that can run the session
-    Tool,        \* "lookup" (safe to run twice) or "send" (has effects)
+    Tool,        \* "lookup" (idempotent, no writes), "write" (idempotent,
+                 \* writes) or "send" (has effects)
+    WritesWait,  \* whether a write waits for its intent before it starts
     MaxEpoch,    \* bound on lease claims
     MaxFreezes,  \* bound on freezes
     SelfStop,    \* whether a worker stops itself before its deadline
     ClaimFenced, \* whether a claim on a stale read is refused
     MaxCutoffs,  \* cut-offs of one step in a row before it is not run again
     CutoffBound, \* whether that bound applies
-    Heartbeat    \* whether a holder renews a short lease while it runs
+    Heartbeat,   \* whether a holder renews a short lease while it runs
+    QueueHeld    \* whether only the queue's redelivery of a frozen holder's
+                 \* message frees its lease
 
-ASSUME Tool \in {"lookup", "send"}
+ASSUME Tool \in {"lookup", "write", "send"}
+ASSUME WritesWait \in BOOLEAN
 ASSUME SelfStop \in BOOLEAN
 ASSUME ClaimFenced \in BOOLEAN
 ASSUME MaxCutoffs \in Nat
 ASSUME CutoffBound \in BOOLEAN
 ASSUME Heartbeat \in BOOLEAN
+ASSUME QueueHeld \in BOOLEAN
+ASSUME ~(QueueHeld /\ Heartbeat)
 
 None == "none"
-Waiting == {"announce", "model1", "tool", "model2"}
+\* "ahead": a call that ran ahead runs while its intent is on its way.
+Waiting == {"announce", "model1", "ahead", "tool", "model2"}
+\* A deadline while a call waits for its intent writes behind that intent,
+\* in the log's order, so it is Intent and then Deadline.
 Busy == {"model1", "tool", "model2"}
 Progress == {"start", "intent", "result", "done"}
+
+\* A cut-off call of this tool runs again.
+Idempotent == Tool \in {"lookup", "write"}
+\* Its calls start before their intent is stored.
+RunsAhead == Tool = "lookup" \/ (Tool = "write" /\ ~WritesWait)
 
 VARIABLES
     pc,        \* where each worker is in the turn
@@ -83,6 +115,8 @@ VARIABLES
     lease,     \* the lease at the head of the chain
     progress,  \* how far the chain has recorded the turn
     runs,      \* how many times the tool has started
+    ids,       \* how many execution ids it started under: each model response
+               \* that starts a call names a new one, and a rerun keeps it
     ui,        \* each line in the UI stream: its writer's epoch, and whether
                \* that writer still headed the chain when it wrote
     freezes,   \* freezes so far
@@ -90,24 +124,29 @@ VARIABLES
     chain,     \* how many counted writes the chain holds
     cutoffs,   \* deadline cut-offs in a row since the turn's last record
     seen,      \* what each worker read before its claim
+    lapse,     \* with QueueHeld: "open" once the queue gave up on the
+               \* holder's delivery, the worker it then handed the
+               \* holder's message to, or "none"
     act        \* the step that led here
 
-vars == <<pc, epoch, frozen, lease, progress, runs, ui, freezes, froze, chain, cutoffs, seen, act>>
+vars == <<pc, epoch, frozen, lease, progress, runs, ids, ui, freezes, froze, chain, cutoffs, seen, lapse, act>>
 
 TypeOK ==
-    /\ pc \in [Workers -> {"none", "early", "announce", "model1", "tool", "model2", "done", "stopped"}]
+    /\ pc \in [Workers -> {"none", "early", "announce", "model1", "ahead", "tool", "model2", "done", "stopped"}]
     /\ epoch \in [Workers -> 0..MaxEpoch]
     /\ frozen \in [Workers -> BOOLEAN]
     /\ lease \in [holder: Workers \cup {None}, epoch: 0..MaxEpoch, live: BOOLEAN]
     /\ progress \in Progress
     /\ runs \in 0..(MaxEpoch + 1)
+    /\ ids \in 0..(MaxEpoch + 1)
     /\ ui \in Seq([e: 0..MaxEpoch, legit: BOOLEAN])
     /\ freezes \in 0..MaxFreezes
     /\ froze \in [Workers -> BOOLEAN]
     /\ chain \in Nat
     /\ cutoffs \in Nat
     /\ seen \in [Workers -> [chain: Nat, progress: Progress, epoch: 0..MaxEpoch, cutoffs: Nat]]
-    /\ act \in [name: {"Init", "Start", "Claim", "Announce", "Model1", "ToolEnd", "Model2",
+    /\ lapse \in Workers \cup {"none", "open"}
+    /\ act \in [name: {"Init", "Start", "Claim", "Announce", "Model1", "Intent", "ToolEnd", "Model2",
                        "Freeze", "Wake", "Deadline", "Expire"},
                 w: Workers \cup {None}]
 
@@ -118,12 +157,14 @@ Init ==
     /\ lease = [holder |-> None, epoch |-> 0, live |-> FALSE]
     /\ progress = "start"
     /\ runs = 0
+    /\ ids = 0
     /\ ui = <<>>
     /\ freezes = 0
     /\ froze = [w \in Workers |-> FALSE]
     /\ chain = 0
     /\ cutoffs = 0
     /\ seen = [w \in Workers |-> [chain |-> 0, progress |-> "start", epoch |-> 0, cutoffs |-> 0]]
+    /\ lapse = "none"
     /\ act = [name |-> "Init", w |-> None]
 
 \* A worker's writes count while its claim heads the lease chain.
@@ -142,20 +183,30 @@ ShownAt(lines) == {i \in 1..Len(lines) : \A j \in 1..(i - 1) : lines[j].e <= lin
 \* What w reads now: where the chain stands and how far it recorded the turn.
 Read == [chain |-> chain, progress |-> progress, epoch |-> lease.epoch, cutoffs |-> cutoffs]
 
-\* Whether w, reading now, finds work it can claim.
-CanClaim == progress # "done" /\ (lease.holder = None \/ ~lease.live)
+\* Whether w, reading now, finds work it can claim. With QueueHeld, a frozen
+\* holder's lease is dead only to the delivery its message was handed to.
+CanClaim(w) == progress # "done" /\ (lease.holder = None \/ (~lease.live /\ (~QueueHeld \/ lapse = w)))
 
 \* w receives work for the session, reads the log, and finds no live worker
 \* holding it. It writes its claim and sends its first model request at
-\* once; nothing it does shows or counts until the claim lands.
+\* once; nothing it does shows or counts until the claim lands. With
+\* QueueHeld, the work that finds a frozen holder is that holder's message,
+\* which the queue hands to w.
 Start(w) ==
     /\ pc[w] \in {"none", "stopped"}
     /\ ~frozen[w]
-    /\ CanClaim
     /\ lease.epoch < MaxEpoch
+    /\ \/ /\ CanClaim(w)
+          /\ UNCHANGED lapse
+       \/ /\ QueueHeld
+          /\ progress # "done"
+          /\ lease.holder # None
+          /\ ~lease.live
+          /\ lapse = "open"
+          /\ lapse' = w
     /\ pc' = [pc EXCEPT ![w] = "early"]
     /\ seen' = [seen EXCEPT ![w] = Read]
-    /\ UNCHANGED <<epoch, frozen, lease, progress, runs, ui, freezes, froze, chain, cutoffs>>
+    /\ UNCHANGED <<epoch, frozen, lease, progress, runs, ids, ui, freezes, froze, chain, cutoffs>>
     /\ act' = [name |-> "Start", w |-> w]
 
 \* w's claim lands. Its lease continues the chain where w read it, so it
@@ -173,21 +224,23 @@ Claim(w) ==
                /\ chain' = chain + 1
                /\ pc' = [pc EXCEPT ![w] = "announce"]
                /\ froze' = [froze EXCEPT ![w] = FALSE]
+               /\ lapse' = "none"
                /\ UNCHANGED seen
-          ELSE /\ UNCHANGED <<lease, epoch, chain, froze>>
-               /\ IF CanClaim
+          ELSE /\ UNCHANGED <<lease, epoch, chain, froze, lapse>>
+               /\ IF CanClaim(w)
                      THEN /\ pc' = [pc EXCEPT ![w] = "early"]
                           /\ seen' = [seen EXCEPT ![w] = Read]
                      ELSE /\ pc' = [pc EXCEPT ![w] = "none"]
                           /\ UNCHANGED seen
-    /\ UNCHANGED <<frozen, progress, runs, ui, freezes, cutoffs>>
+    /\ UNCHANGED <<frozen, progress, runs, ids, ui, freezes, cutoffs>>
     /\ act' = [name |-> "Claim", w |-> w]
 
 \* w writes turn_start or turn_resume and waits for it to land, then
 \* continues the turn from what it read before its claim. A call left
-\* running is rerun only when it is safe to run twice; otherwise the model
-\* is told it may have partly run, which is stored as the call's result,
-\* and the turn goes on to the answer. The records this writes are left out
+\* running is rerun only when it is safe to run twice, under the execution id
+\* its intent names; otherwise the model is told it may have partly run,
+\* which is stored as the call's result, its viewers see the call end with
+\* that answer, and the turn goes on to the answer. The records this writes are left out
 \* of `chain`: in the code it follows its claim at once, and fewer chain
 \* moves only let the model do more. A step
 \* cut off MaxCutoffs times in a row is not run again: a call is answered
@@ -198,7 +251,7 @@ Announce(w) ==
     /\ ~frozen[w]
     /\ LET from == seen[w].progress
            spent == CutoffBound /\ seen[w].cutoffs >= MaxCutoffs
-           rerun == from = "intent" /\ Tool = "lookup" /\ ~spent
+           rerun == from = "intent" /\ Idempotent /\ ~spent
        IN IF spent /\ from \in {"start", "result"}
           THEN /\ UNCHANGED runs
                /\ IF Heads(w)
@@ -209,43 +262,85 @@ Announce(w) ==
                           /\ ui' = ui \o <<Line(w), Line(w)>>
                           /\ chain' = chain + 1
                           /\ cutoffs' = 0
+                          /\ lapse' = "none"
                      ELSE /\ pc' = [pc EXCEPT ![w] = "stopped"]
                           /\ ui' \in {Append(ui, Line(w)), ui \o <<Line(w), Line(w)>>}
-                          /\ UNCHANGED <<progress, lease, chain, cutoffs>>
+                          /\ UNCHANGED <<progress, lease, chain, cutoffs, lapse>>
           ELSE /\ pc' = [pc EXCEPT ![w] =
                           CASE from = "start" -> "model1"
                             [] from = "intent" -> IF rerun THEN "tool" ELSE "model2"
                             [] from \in {"result", "done"} -> "model2"]
                /\ runs' = IF rerun THEN runs + 1 ELSE runs
-               \* then tool_start for a rerun
-               /\ ui' = IF rerun THEN ui \o <<Line(w), Line(w)>> ELSE Append(ui, Line(w))
+               \* then tool_start for a rerun, or tool_end for a call answered
+               \* as possibly run
+               /\ ui' = IF from = "intent" THEN ui \o <<Line(w), Line(w)>> ELSE Append(ui, Line(w))
                \* a call answered as possibly run is the turn's next record
                /\ IF from = "intent" /\ ~rerun /\ Heads(w)
                      THEN /\ progress' = "result"
                           /\ cutoffs' = 0
                      ELSE UNCHANGED <<progress, cutoffs>>
-               /\ UNCHANGED <<lease, chain>>
-    /\ UNCHANGED <<epoch, frozen, freezes, froze, seen>>
+               /\ UNCHANGED <<lease, chain, lapse>>
+    /\ UNCHANGED <<epoch, frozen, ids, freezes, froze, seen>>
     /\ act' = [name |-> "Announce", w |-> w]
 
-\* The model asks for the tool. The call starts only once its intent is in
-\* the chain, a safe one included: after a crash, only a recorded intent
-\* lets it run again.
+\* The model asks for the tool, under a new execution id. A call that runs
+\* ahead starts at once, even in a worker that was replaced and does not know
+\* it yet, and its intent is still on its way; a replaced worker that already
+\* saw its successor's claim has that intent refused at once and stops. The
+\* progress that saw the response may land before the intent, as a record of
+\* its own that moves the chain but holds no call: a worker that resumes from
+\* it asks the model again, as from the turn's start. Any other call starts
+\* only once its intent is in the chain: after a crash only a recorded intent
+\* reruns a call under the same id, and a call with effects is never
+\* unrecorded.
 Model1(w) ==
     /\ pc[w] = "model1"
     /\ ~frozen[w]
+    /\ IF RunsAhead
+          THEN /\ runs' = runs + 1
+               /\ ids' = ids + 1
+               /\ \/ /\ pc' = [pc EXCEPT ![w] = "ahead"]
+                     /\ ui' = Append(ui, Line(w))
+                     /\ \/ UNCHANGED <<chain, cutoffs>>
+                        \/ /\ Heads(w)
+                           /\ chain' = chain + 1
+                           /\ cutoffs' = 0
+                  \/ /\ ~Heads(w)
+                     /\ pc' = [pc EXCEPT ![w] = "stopped"]
+                     /\ MaybeLine(w)
+                     /\ UNCHANGED <<chain, cutoffs>>
+               /\ UNCHANGED progress
+          ELSE /\ IF Heads(w)
+                     THEN /\ progress' = "intent"
+                          /\ runs' = runs + 1
+                          /\ ids' = ids + 1
+                          /\ pc' = [pc EXCEPT ![w] = "tool"]
+                          /\ ui' = Append(ui, Line(w))
+                     ELSE /\ pc' = [pc EXCEPT ![w] = "stopped"]
+                          /\ MaybeLine(w)
+                          /\ UNCHANGED <<progress, runs, ids>>
+               /\ chain' = IF Heads(w) THEN chain + 1 ELSE chain
+               /\ cutoffs' = IF Heads(w) THEN 0 ELSE cutoffs
+    /\ UNCHANGED <<epoch, frozen, lease, freezes, froze, seen, lapse>>
+    /\ act' = [name |-> "Model1", w |-> w]
+
+\* The intent of a call that ran ahead lands. It counts where w still heads
+\* the chain, and w goes on with its call; a w that was replaced learns so at
+\* this write and stops, its call cut off.
+Intent(w) ==
+    /\ pc[w] = "ahead"
+    /\ ~frozen[w]
     /\ IF Heads(w)
           THEN /\ progress' = "intent"
-               /\ runs' = runs + 1
                /\ pc' = [pc EXCEPT ![w] = "tool"]
-               /\ ui' = Append(ui, Line(w))
+               /\ chain' = chain + 1
+               /\ cutoffs' = 0
+               /\ UNCHANGED ui
           ELSE /\ pc' = [pc EXCEPT ![w] = "stopped"]
                /\ MaybeLine(w)
-               /\ UNCHANGED <<progress, runs>>
-    /\ chain' = IF Heads(w) THEN chain + 1 ELSE chain
-    /\ cutoffs' = IF Heads(w) THEN 0 ELSE cutoffs
-    /\ UNCHANGED <<epoch, frozen, lease, freezes, froze, seen>>
-    /\ act' = [name |-> "Model1", w |-> w]
+               /\ UNCHANGED <<progress, chain, cutoffs>>
+    /\ UNCHANGED <<epoch, frozen, lease, runs, ids, freezes, froze, seen, lapse>>
+    /\ act' = [name |-> "Intent", w |-> w]
 
 \* The tool returns, and its result goes to the chain.
 ToolEnd(w) ==
@@ -260,7 +355,7 @@ ToolEnd(w) ==
                /\ UNCHANGED progress
     /\ chain' = IF Heads(w) THEN chain + 1 ELSE chain
     /\ cutoffs' = IF Heads(w) THEN 0 ELSE cutoffs
-    /\ UNCHANGED <<epoch, frozen, lease, runs, freezes, froze, seen>>
+    /\ UNCHANGED <<epoch, frozen, lease, runs, ids, freezes, froze, seen, lapse>>
     /\ act' = [name |-> "ToolEnd", w |-> w]
 
 \* The model answers; the turn ends and the worker lets the session go.
@@ -271,17 +366,19 @@ Model2(w) ==
           THEN /\ progress' = "done"
                /\ pc' = [pc EXCEPT ![w] = "done"]
                /\ lease' = [lease EXCEPT !.holder = None, !.live = FALSE]
+               /\ lapse' = "none"
                \* the answer's text, then turn_end
                /\ ui' = ui \o <<Line(w), Line(w)>>
           ELSE /\ pc' = [pc EXCEPT ![w] = "stopped"]
                /\ MaybeLine(w)
-               /\ UNCHANGED <<progress, lease>>
+               /\ UNCHANGED <<progress, lease, lapse>>
     /\ chain' = IF Heads(w) THEN chain + 1 ELSE chain
     /\ cutoffs' = IF Heads(w) THEN 0 ELSE cutoffs
-    /\ UNCHANGED <<epoch, frozen, runs, freezes, froze, seen>>
+    /\ UNCHANGED <<epoch, frozen, runs, ids, freezes, froze, seen>>
     /\ act' = [name |-> "Model2", w |-> w]
 
-\* w freezes while it waits; its lease no longer counts as alive.
+\* w freezes while it waits; its lease no longer counts as alive. With
+\* QueueHeld, the queue gives up on its delivery and will hand its message on.
 Freeze(w) ==
     /\ pc[w] \in Waiting
     /\ ~frozen[w]
@@ -290,7 +387,8 @@ Freeze(w) ==
     /\ freezes' = freezes + 1
     /\ froze' = [froze EXCEPT ![w] = TRUE]
     /\ lease' = IF lease.holder = w THEN [lease EXCEPT !.live = FALSE] ELSE lease
-    /\ UNCHANGED <<pc, epoch, progress, runs, ui, chain, cutoffs, seen>>
+    /\ lapse' = IF QueueHeld /\ lease.holder = w /\ lapse = "none" THEN "open" ELSE lapse
+    /\ UNCHANGED <<pc, epoch, progress, runs, ids, ui, chain, cutoffs, seen>>
     /\ act' = [name |-> "Freeze", w |-> w]
 
 \* w wakes and carries on from where it waited. With Heartbeat its next
@@ -309,7 +407,7 @@ Wake(w) ==
           /\ ~Heads(w)
           /\ pc' = [pc EXCEPT ![w] = "stopped"]
           /\ UNCHANGED <<lease, chain>>
-    /\ UNCHANGED <<epoch, progress, runs, ui, freezes, froze, cutoffs, seen>>
+    /\ UNCHANGED <<epoch, progress, runs, ids, ui, freezes, froze, cutoffs, seen, lapse>>
     /\ act' = [name |-> "Wake", w |-> w]
 
 \* Shortly before its deadline, w's own timer stops it and cuts off the call
@@ -337,10 +435,11 @@ Deadline(w) ==
                   \/ /\ lease' = [lease EXCEPT !.holder = None, !.live = FALSE]
                      /\ pc' = [pc EXCEPT ![w] = "none"]
                      /\ UNCHANGED <<epoch, froze, seen>>
+               /\ lapse' = "none"
           ELSE /\ pc' = [pc EXCEPT ![w] = "stopped"]
                /\ MaybeLine(w)
-               /\ UNCHANGED <<epoch, lease, froze, chain, cutoffs, seen>>
-    /\ UNCHANGED <<frozen, progress, runs, freezes>>
+               /\ UNCHANGED <<epoch, lease, froze, chain, cutoffs, seen, lapse>>
+    /\ UNCHANGED <<frozen, progress, runs, ids, freezes>>
     /\ act' = [name |-> "Deadline", w |-> w]
 
 \* Without the self-stop: the deadline passes while w is still busy, and its
@@ -352,12 +451,12 @@ Expire(w) ==
     /\ Heads(w)
     /\ lease.live
     /\ lease' = [lease EXCEPT !.live = FALSE]
-    /\ UNCHANGED <<pc, epoch, frozen, progress, runs, ui, freezes, froze, chain, cutoffs, seen>>
+    /\ UNCHANGED <<pc, epoch, frozen, progress, runs, ids, ui, freezes, froze, chain, cutoffs, seen, lapse>>
     /\ act' = [name |-> "Expire", w |-> w]
 
 Next ==
     \E w \in Workers :
-        \/ Start(w) \/ Claim(w) \/ Announce(w) \/ Model1(w) \/ ToolEnd(w) \/ Model2(w)
+        \/ Start(w) \/ Claim(w) \/ Announce(w) \/ Model1(w) \/ Intent(w) \/ ToolEnd(w) \/ Model2(w)
         \/ Freeze(w) \/ Wake(w) \/ Deadline(w) \/ Expire(w)
 
 Spec == Init /\ [][Next]_vars
@@ -372,8 +471,23 @@ EffectsAtMostOnce == Tool = "send" => runs <= 1
 \* delivery after that does not run it again.
 HandoffsBounded == cutoffs <= MaxCutoffs
 
-\* A call starts only after its intent counts in the chain.
-CallAfterIntent == runs > 0 => progress # "start"
+\* A write or a send starts only after its intent counts in the chain.
+CallAfterIntent == Tool \in {"write", "send"} => (runs > 0 => progress # "start")
+
+\* A write or a send runs under one execution id: a rerun after a crash uses
+\* the id its intent names, so a service that dedupes on it changes nothing
+\* twice. A lookup whose intent never landed may run again under a new id
+\* (Witness-LookupNewId), and so would a write that ran ahead
+\* (Witness-WriteRunsAhead).
+OneExecutionId == Tool \in {"write", "send"} => ids <= 1
+
+\* Witness, expected to FAIL for lookup: a call starts before its intent is
+\* in the chain, so lookup really runs ahead.
+EveryCallAfterIntent == runs > 0 => progress # "start"
+
+\* Witness, expected to FAIL for lookup: it runs under a second execution
+\* id after a crash lost its intent.
+IdsAtMostOne == ids <= 1
 
 \* Only the chain's head ends the turn.
 DoneByHead == progress = "done" => \E w \in Workers : pc[w] = "done"

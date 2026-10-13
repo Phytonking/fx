@@ -25,7 +25,7 @@ import {
 } from "./fx-sdk.js";
 
 export { createMemoryPersistence, encodeXtermKeyEvent, FxFencedError, FxJournalVersionError, fxSdkApiVersion, listModels, memory, supportsJspi, xtermAdapter };
-export const libfxApiVersion = 2;
+export const libfxApiVersion = 3;
 const nativeCoreApiVersion = 4;
 
 const fetchOperationStale = 0;

@@ -502,10 +502,15 @@ test "a server starts in the directory it's given" {
 }
 
 test "a server that ignores closed stdin gets SIGTERM, then SIGKILL if it ignores that too" {
-    inline for (.{ .{ "trap 'exit 0' TERM; while :; do sleep 0.02; done", false }, .{ "trap '' TERM; while :; do sleep 0.02; done", true } }) |case| {
+    // The shell runs its TERM trap only once its `sleep` returns, so the one
+    // that exits on SIGTERM gets a long window: a slow machine still sees it
+    // exit before SIGKILL. The one that ignores SIGTERM keeps the short one.
+    inline for (.{ .{ "trap 'exit 0' TERM; while :; do sleep 0.02; done", false, 5_000 }, .{ "trap '' TERM; while :; do sleep 0.02; done", true, test_config.term_ms } }) |case| {
         const argv = shell(case[0]);
+        var config = test_config;
+        config.term_ms = case[2];
         var p: Process = undefined;
-        initTest(&p, &argv);
+        p.init(testing.io, testing.allocator, .{ .argv = &argv, .config = config, .poll_ms = 5, .max_line = 64 });
         defer p.deinit();
         try p.start();
         try p.stop();

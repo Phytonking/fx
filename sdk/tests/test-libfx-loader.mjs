@@ -15,9 +15,9 @@ import {
 } from "../node.js";
 import * as browser from "../browser.js";
 
-assert.equal(libfxApiVersion, 2);
+assert.equal(libfxApiVersion, 3);
 assert.equal(fxSdkApiVersion, 2);
-assert.equal(browser.libfxApiVersion, 2);
+assert.equal(browser.libfxApiVersion, 3);
 assert.equal(typeof browser.createFxEngine, "function");
 assert.equal(typeof browser.createFxTerminal, "function");
 assert.equal(typeof browser.listModels, "function");
@@ -28,14 +28,14 @@ const realNativeAddon = resolve(scriptDir, "../../zig-out/lib/libfx.node");
 const dir = await mkdtemp(resolve(tmpdir(), "libfx-loader-"));
 const nativePath = resolve(dir, "native.mjs");
 await writeFile(nativePath, `
-  export const libfxApiVersion = 2;
+  export const libfxApiVersion = 3;
   export async function createFxTerminal(options) { return { backend: "native-terminal", options }; }
 `);
 const nativeUrl = pathToFileURL(nativePath);
 
 const highLevelAgentPath = resolve(dir, "high-level-agent.mjs");
 await writeFile(highLevelAgentPath, `
-  export const libfxApiVersion = 2;
+  export const libfxApiVersion = 3;
   export function createFxEngine() { throw new Error("high-level createFxEngine invoked"); }
 `);
 

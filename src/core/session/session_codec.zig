@@ -1092,16 +1092,44 @@ fn parsePermissionState(
 }
 
 pub fn writeRecoveryCheckpoint(writer: *std.Io.Writer, checkpoint: RecoveryCheckpoint) !void {
+    return writeRecoveryCheckpointFrom(writer, checkpoint, null);
+}
+
+/// How many items of each list in an open turn's execution an earlier
+/// progress already holds.
+pub const ExecutionCounts = struct {
+    tool_steps: usize = 0,
+    files: usize = 0,
+    steering: usize = 0,
+};
+
+/// `writeRecoveryCheckpoint` without the user's turn, and with only the
+/// execution items after `from`: what a progress adds to the one before it,
+/// which holds the rest.
+pub fn writeRecoveryCheckpointDelta(writer: *std.Io.Writer, checkpoint: RecoveryCheckpoint, from: ExecutionCounts) !void {
+    return writeRecoveryCheckpointFrom(writer, checkpoint, from);
+}
+
+fn writeRecoveryCheckpointFrom(writer: *std.Io.Writer, checkpoint: RecoveryCheckpoint, delta: ?ExecutionCounts) !void {
     if (checkpoint.disposition == .history_only) return error.InvalidDurableField;
-    try writer.print("{{\"version\":{d},\"turn_id\":{d},\"user\":", .{
+    if (delta) |from| {
+        const execution = checkpoint.execution;
+        if (from.tool_steps > execution.tool_steps.len or from.files > execution.files.len or from.steering > execution.steering.len) {
+            return error.InvalidDurableField;
+        }
+    }
+    try writer.print("{{\"version\":{d},\"turn_id\":{d}", .{
         checkpoint.version,
         checkpoint.turn_id,
     });
-    try writeUserTurn(writer, checkpoint.user, {});
+    if (delta == null) {
+        try writer.writeAll(",\"user\":");
+        try writeUserTurn(writer, checkpoint.user, {});
+    }
     try writer.writeAll(",\"assistant_source\":");
     try writeDurableBytes(writer, checkpoint.assistant_source);
     try writer.writeAll(",\"execution\":");
-    try writeExecutionMemoryJson(writer, checkpoint.execution, .durable);
+    try writeExecutionMemoryJsonFrom(writer, checkpoint.execution, .durable, delta orelse .{});
     try writer.writeAll(",\"cause\":");
     try writeJsonString(writer, @tagName(checkpoint.cause));
     try writer.writeAll(",\"action\":");
@@ -1624,43 +1652,35 @@ pub noinline fn writeExecutionMemoryJson(
     execution: session.ExecutionMemory,
     format: ExecutionMemoryJsonFormat,
 ) !void {
+    return writeExecutionMemoryJsonFrom(writer, execution, format, .{});
+}
+
+/// `writeExecutionMemoryJson` with each list starting after `from` items.
+/// The caller checks that every list holds at least that many.
+fn writeExecutionMemoryJsonFrom(
+    writer: *std.Io.Writer,
+    execution: session.ExecutionMemory,
+    format: ExecutionMemoryJsonFormat,
+    from: ExecutionCounts,
+) !void {
+    std.debug.assert(from.tool_steps <= execution.tool_steps.len and from.files <= execution.files.len and from.steering <= execution.steering.len);
     try writer.writeAll(if (format == .durable)
         "{\"schema_version\":10,\"tool_steps\":["
     else
         "{\"schema_version\":3,\"tool_steps\":[");
-    for (execution.tool_steps, 0..) |step, i| {
+    for (execution.tool_steps[from.tool_steps..], 0..) |step, i| {
         if (i > 0) try writer.writeByte(',');
-        try writer.writeAll("{\"assistant\":");
-        try writeOptionalExecutionBytes(writer, step.assistant, format);
-        if (format == .durable) {
-            try writer.writeAll(",\"provider_replay\":");
-            try std.json.Stringify.value(step.provider_replay, .{}, writer);
-        }
-        try writer.writeAll(",\"tool_calls\":[");
-        for (step.tool_calls, 0..) |tool_call, call_index| {
-            if (call_index > 0) try writer.writeByte(',');
-            try writeExecutionToolCall(writer, tool_call, format);
-        }
-        try writer.writeAll("],\"tool_results\":[");
-        for (step.tool_results, 0..) |result, result_index| {
-            if (result_index > 0) try writer.writeByte(',');
-            try writeExecutionToolResult(writer, result, format);
-        }
-        try writer.writeAll("]}");
+        try writeExecutionToolStep(writer, step, format);
     }
     try writer.writeAll("],\"files\":[");
-    for (execution.files, 0..) |file, i| {
+    for (execution.files[from.files..], 0..) |file, i| {
         if (i > 0) try writer.writeByte(',');
         try writeExecutionFileEvidence(writer, file, format);
     }
     try writer.writeAll("],\"steering\":[");
-    for (execution.steering, 0..) |steering, i| {
+    for (execution.steering[from.steering..], 0..) |steering, i| {
         if (i > 0) try writer.writeByte(',');
-        try writer.writeAll("{\"text\":");
-        try writeExecutionBytes(writer, steering.text, format);
-        try writer.writeAll(",\"assistant_prefix\":");
-        try writeOptionalExecutionBytes(writer, steering.assistant_prefix, format);
-        try writer.print(",\"after_tool_step_count\":{d}}}", .{steering.after_tool_step_count});
+        try writeExecutionSteering(writer, steering, format);
     }
     if (format == .durable) {
         try writer.writeAll("],\"turn_summary\":");
@@ -1673,6 +1693,115 @@ pub noinline fn writeExecutionMemoryJson(
         try writer.writeByte(']');
     }
     try writer.writeByte('}');
+}
+
+fn writeExecutionToolStep(writer: *std.Io.Writer, step: session.ToolExecutionStep, format: ExecutionMemoryJsonFormat) !void {
+    try writer.writeAll("{\"assistant\":");
+    try writeOptionalExecutionBytes(writer, step.assistant, format);
+    if (format == .durable) {
+        try writer.writeAll(",\"provider_replay\":");
+        try std.json.Stringify.value(step.provider_replay, .{}, writer);
+    }
+    try writer.writeAll(",\"tool_calls\":[");
+    for (step.tool_calls, 0..) |tool_call, call_index| {
+        if (call_index > 0) try writer.writeByte(',');
+        try writeExecutionToolCall(writer, tool_call, format);
+    }
+    try writer.writeAll("],\"tool_results\":[");
+    for (step.tool_results, 0..) |result, result_index| {
+        if (result_index > 0) try writer.writeByte(',');
+        try writeExecutionToolResult(writer, result, format);
+    }
+    try writer.writeAll("]}");
+}
+
+fn writeExecutionSteering(writer: *std.Io.Writer, steering: types.PersistedSteering, format: ExecutionMemoryJsonFormat) !void {
+    try writer.writeAll("{\"text\":");
+    try writeExecutionBytes(writer, steering.text, format);
+    try writer.writeAll(",\"assistant_prefix\":");
+    try writeOptionalExecutionBytes(writer, steering.assistant_prefix, format);
+    try writer.print(",\"after_tool_step_count\":{d}}}", .{steering.after_tool_step_count});
+}
+
+/// A hash of an open turn's user turn and of each item its execution lists,
+/// as a progress writes them. A writer keeps the last progress's, so the next
+/// one can carry only what is new when every earlier item is unchanged.
+pub const ExecutionHashes = struct {
+    user: u64,
+    tool_steps: []u64,
+    files: []u64,
+    steering: []u64,
+
+    /// Whether `self`, a later progress's hashes, only appends to `earlier`.
+    pub fn extends(self: ExecutionHashes, earlier: ExecutionHashes) bool {
+        return self.user == earlier.user and
+            startsWith(self.tool_steps, earlier.tool_steps) and
+            startsWith(self.files, earlier.files) and
+            startsWith(self.steering, earlier.steering);
+    }
+
+    pub fn counts(self: ExecutionHashes) ExecutionCounts {
+        return .{ .tool_steps = self.tool_steps.len, .files = self.files.len, .steering = self.steering.len };
+    }
+
+    pub fn dupe(self: ExecutionHashes, alloc: Allocator) Allocator.Error!ExecutionHashes {
+        const tool_steps = try alloc.dupe(u64, self.tool_steps);
+        errdefer alloc.free(tool_steps);
+        const files = try alloc.dupe(u64, self.files);
+        errdefer alloc.free(files);
+        return .{ .user = self.user, .tool_steps = tool_steps, .files = files, .steering = try alloc.dupe(u64, self.steering) };
+    }
+
+    pub fn deinit(self: *ExecutionHashes, alloc: Allocator) void {
+        alloc.free(self.tool_steps);
+        alloc.free(self.files);
+        alloc.free(self.steering);
+        self.* = undefined;
+    }
+
+    fn startsWith(items: []const u64, prefix: []const u64) bool {
+        return items.len >= prefix.len and std.mem.eql(u64, items[0..prefix.len], prefix);
+    }
+};
+
+/// The hashes of `checkpoint`'s user turn and execution items. Allocates in
+/// `alloc`, which owns the result; an arena suits it.
+pub fn executionHashes(alloc: Allocator, checkpoint: RecoveryCheckpoint) !ExecutionHashes {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try writeUserTurn(&out.writer, checkpoint.user, {});
+    const user = std.hash.Wyhash.hash(0, out.written());
+    const execution = checkpoint.execution;
+    const tool_steps = try alloc.alloc(u64, execution.tool_steps.len);
+    errdefer alloc.free(tool_steps);
+    for (execution.tool_steps, tool_steps) |step, *hash| {
+        out.clearRetainingCapacity();
+        // The turn's execution is rebuilt before each progress, which stamps
+        // every result's creation time again, so the comparison leaves it
+        // out: a progress that extends another keeps the times it recorded.
+        const results = try alloc.dupe(types.PersistedToolResult, step.tool_results);
+        defer alloc.free(results);
+        for (results) |*result| result.created_at_ms = 0;
+        var stable = step;
+        stable.tool_results = results;
+        try writeExecutionToolStep(&out.writer, stable, .durable);
+        hash.* = std.hash.Wyhash.hash(0, out.written());
+    }
+    const files = try alloc.alloc(u64, execution.files.len);
+    errdefer alloc.free(files);
+    for (execution.files, files) |file, *hash| {
+        out.clearRetainingCapacity();
+        try writeExecutionFileEvidence(&out.writer, file, .durable);
+        hash.* = std.hash.Wyhash.hash(0, out.written());
+    }
+    const steering = try alloc.alloc(u64, execution.steering.len);
+    errdefer alloc.free(steering);
+    for (execution.steering, steering) |entry, *hash| {
+        out.clearRetainingCapacity();
+        try writeExecutionSteering(&out.writer, entry, .durable);
+        hash.* = std.hash.Wyhash.hash(0, out.written());
+    }
+    return .{ .user = user, .tool_steps = tool_steps, .files = files, .steering = steering };
 }
 
 fn hasDurableExecutionMemory(execution: session.ExecutionMemory) bool {

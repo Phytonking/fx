@@ -2546,12 +2546,33 @@ fn completeAuthorizedToolCallTransport(
     return completeToolCallTransport(ctx, request.call, acp_id, result);
 }
 
+/// Records a finished call's result in a journaled libfx session, so a
+/// crash before the next progress answers it with what the model sees
+/// instead of with "may have partly run". Nothing waits for it. A cancelled
+/// call did not finish and stays unanswered; a result's images are not kept.
+fn recordJournalToolResult(ctx: *AcpContext, call: ToolCall, result: ToolExecutionResult) void {
+    if (result.cancelled) return;
+    const session = if (ctx.state.active_session) |*value| value else return;
+    session.session_write_mutex.lockUncancelable(io_mod.getIo());
+    defer session.session_write_mutex.unlock(io_mod.getIo());
+    const journal = if (session.journal) |*value| value else return;
+    journal.recordToolResult(ctx.alloc, session.session_id, .{
+        .id = call.id,
+        .name = call.name,
+        .failed = result.status == .failure,
+        .output = result.model_output,
+    }) catch |err| {
+        debug_trace.logf("session", "event=libfx_journal_tool_result_dropped call={s} err={s} answered_by=next_progress", .{ call.id, @errorName(err) });
+    };
+}
+
 fn completeToolCallTransport(
     ctx: *AcpContext,
     call: ToolCall,
     acp_id: []const u8,
     result: ToolExecutionResult,
 ) ToolExecutionResult {
+    recordJournalToolResult(ctx, call, result);
     var notice_text: ?[]u8 = null;
     defer if (notice_text) |text| ctx.alloc.free(text);
     const output_text = blk: {
@@ -2723,27 +2744,32 @@ fn appendTurnPiece(raw_ctx: *anyopaque, progress: agent_runtime.TurnProgress) !v
 /// `AgentRuntimeDeps.append_turn_piece` for a journaled libfx session. The
 /// orchestrator calls it before any call in a batch runs: the calls reach the
 /// journal first, and a batch with a call fx runs itself waits until the host
-/// holds them, so no such call starts without a durable intent. Finished
-/// pieces travel in `turn_progress` instead.
+/// holds them, unless every such call runs ahead (see below). Finished pieces
+/// travel in `turn_progress` instead.
 fn appendJournalToolIntent(raw_ctx: *anyopaque, progress: agent_runtime.TurnProgress) !void {
     if (progress.running_calls.len == 0) return;
     const ctx: *AcpContext = @ptrCast(@alignCast(raw_ctx));
     const session = if (ctx.state.active_session) |*value| value else return error.SessionPersistenceUnavailable;
+    const registry = ctx.toolRegistry();
+    const waits = for (progress.running_calls) |call| {
+        const tool = registry.lookup(call.name) orelse continue;
+        // A call the provider runs has no effect here to guard. A call to an
+        // idempotent tool that does not write runs ahead of its intent: a
+        // crash before the intent lands only makes the model ask again, and
+        // running a lookup twice under a new execution id is harmless. Every
+        // other call waits, so a call with effects is never unrecorded, and
+        // an idempotent writer keeps the execution id its effect is keyed
+        // on: only a stored intent reruns a call under the same id.
+        if (tool.provider_executed or (tool.host_idempotent and tool.host_concurrent)) continue;
+        break true;
+    } else false;
     {
         session.session_write_mutex.lockUncancelable(io_mod.getIo());
         defer session.session_write_mutex.unlock(io_mod.getIo());
         const journal = if (session.journal) |*value| value else return error.SessionPersistenceUnavailable;
-        try journal.append(ctx.alloc, session.session_id, .{ .tool_intent = progress.running_calls });
+        try journal.appendMarked(ctx.alloc, session.session_id, .{ .tool_intent = progress.running_calls }, waits);
     }
-    const registry = ctx.toolRegistry();
-    for (progress.running_calls) |call| {
-        const tool = registry.lookup(call.name) orelse continue;
-        // Every call fx runs itself waits for its intent to be stored, an
-        // idempotent one included: after a crash, only a stored intent lets
-        // a call run again. A call the provider runs has no effect here to
-        // guard.
-        if (!tool.provider_executed) return flushJournal(ctx.state, ctx.alloc, session.session_id);
-    }
+    if (waits) return flushJournal(ctx.state, ctx.alloc, session.session_id);
 }
 
 /// Waits until the host holds every journal event sent so far.
@@ -3016,7 +3042,7 @@ fn setJournalProgress(raw_ctx: *anyopaque, checkpoint: session_codec.RecoveryChe
         if (checkpoint.outstanding_reservation and checkpoint.cause != .compaction_prepared and
             journal.yieldsAt(io_mod.milliTimestamp()))
         {
-            try journal.append(ctx.alloc, session.session_id, .turn_yielded);
+            try journal.appendMarked(ctx.alloc, session.session_id, .turn_yielded, true);
             yields = true;
         }
         const barrier = journal.barrier_next_progress or yields;

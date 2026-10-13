@@ -19,14 +19,20 @@ export function holdWrites(durability, held, { landFirst = false, unreported = f
   const waiting = [];
   const arrivals = [];
   let open = false;
+  // Entries the test has let go. libfx sends one again, unchanged, when the
+  // World's in-band fence refused it only because a count was still settling;
+  // that is still the one write the test released.
+  const released = new Set();
   // Holds `entry` when the test wants it held; returns what to call once the
   // write it held has settled.
   const pause = async (entry) => {
     if (open || !held(entry)) return () => {};
+    const key = JSON.stringify(entry);
+    if (released.has(key)) return () => {};
     let done;
     const finished = new Promise((resolve) => { done = resolve; });
     await new Promise((go) => {
-      waiting.push({ entry, go, finished });
+      waiting.push({ entry, go: () => { released.add(key); go(); }, finished });
       arrivals.shift()?.();
     });
     return done;

@@ -9,6 +9,7 @@ import {
   type Durability,
   type FxAgent,
   type FxAgentEvent,
+  type FxAgentTools,
   type FxResumeTurn,
   type FxSession,
   type FxStopReason,
@@ -206,6 +207,9 @@ export async function worlds(): Promise<void> {
   world(fake);
   world(() => fake);
   world(async () => fake, { name: "postgres", pollMs: 500, maxDurationMs: 800_000, reserveMs: 30_000, leaseMs: 10_000 });
+  world(fake, { name: "queues", queueLeases: true, queueDurable: true });
+  world(fake, { queueLeases: true, runInRequest: false });
+  world(fake, { queueLeases: true, waitUntil: (work) => void work });
   world(fake, {
     livenessKnown: true,
     holderInfo: () => ({ pid: 42, host: "worker-1" }),
@@ -233,8 +237,10 @@ export function tools(): FxAgent {
   const inputSchema = { type: "object", properties: { orderId: { type: "string" } }, required: ["orderId"] };
   const effects = [
     { name: "get_order", description: "Look up an order.", idempotent: true, inputSchema, async execute(input: { orderId: string }, { executionId }: FxToolContext) { return { input, executionId }; } },
-    { name: "refund_order", description: "Refund an order.", writes: true, inputSchema, async execute(input: { orderId: string }, { executionId }: FxToolContext) { return payments.refund(input.orderId, { idempotencyKey: executionId }); } },
-  ] satisfies FxTools;
+    { name: "refund_order", description: "Refund an order.", idempotent: true, writes: true, inputSchema, async execute(input: { orderId: string }, { executionId }: FxToolContext) { return payments.refund(input.orderId, { idempotencyKey: executionId }); } },
+  ] satisfies FxAgentTools;
+  // An agent's tools are an engine's tools too.
+  const _engineTools: FxTools = effects;
 
   createFxAgent({
     apiKey,
@@ -245,6 +251,7 @@ export function tools(): FxAgent {
       {
         name: "lookup",
         description: "Look up a value.",
+        idempotent: true,
         inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] },
         async execute(input, context) {
           assertType<Equal<typeof context, FxToolContext>>();
@@ -260,20 +267,24 @@ export function tools(): FxAgent {
 
   createFxAgent({
     tools: {
-      lookup: { description: "Look up a value.", inputSchema: { type: "object" }, execute: () => "value" },
-      save: { name: "save", description: "Save.", inputSchema: { type: "object" }, execute: () => ({ type: "libfx.tool-result", text: "Saved.", images: [] }) },
+      lookup: { description: "Look up a value.", idempotent: true, inputSchema: { type: "object" }, execute: () => "value" },
+      save: { name: "save", description: "Save.", idempotent: false, inputSchema: { type: "object" }, execute: () => ({ type: "libfx.tool-result", text: "Saved.", images: [] }) },
       web_search: { providerExecuted: true },
     },
   });
 
   // @ts-expect-error a tool needs a name
-  createFxAgent({ tools: [{ description: "Look up a value.", inputSchema: { type: "object" }, execute: () => "value" }] });
+  createFxAgent({ tools: [{ description: "Look up a value.", idempotent: true, inputSchema: { type: "object" }, execute: () => "value" }] });
   // @ts-expect-error a host tool needs a description
-  createFxAgent({ tools: [{ name: "lookup", inputSchema: { type: "object" }, execute: () => "value" }] });
+  createFxAgent({ tools: [{ name: "lookup", idempotent: true, inputSchema: { type: "object" }, execute: () => "value" }] });
+  // @ts-expect-error a host tool must say whether it is idempotent
+  createFxAgent({ tools: [{ name: "lookup", description: "Look up a value.", inputSchema: { type: "object" }, execute: () => "value" }] });
+  // @ts-expect-error a keyed host tool must say so too
+  createFxAgent({ tools: { lookup: { description: "Look up a value.", inputSchema: { type: "object" }, execute: () => "value" } } });
   // @ts-expect-error a provider-executed tool must not define execute()
   createFxAgent({ tools: [{ name: "web_search", providerExecuted: true, execute: () => "value" }] });
   // @ts-expect-error a keyed descriptor's name must be a string
-  createFxAgent({ tools: { lookup: { name: 1, description: "Look up a value.", inputSchema: {}, execute: () => "value" } } });
+  createFxAgent({ tools: { lookup: { name: 1, description: "Look up a value.", idempotent: true, inputSchema: {}, execute: () => "value" } } });
 
   return createFxAgent({ apiKey, tools: effects });
 }

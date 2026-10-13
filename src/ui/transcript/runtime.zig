@@ -1457,6 +1457,111 @@ test "full transcript page boundaries preserve monotonic navigation" {
     try std.testing.expect(after_page_down > before_page_down);
 }
 
+test "rebuilt full transcript page keeps the entry the viewer was reading" {
+    const alloc = std.testing.allocator;
+    var runtime = TranscriptRuntime{
+        .layout = testLayoutWithRows(24),
+        .full_transcript = .{ .depth = .full, .follow_tail = false, .scroll_rows = 30 },
+    };
+    defer runtime.deinit(alloc);
+    for (0..60) |_| {
+        _ = try runtime.appendRawTranscriptEntryClassified(alloc, "row\n", .unknown_raw);
+    }
+
+    // The first entry stands in for a running command's wrapped header: it
+    // takes 2 rows on the installed page and 6 once the page is rebuilt.
+    const Rows = struct {
+        fn measure(
+            current: *const TranscriptRuntime,
+            first_entry_rows: u32,
+        ) ![]transcript_presentation.ItemRow {
+            const rows = try std.heap.c_allocator.alloc(
+                transcript_presentation.ItemRow,
+                current.entries.items.len,
+            );
+            for (current.entries.items, 0..) |entry, index| {
+                const offset: u32 = @intCast(index);
+                rows[index] = .{
+                    .entry_id = entry.id(),
+                    .row = if (index == 0) 0 else offset + first_entry_rows - 1,
+                };
+            }
+            return rows;
+        }
+    };
+
+    const installed_request = full_transcript_page.Request{
+        .content_revision = runtime.full_transcript_content_revision,
+        .cols = runtime.layout.cols,
+        .anchor = .tail,
+    };
+    const range = full_transcript_page.sourceRange(installed_request, runtime.entries.items.len);
+    runtime.full_transcript_installed_page = .{
+        .source = .{ .request = installed_request, .range = range },
+        .projection = .{ .styles = .{} },
+        .measured_total_rows = 61,
+        .measured_item_rows = try Rows.measure(&runtime, 2),
+        .measurement_snapshot_ready = true,
+    };
+    // A paint records the entry at row 30, then the reader scrolls up three
+    // rows before the rebuilt page arrives: entry index 26 is at the top.
+    const installed = &runtime.full_transcript_installed_page.?;
+    runtime.full_transcript = runtime.full_transcript.select_visual_offset(
+        installed.measured_total_rows,
+        20,
+        installed.measured_item_rows,
+    ).state;
+    runtime.full_transcript = runtime.full_transcript.scroll(.up, 3);
+
+    runtime.full_transcript_content_revision += 1;
+    const rebuilt_request = full_transcript_page.Request{
+        .content_revision = runtime.full_transcript_content_revision,
+        .cols = runtime.layout.cols,
+        .anchor = .tail,
+    };
+    const rebuilt_rows = try Rows.measure(&runtime, 6);
+    defer std.heap.c_allocator.free(rebuilt_rows);
+    const expected_offset: u32 = 26 + 5;
+
+    // The worker positions the rebuilt page from the snapshot it receives.
+    var snapshot = try runtime.snapshotFullTranscriptPage(rebuilt_request, null, null);
+    defer snapshot.deinit(std.heap.c_allocator);
+    try std.testing.expectEqual(
+        expected_offset,
+        snapshot.presentation.select_visual_offset(65, 20, rebuilt_rows).offset,
+    );
+
+    const task = try std.heap.c_allocator.create(full_transcript_worker.Task);
+    task.* = .{
+        .source = .{ .request = rebuilt_request, .range = range, .styles = .{} },
+        .projection = .{ .styles = .{}, .measured_total_rows = 65 },
+        .prepared_window = .{
+            .source = try source_preparation.prepareIndexedFullTranscriptWindowSourceInterruptible(
+                std.heap.c_allocator,
+                try std.heap.c_allocator.dupe(u8, "rebuilt page\n"),
+                runtime.layout.cols,
+                null,
+            ),
+            .start_row = 0,
+        },
+    };
+    try task.projection.?.measured_item_rows.appendSlice(std.heap.c_allocator, rebuilt_rows);
+    task.done.store(true, .release);
+    runtime.full_transcript_page_load.task = task;
+
+    try std.testing.expect(try runtime.pollFullTranscriptPageLoad());
+    const rebuilt = &runtime.full_transcript_installed_page.?;
+    try std.testing.expectEqual(rebuilt_request.content_revision, rebuilt.source.request.content_revision);
+    try std.testing.expectEqual(
+        expected_offset,
+        runtime.full_transcript.select_visual_offset(
+            rebuilt.measured_total_rows,
+            20,
+            rebuilt.measured_item_rows,
+        ).offset,
+    );
+}
+
 test "opening the full transcript leaves compact command projection unchanged" {
     const alloc = std.testing.allocator;
     var runtime = TranscriptRuntime{ .layout = .{
@@ -10631,6 +10736,7 @@ pub const TranscriptRuntime = struct {
                 };
                 const source = task.takeInstalledSource();
                 std.debug.assert(!self.full_transcript_installed_page_retired);
+                self.full_transcript = self.presentationForRebuiltPage();
                 if (self.full_transcript_installed_page) |*page| page.deinit();
                 self.full_transcript_installed_page = .{
                     .source = source,
@@ -10899,7 +11005,7 @@ pub const TranscriptRuntime = struct {
             .request = request,
             .range = range,
             .styles = self.command_output_render.styles,
-            .presentation = self.full_transcript,
+            .presentation = self.presentationForRebuiltPage(),
             .visible_rows = @intCast(@min(
                 self.fullTranscriptPageRows(),
                 std.math.maxInt(u16),
@@ -11437,6 +11543,14 @@ pub const TranscriptRuntime = struct {
         const page = if (self.full_transcript_installed_page) |*value| value else return null;
         if (&page.projection != projection) return null;
         return if (page.prepared_window) |*window| window else null;
+    }
+
+    /// Presentation for positioning a page that replaces the installed one:
+    /// the reading position is pinned to the entry it shows on that page.
+    fn presentationForRebuiltPage(self: *const TranscriptRuntime) transcript_presentation.State {
+        if (self.full_transcript_installed_page_retired) return self.full_transcript;
+        const page = if (self.full_transcript_installed_page) |*value| value else return self.full_transcript;
+        return self.full_transcript.pin_reading_position(self.installedPageMeasurement(page).item_rows);
     }
 
     fn installedPageMeasurement(

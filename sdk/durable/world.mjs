@@ -15,6 +15,20 @@ const durabilityTag = Symbol.for("libfx.durability");
  *   runs, from what `holderInfo()` put in it, so a crashed worker's session
  *   frees at once. Otherwise its worker renews the lease while it runs, and
  *   a session frees `leaseMs` after a dead worker's last renewal.
+ * - `queueLeases`: the queue keeps a message from other deliveries while one
+ *   handles it, and delivers it again once that delivery's process is gone,
+ *   as Vercel Queues does. A worker then holds its session for as long as
+ *   its delivery runs, up to its deadline, and renews nothing: the next
+ *   delivery of the same message takes the session over. The World must say
+ *   which message and which delivery of it each handler call carries. A
+ *   worker with no deadline renews its lease all the same.
+ * - `runInRequest`: with `queueLeases`, a prompt runs in the request that
+ *   took it when no worker holds the session, saving a queue hop. The queue
+ *   keeps the prompt as a backstop it delivers only after that request's
+ *   deadline, and the request's lease names it, so if the request died the
+ *   backstop takes the session over. Default true with `queueLeases`.
+ * - `waitUntil(work)`: keeps the request alive until `work`, a turn it runs
+ *   after its response, settles, as Vercel's `waitUntil` or Next's `after()`.
  * - `leaseMs`: how long a lease lasts after it was taken or last renewed,
  *   when liveness is unknown. Default 15000.
  * - `queueDurable`: the queue keeps a message until a delivery acknowledges
@@ -28,9 +42,9 @@ export function world(source, options = {}) {
   const owned = typeof source === "function";
   if (!owned && !(source && typeof source === "object")) throw new TypeError("world() takes a World or a function that creates one");
   if (!options || typeof options !== "object" || Array.isArray(options)) throw new TypeError("world() options must be an object");
-  const { name = "world", livenessKnown = false, queueDurable = false, pollMs, leaseMs, maxDurationMs, reserveMs, alive, holderInfo, gatewayKey } = options;
+  const { name = "world", livenessKnown = false, queueLeases = false, runInRequest = queueLeases, waitUntil, queueDurable = false, pollMs, leaseMs, maxDurationMs, reserveMs, alive, holderInfo, gatewayKey } = options;
   if (typeof name !== "string" || name.length === 0) throw new TypeError("world() name must be a non-empty string");
-  for (const [key, value] of Object.entries({ livenessKnown, queueDurable })) {
+  for (const [key, value] of Object.entries({ livenessKnown, queueLeases, runInRequest, queueDurable })) {
     if (typeof value !== "boolean") throw new TypeError(`${name}() ${key} must be a boolean`);
   }
   if (pollMs !== undefined && !(Number.isSafeInteger(pollMs) && pollMs > 0)) throw new TypeError(`${name}() pollMs must be a positive integer`);
@@ -39,16 +53,21 @@ export function world(source, options = {}) {
   for (const [key, value] of Object.entries({ maxDurationMs, reserveMs })) {
     if (value !== undefined && !(Number.isSafeInteger(value) && value >= 0)) throw new TypeError(`${name}() ${key} must be a non-negative integer`);
   }
-  for (const [key, value] of Object.entries({ alive, holderInfo, gatewayKey })) {
+  for (const [key, value] of Object.entries({ alive, holderInfo, gatewayKey, waitUntil })) {
     if (value !== undefined && typeof value !== "function") throw new TypeError(`${name}() ${key} must be a function`);
   }
   if (livenessKnown && !alive) throw new TypeError(`${name}() livenessKnown needs alive()`);
+  // Only the backstop's own message coming back continues a turn a dead
+  // request ran.
+  if (runInRequest && !queueLeases) throw new TypeError(`${name}() runInRequest needs queueLeases`);
   return {
     [durabilityTag]: true,
     name,
     world: owned ? source : () => source,
     owned,
     livenessKnown,
+    queueLeases,
+    runInRequest,
     queueDurable,
     ...(pollMs === undefined ? {} : { pollMs }),
     ...(leaseMs === undefined ? {} : { leaseMs }),
@@ -57,5 +76,6 @@ export function world(source, options = {}) {
     ...(alive === undefined ? {} : { alive }),
     ...(holderInfo === undefined ? {} : { holderInfo }),
     ...(gatewayKey === undefined ? {} : { gatewayKey }),
+    ...(waitUntil === undefined ? {} : { waitUntil }),
   };
 }

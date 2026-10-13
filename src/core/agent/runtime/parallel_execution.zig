@@ -661,7 +661,7 @@ test "parallel classifier keeps only a leading safe read-only group" {
 test "host calls run together until a writer, which runs alone" {
     const host_tool_runtime = @import("../../tooling/host_tool_runtime.zig");
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
-        \\[{"name":"list","description":"List","inputSchema":{}},
+        \\[{"name":"list","description":"List","inputSchema":{},"idempotent":true},
         \\ {"name":"read","description":"Read","inputSchema":{},"writes":false},
         \\ {"name":"write","description":"Write","inputSchema":{},"writes":true}]
     , .{});
@@ -688,7 +688,7 @@ test "host calls run together until a writer, which runs alone" {
 test "a host group holds at most max_parallel_host_calls calls" {
     const host_tool_runtime = @import("../../tooling/host_tool_runtime.zig");
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
-        \\[{"name":"read","description":"Read","inputSchema":{}}]
+        \\[{"name":"read","description":"Read","inputSchema":{},"idempotent":true}]
     , .{});
     defer parsed.deinit();
     var host = try host_tool_runtime.Runtime.init(std.testing.allocator, parsed.value);

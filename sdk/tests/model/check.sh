@@ -9,8 +9,9 @@
 #     https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
 #
 # Then drive the code along the graphs:
-#   bun drive.mjs send && bun drive.mjs lookup && bun drive.mjs cutoff
+#   bun drive.mjs send && bun drive.mjs lookup && bun drive.mjs write && bun drive.mjs cutoff
 #   bun drive.mjs leased   # the Heartbeat graph, on a World without liveness
+#   bun drive.mjs queue    # the QueueHeld graph, on a World whose queue shows it
 set -eu
 cd "$(dirname "$0")"
 
@@ -25,7 +26,7 @@ done
 work="${TMPDIR:-/tmp}/libfx-model-tlc"
 mkdir -p "$work" graphs
 status=0
-for tool in send lookup cutoff leased; do
+for tool in send lookup write cutoff leased queue; do
     echo "== DurableSession ($tool)"
     if ! "$java" -XX:+UseParallelGC -cp "$jar" tlc2.TLC -deadlock -workers 1 -cleanup \
         -metadir "$work/$tool" -dump dot,actionlabels "graphs/$tool" \
@@ -44,9 +45,15 @@ done
 # LeasedTwoActive breaks NotTwoActive with Heartbeat: a renewed lease ends a
 # woken worker's run at its next renewal, not before, so two can still be
 # active at once until it lands.
+# LookupRunsAhead breaks EveryCallAfterIntent: a lookup starts before its
+# intent is in the chain. LookupNewId breaks IdsAtMostOne: a crash before
+# that intent lands has the model ask again, under a new execution id.
+# WriteRunsAhead breaks OneExecutionId: a write that ran ahead the same way
+# would run under two ids, which is why a write waits for its intent.
 for pair in UiInOrder:UiInOrder NoStaleShown:NoStaleShown NotTwoActive:NotTwoActive \
     NoSelfStop:TwoActiveNeedsFreeze NoClaimFence:EffectsAtMostOnce NoCutoffBound:HandoffsBounded \
-    LeasedTwoActive:NotTwoActive; do
+    LeasedTwoActive:NotTwoActive LookupRunsAhead:EveryCallAfterIntent LookupNewId:IdsAtMostOne \
+    WriteRunsAhead:OneExecutionId; do
     witness="${pair%%:*}" invariant="${pair#*:}"
     if "$java" -cp "$jar" tlc2.TLC -deadlock -workers auto -cleanup -metadir "$work/w-$witness" \
         -config "Witness-$witness.cfg" DurableSession.tla 2>&1 | grep -q -E "Invariant $invariant is violated"; then

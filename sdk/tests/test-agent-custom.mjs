@@ -114,6 +114,7 @@ const assertNoGateway = (log) => assert.equal(log.some((entry) => entry.url.incl
   const lookup = {
     name: "lookup",
     description: "Looks up a key",
+    idempotent: true,
     inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] },
     execute: async ({ key }) => `value of ${key} is beta`,
   };

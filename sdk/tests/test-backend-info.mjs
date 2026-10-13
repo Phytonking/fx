@@ -35,7 +35,7 @@ const matchingCore = {
   createCore() { assert.fail("backend probing must not create a core"); },
 };
 const matchingTerminal = {
-  libfxApiVersion: 2,
+  libfxApiVersion: 3,
   createFxTerminal() { assert.fail("backend probing must not create a terminal"); },
 };
 

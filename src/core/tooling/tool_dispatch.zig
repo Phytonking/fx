@@ -460,9 +460,15 @@ pub const Tool = struct {
     /// enforcement point and requires an already-settled allow.
     provider_executed: bool = false,
     /// A host tool whose calls may run beside neighboring calls of other such
-    /// tools. A host tool that declares `writes` leaves it unset and runs
-    /// alone. Concurrency never changes a call's permission review.
+    /// tools. A host tool that declares `writes`, or that is not idempotent
+    /// and does not declare `writes: false`, leaves it unset and runs alone.
+    /// Concurrency never changes a call's permission review.
     host_concurrent: bool = false,
+    /// A host tool the host declares idempotent: running a call again has
+    /// the effect of running it once. A journaled session starts a call of
+    /// such a tool that is also concurrent without waiting for its intent to
+    /// be stored.
+    host_idempotent: bool = false,
     executor_kind: ExecutorKind = .read_file,
     activity_kind: core_types.ToolActivityKind = .read,
     requires_approval: bool = false,

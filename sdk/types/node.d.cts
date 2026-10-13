@@ -29,7 +29,11 @@ export type {
   FxAccepted,
   FxAgent,
   FxAgentEvent,
+  FxAgentHostTool,
+  FxAgentKeyedTool,
   FxAgentOptions,
+  FxAgentTool,
+  FxAgentTools,
   FxApiKeyCredentials,
   FxBackendAttempt,
   FxBackendChoice,
@@ -148,4 +152,4 @@ export declare function createFxTerminal(options: FxNodeTerminalOptions): Promis
 export declare function getBackendInfo(options?: FxBackendInfoOptions): Promise<FxBackendInfo>;
 
 /** The version of the libfx agent API. */
-export declare const libfxApiVersion: 2;
+export declare const libfxApiVersion: 3;
