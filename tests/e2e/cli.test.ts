@@ -1099,6 +1099,28 @@ describe("cli: status", () => {
   );
 
   test(
+    "fx upgrade names a channel that does not exist and saves nothing",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "fx-upgrade-channel-"));
+      try {
+        for (const args of [["upgrade", "--channel=nightly"], ["upgrade", "--channel", "nightly"]]) {
+          const result = await runFx(args, { env: { HOME: home } });
+          expect(result.code).toBe(2);
+          expect(result.stdout).toBe("");
+          expect(result.stderr).toStartWith("fx upgrade: invalid value for --channel: nightly\nusage: fx upgrade");
+        }
+        const json = await runFx(["upgrade", "--json", "--channel=nightly"], { env: { HOME: home } });
+        expect(json.code).toBe(2);
+        expect(JSON.parse(json.stdout)).toEqual({ kind: "upgrade", error: "invalid arguments", code: "InvalidUpgradeArgs" });
+        expect(existsSync(join(home, ".fx", "settings.json"))).toBe(false);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
     "fx status --json defaults permission mode to auto",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "fx-e2e-permission-default-"));

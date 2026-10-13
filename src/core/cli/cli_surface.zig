@@ -2116,7 +2116,13 @@ fn runNonInteractiveWithDeps(
         },
         .upgrade => |rest| {
             const upgrade_runtime = @import("../upgrade/upgrade_runtime.zig");
-            const opts = parseUpgradeArgs(rest) catch |err| {
+            var rejected_channel: ?[]const u8 = null;
+            const opts = parseUpgradeArgs(rest, &rejected_channel) catch |err| {
+                if (rejected_channel) |value| if (!argsContainJson(rest)) {
+                    const line = try alloc.print("fx upgrade: invalid value for --channel: {s}\n", .{value});
+                    defer alloc.free(line);
+                    try writeStderr(deps, line);
+                };
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .upgrade, "upgrade", err, rest);
                 return usage_failure;
             };
@@ -2147,6 +2153,11 @@ fn runNonInteractiveWithDeps(
                     return .handled_failure;
                 };
                 defer outcome.deinit(alloc);
+                if (opts.format == .text) {
+                    const line = try channelSavedLine(alloc, selected, outcome);
+                    defer alloc.free(line);
+                    try writeStdout(deps, line);
+                }
             }
 
             var result = upgrade_runtime.run(alloc, .{
@@ -3841,6 +3852,7 @@ fn commandFailureMessage(err: anyerror) ?[]const u8 {
         error.InvalidSessionMigrationArgs,
         error.InvalidSessionRecoveryArgs,
         error.InvalidResumeArgs,
+        error.InvalidUpgradeArgs,
         => "invalid arguments",
         else => null,
     };
@@ -4131,18 +4143,35 @@ fn parseLocalSurfaceArgs(args: []const [:0]const u8) !LocalSurfaceOptions {
 const UpgradeFlag = enum { channel, json };
 const upgrade_flag_ids = cli_flags.idTable(UpgradeFlag, &builtin_commands.upgrade_options);
 
-fn parseUpgradeArgs(args: []const [:0]const u8) !UpgradeOptions {
+/// On a `--channel` value that names no channel, sets `rejected_channel` to it,
+/// borrowed from `args`.
+fn parseUpgradeArgs(args: []const [:0]const u8, rejected_channel: *?[]const u8) !UpgradeOptions {
     var options = UpgradeOptions{};
     var parser: cli_flags.Parser = .init(&builtin_commands.upgrade_options, args);
     while (parser.next() catch return error.InvalidUpgradeArgs) |item| switch (item) {
         .positional => return error.InvalidUpgradeArgs,
         .option => |match| switch (upgrade_flag_ids[match.index].?) {
-            .channel => options.channel = update_target.Channel.parse(match.value.?) orelse
-                return error.InvalidUpgradeArgs,
+            .channel => options.channel = update_target.Channel.parse(match.value.?) orelse {
+                rejected_channel.* = match.value.?;
+                return error.InvalidUpgradeArgs;
+            },
             .json => options.format = .json,
         },
     };
     return options;
+}
+
+/// The line `fx upgrade --channel` prints after saving, so the user knows the
+/// channel persists and where. Caller owns the result.
+fn channelSavedLine(
+    alloc: Allocator,
+    channel: update_target.Channel,
+    outcome: config_runtime.CommitOutcome,
+) ![]u8 {
+    return switch (outcome) {
+        .unchanged => alloc.print("Release channel is already {s}.\n", .{channel.label()}),
+        .committed => alloc.print("Release channel set to {s} in ~/.fx/settings.json.\n", .{channel.label()}),
+    };
 }
 
 const SessionListFlag = enum { all, limit, cursor, json };
@@ -4932,7 +4961,8 @@ test "parse local surface args accepts only json" {
 }
 
 test "parse upgrade args accepts a remembered release channel" {
-    const defaults = try parseUpgradeArgs(&.{});
+    var rejected: ?[]const u8 = null;
+    const defaults = try parseUpgradeArgs(&.{}, &rejected);
     try std.testing.expectEqual(output_contracts.OutputFormat.text, defaults.format);
     try std.testing.expect(defaults.channel == null);
 
@@ -4940,19 +4970,71 @@ test "parse upgrade args accepts a remembered release channel" {
         @constCast("--channel"),
         @constCast("dev"),
         @constCast("--json"),
-    });
+    }, &rejected);
     try std.testing.expectEqual(output_contracts.OutputFormat.json, selected.format);
     try std.testing.expectEqual(update_target.Channel.dev, selected.channel.?);
 
-    const stable = try parseUpgradeArgs(&.{@constCast("--channel=stable")});
+    const stable = try parseUpgradeArgs(&.{@constCast("--channel=stable")}, &rejected);
     try std.testing.expectEqual(update_target.Channel.stable, stable.channel.?);
+    try std.testing.expect(rejected == null);
 
     try std.testing.expectError(
         error.InvalidUpgradeArgs,
-        parseUpgradeArgs(&.{ @constCast("--channel"), @constCast("nightly") }),
+        parseUpgradeArgs(&.{ @constCast("--channel"), @constCast("nightly") }, &rejected),
     );
-    const last = try parseUpgradeArgs(&.{ "--channel=dev", "--channel", "stable" });
+    try std.testing.expectEqualStrings("nightly", rejected.?);
+
+    rejected = null;
+    const last = try parseUpgradeArgs(&.{ "--channel=dev", "--channel", "stable" }, &rejected);
     try std.testing.expectEqual(update_target.Channel.stable, last.channel.?);
+}
+
+test "upgrade channel saved line says whether the file changed" {
+    const alloc = std.testing.allocator;
+    const set = try channelSavedLine(alloc, .dev, .{ .committed = .{ .scope = .user } });
+    defer alloc.free(set);
+    try std.testing.expectEqualStrings("Release channel set to dev in ~/.fx/settings.json.\n", set);
+
+    const same = try channelSavedLine(alloc, .stable, .unchanged);
+    defer alloc.free(same);
+    try std.testing.expectEqualStrings("Release channel is already stable.\n", same);
+}
+
+test "runIfRequested names an upgrade channel that does not exist" {
+    var capture = CaptureOutput.init(std.testing.allocator);
+    defer capture.deinit();
+
+    const result = try runIfRequestedWithDeps(
+        std.testing.allocator,
+        &.{ @constCast("upgrade"), @constCast("--channel=nightly") },
+        testConfig(),
+        capture.deps(),
+    );
+    try std.testing.expectEqual(usage_failure, result);
+    try std.testing.expectEqualStrings("", capture.stdout.written());
+    try std.testing.expect(std.mem.startsWith(
+        u8,
+        capture.stderr.written(),
+        "fx upgrade: invalid value for --channel: nightly\nusage: fx upgrade",
+    ));
+}
+
+test "runIfRequested reports bad upgrade arguments as json with --json" {
+    var capture = CaptureOutput.init(std.testing.allocator);
+    defer capture.deinit();
+
+    const result = try runIfRequestedWithDeps(
+        std.testing.allocator,
+        &.{ @constCast("upgrade"), @constCast("--json"), @constCast("--channel=nightly") },
+        testConfig(),
+        capture.deps(),
+    );
+    try std.testing.expectEqual(usage_failure, result);
+    try std.testing.expectEqualStrings(
+        "{\"kind\":\"upgrade\",\"error\":\"invalid arguments\",\"code\":\"InvalidUpgradeArgs\"}\n",
+        capture.stdout.written(),
+    );
+    try std.testing.expectEqualStrings("", capture.stderr.written());
 }
 
 test "parse session list args supports bounded canonical pagination" {

@@ -5636,9 +5636,12 @@ test("manual upgrade output links stable notes and dev changes", async () => {
     const devExitCode = await dev.exited;
     expect(devExitCode).toBe(0);
     const buildRevision = JSON.parse(currentRevision).build_revision;
-    expect(await new Response(dev.stdout).text()).toContain(
+    const devStdout = await new Response(dev.stdout).text();
+    expect(devStdout).toContain(
       `changes: https://github.com/vercel-labs/fx/compare/${buildRevision}...${revision}`,
     );
+    expect(devStdout.startsWith("Release channel set to dev in ~/.fx/settings.json.\n")).toBe(true);
+    expect(JSON.parse(readFileSync(join(home, ".fx", "settings.json"), "utf8")).update_channel).toBe("dev");
   } finally {
     release.stop();
     rmSync(root, { recursive: true, force: true });
