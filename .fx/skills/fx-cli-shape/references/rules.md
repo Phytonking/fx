@@ -67,7 +67,7 @@ Run flags and env vars never save; setter commands do (see Flags). Every effecti
 ## Commands
 
 - A command is a verb (`fx ask`, `fx upgrade`) or a noun plus a verb (`fx workspace add`, `fx session resume`).
-- Plain `fx` with one argument that isn't a command starts a session with it as the first prompt: `fx "fix the login bug"`, as other coding agents' CLIs do. Launch flags may go before or after it. Several unquoted words fail and say to add quotes, and a word one or two edits from a command name, such as `stauts`, gets a suggestion instead. So every new command name is also a word that can no longer start a session; choose names people wouldn't type as a whole prompt.
+- Plain `fx` with one argument that isn't a command starts a session with it as the first prompt: `fx "fix the login bug"`, as other coding agents' CLIs do. Launch flags may go before or after it. It can also follow a resume target: `fx -c "<prompt>"` or `fx -r <id|last> "<prompt>"`. Several unquoted words fail and say to add quotes, and a word one or two edits from a command name, such as `stauts`, gets a suggestion instead. So every new command name is also a word that can no longer start a session; choose names people wouldn't type as a whole prompt.
 - Group nouns are singular. Plural forms that already exist stay as aliases (`fx sessions`). The target adds `fx session list` as the full form.
 - A command that only shows things never changes anything. A setter command, whose whole job is to change a setting, may save: `fx provider codex`, `fx teams`.
 - Existing aliases stay: `credits`/`balance`, `/credits`/`/balance`, `/usage`/`/cost`, `/quit`/`/exit`, `/image`/`/img`, `fx sessions`.

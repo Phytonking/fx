@@ -773,18 +773,28 @@ pub fn parseInteractiveLaunch(
                 } else null;
                 upgrade_relaunch = .{ .previous_revision = previous_revision };
             }
-            const target_args = if (has_upgrade_relaunch) resume_args[0..1] else resume_args;
-            const target = try parseResumeArgs(
+            const resume_line = if (has_upgrade_relaunch) resume_args[0..1] else resume_args;
+            const split: ResumePrompt = if (invocation.top_level_alias)
+                splitResumePrompt(resume_line)
+            else
+                .{ .target_args = resume_line };
+            if (split.prompt) |prompt| {
+                if (std.mem.trim(u8, prompt, " \t\r\n").len == 0) return error.EmptyLaunchPrompt;
+            }
+            var target = try parseResumeArgs(
                 alloc,
-                target_args,
+                split.target_args,
                 invocation.top_level_alias,
             );
+            errdefer target.deinit(alloc);
+            const initial_prompt: ?[]u8 = if (split.prompt) |prompt| try alloc.dupe(u8, prompt) else null;
             const relaunch = upgrade_relaunch;
             upgrade_relaunch = null;
             return .{ .interactive = .{
                 .requested_resume = target,
                 .upgrade_relaunch = relaunch,
                 .modifiers = global_args.takeModifiers(),
+                .initial_prompt = initial_prompt,
             } };
         },
         .unknown => |word| switch (classifyLaunchWord(command_catalog, word)) {
@@ -816,6 +826,33 @@ pub fn parseInteractiveLaunch(
         .effective_args = effective_args,
         .command = command,
     } };
+}
+
+const ResumePrompt = struct {
+    target_args: []const [:0]const u8,
+    /// Borrowed from the arguments.
+    prompt: ?[]const u8 = null,
+};
+
+/// Splits a first prompt off the end of a top-level resume: `fx -c "<prompt>"`,
+/// `fx -r <id|last> "<prompt>"`, or `fx --resume=<id|last> "<prompt>"`. `-c`
+/// takes no value, so its next argument is the prompt; `-r` and `--resume`
+/// take one first, as in other coding agents' CLIs. A flag in the prompt's
+/// place stays with the resume arguments, which reject it.
+fn splitResumePrompt(args: []const [:0]const u8) ResumePrompt {
+    if (args.len < 2) return .{ .target_args = args };
+    const flag = args[0];
+    const target_len: usize = if (std.mem.eql(u8, flag, "--resume") or std.mem.eql(u8, flag, resume_short_flag))
+        2
+    else if (std.mem.eql(u8, flag, "-c") or std.mem.eql(u8, flag, "--continue") or
+        std.mem.startsWith(u8, flag, resume_inline_prefix))
+        1
+    else
+        return .{ .target_args = args };
+    if (args.len != target_len + 1) return .{ .target_args = args };
+    const prompt = args[target_len];
+    if (prompt.len > 0 and prompt[0] == '-') return .{ .target_args = args };
+    return .{ .target_args = args[0..target_len], .prompt = prompt };
 }
 
 const LaunchWord = enum {
@@ -5278,7 +5315,7 @@ test "parseInteractiveLaunch shares native resume grammar" {
         error.InvalidResumeArgs,
         parseInteractiveLaunch(
             alloc,
-            &.{ @constCast("--resume"), @constCast("one"), @constCast("two") },
+            &.{ @constCast("--resume"), @constCast("one"), @constCast("a prompt"), @constCast("three") },
             command_catalog,
         ),
     );
@@ -5903,7 +5940,7 @@ test "runIfRequested -r and a bare --resume ask which session to resume" {
     defer extra_capture.deinit();
     const extra = try runIfRequestedWithDeps(
         std.testing.allocator,
-        &.{ @constCast("-r"), @constCast("session.123"), @constCast("extra") },
+        &.{ @constCast("-r"), @constCast("session.123"), @constCast("a prompt"), @constCast("extra") },
         testConfig(),
         extra_capture.deps(),
     );
@@ -5977,7 +6014,7 @@ test "runIfRequested removed resume spellings exit with the replacement" {
 
 test "runIfRequested rejects malformed resume aliases with canonical usage" {
     const cases = [_][]const [:0]const u8{
-        &.{ @constCast("--continue"), @constCast("unexpected") },
+        &.{ @constCast("--continue"), @constCast("unexpected"), @constCast("extra") },
         &.{ @constCast("--resume"), @constCast("   ") },
         &.{ @constCast("session"), @constCast("resume"), @constCast("a"), @constCast("b") },
     };
@@ -6021,7 +6058,7 @@ test "runIfRequested invalid resume writes usage" {
     var capture = CaptureOutput.init(std.testing.allocator);
     defer capture.deinit();
 
-    const result = try runIfRequestedWithDeps(std.testing.allocator, &.{ @constCast("--resume"), @constCast("a"), @constCast("b") }, testConfig(), capture.deps());
+    const result = try runIfRequestedWithDeps(std.testing.allocator, &.{ @constCast("--resume"), @constCast("a"), @constCast("b"), @constCast("c") }, testConfig(), capture.deps());
     try std.testing.expectEqual(usage_failure, result);
     try std.testing.expectEqualStrings(
         "usage: fx session resume [last|<id>] | -r, --resume [last|<id>] | --continue | -c\n",
@@ -6063,6 +6100,58 @@ test "runIfRequested takes one argument that isn't a command as the first prompt
         }
         try std.testing.expectEqualStrings("", capture.stderr.written());
     }
+}
+
+test "runIfRequested takes a first prompt after a resume target" {
+    const cases = [_]struct {
+        args: []const [:0]const u8,
+        target: std.meta.Tag(ResumeTarget),
+        id: ?[]const u8 = null,
+    }{
+        .{ .args = &.{ @constCast("-c"), @constCast("fix it") }, .target = .remembered },
+        .{ .args = &.{ @constCast("--continue"), @constCast("fix it") }, .target = .remembered },
+        .{ .args = &.{ @constCast("-r"), @constCast("last"), @constCast("fix it") }, .target = .last },
+        .{ .args = &.{ @constCast("-r"), @constCast("session.123"), @constCast("fix it") }, .target = .id, .id = "session.123" },
+        .{ .args = &.{ @constCast("--resume"), @constCast("session.123"), @constCast("fix it") }, .target = .id, .id = "session.123" },
+        .{ .args = &.{ @constCast("--resume=last"), @constCast("fix it") }, .target = .last },
+        .{ .args = &.{ @constCast("--model"), @constCast("a"), @constCast("-c"), @constCast("fix it") }, .target = .remembered },
+    };
+    for (cases) |case| {
+        var capture = CaptureOutput.init(std.testing.allocator);
+        defer capture.deinit();
+
+        const result = try runIfRequestedWithDeps(std.testing.allocator, case.args, testConfig(), capture.deps());
+        var launch = switch (result) {
+            .interactive => |value| value,
+            else => return error.TestExpectedInteractiveLaunch,
+        };
+        defer launch.deinit(std.testing.allocator);
+        try std.testing.expectEqualStrings("fix it", launch.initial_prompt.?);
+        const target = launch.requested_resume.?;
+        try std.testing.expectEqual(case.target, std.meta.activeTag(target));
+        if (case.id) |id| try std.testing.expectEqualStrings(id, target.id);
+        try std.testing.expectEqualStrings("", capture.stderr.written());
+    }
+
+    // `-r` with one value still opens that session, and a flag in the
+    // prompt's place or after the prompt is a usage error.
+    const rejected = [_][]const [:0]const u8{
+        &.{ @constCast("-c"), @constCast("--fast") },
+        &.{ @constCast("-r"), @constCast("a"), @constCast("b"), @constCast("c") },
+        &.{ @constCast("-c"), @constCast("fix it"), @constCast("--model"), @constCast("x") },
+    };
+    for (rejected) |args| {
+        var capture = CaptureOutput.init(std.testing.allocator);
+        defer capture.deinit();
+        const result = try runIfRequestedWithDeps(std.testing.allocator, args, testConfig(), capture.deps());
+        try std.testing.expectEqual(usage_failure, result);
+    }
+
+    var empty_capture = CaptureOutput.init(std.testing.allocator);
+    defer empty_capture.deinit();
+    const empty = try runIfRequestedWithDeps(std.testing.allocator, &.{ @constCast("-c"), @constCast(" ") }, testConfig(), empty_capture.deps());
+    try std.testing.expectEqual(usage_failure, empty);
+    try std.testing.expectEqualStrings("fx: the prompt is empty\n", empty_capture.stderr.written());
 }
 
 test "runIfRequested explains a first argument that is neither a command nor a prompt" {

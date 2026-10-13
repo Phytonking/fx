@@ -472,6 +472,78 @@ describe.skipIf(SKIP_TMUX)("tui: fresh-session commands", () => {
   );
 
   test(
+    "fx -c with a quoted prompt sends it in the remembered session",
+    async () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-continue-prompt-")));
+      const home = join(root, "home");
+      const stderrPath = join(root, "stderr.log");
+      mkdirSync(home, { recursive: true });
+      const gateway = startDynamicFakeGateway((body) =>
+        fakeGatewayFinalText(
+          body.includes("second launch fixture prompt") ? "SECOND_LAUNCH_REPLY" : "FIRST_LAUNCH_REPLY",
+        ),
+      );
+      const env = {
+        HOME: home,
+        FX_AUTO_UPGRADE: "0",
+        AI_GATEWAY_API_KEY: "continue-prompt-fixture-key",
+        VERCEL_OIDC_TOKEN: undefined,
+        FX_GATEWAY_BASE_URL: gateway.baseUrl,
+        FX_GATEWAY_CHAT_URL: gateway.chatUrl,
+        FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+        FX_MODEL: FAKE_GATEWAY_MODEL,
+      };
+
+      try {
+        writeFileSync(stderrPath, "");
+        session = await TmuxSession.create({
+          cmd: `${FX_BIN} "first launch fixture prompt"`,
+          cwd: root,
+          env,
+          stderrPath,
+          width: 100,
+          height: 24,
+        });
+        await session.waitForText("FIRST_LAUNCH_REPLY", 10_000);
+        await session.waitForPane((pane) => hasEmptyComposer(pane), 10_000);
+        await session.sendText("/quit");
+        expect(await session.waitForSessionEnd()).toBe(true);
+        await session.kill();
+        session = null;
+        expect(readFileSync(stderrPath, "utf8")).toBe("");
+
+        session = await TmuxSession.create({
+          cmd: `${FX_BIN} -c "second launch fixture prompt"`,
+          cwd: root,
+          env,
+          stderrPath,
+          width: 100,
+          height: 24,
+        });
+        await session.waitForText("SECOND_LAUNCH_REPLY", 10_000);
+        await session.waitForPane((pane) => hasEmptyComposer(pane), 10_000);
+        expect(gateway.requests).toHaveLength(2);
+        // The second request carries the resumed history before the new prompt.
+        const second = gateway.requests[1].body;
+        expect(second).toContain("first launch fixture prompt");
+        expect(second).toContain("second launch fixture prompt");
+        expect(second.indexOf("first launch fixture prompt")).toBeLessThan(
+          second.indexOf("second launch fixture prompt"),
+        );
+        expect(readFileSync(stderrPath, "utf8")).toBe("");
+      } finally {
+        if (session) {
+          await session.kill();
+          session = null;
+        }
+        gateway.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
     "/new waits for a resize before moving the old transcript into scrollback",
     async () => {
       const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-new-resize-")));

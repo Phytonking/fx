@@ -317,6 +317,10 @@ pub fn SubmitRuntime(comptime App: type) type {
             if (comptime !@hasField(App, "submission")) return;
             const prompt = app.submission.launch_prompt orelse return;
             if (app.shell.render_requests.hasReason(.first_frame)) return;
+            // Typed input waits out a live session switch; so does this.
+            if (comptime @hasField(App, "session_persistence")) {
+                if (app.session_persistence.pending_live_session_policy != null) return;
+            }
             app.submission.launch_prompt = null;
             defer app.alloc.free(prompt);
             if (app.input_runtime.edit_state.input.items.len != 0) {

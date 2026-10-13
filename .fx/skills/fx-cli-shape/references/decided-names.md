@@ -67,6 +67,6 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 | Usage and spend | `fx usage`, `/usage` (`/cost`) |
 | In-session token and turn statistics | `/stats` |
 | Exit codes | 0 success, 1 failure, 2 usage error |
-| Start a session with a first prompt | `fx "<prompt>"`, one quoted argument |
+| Start a session with a first prompt | `fx "<prompt>"`, one quoted argument; after a resume target, `fx -c "<prompt>"` or `fx -r <id\|last> "<prompt>"` |
 | Run one request and exit | `fx ask "<prompt>"`; `-p` and `--print` only point to it |
 | Versioned JSON | `--json=v2` when a shape must change |
