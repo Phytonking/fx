@@ -13,7 +13,7 @@ const settings_store = @import("../config/settings_store.zig");
 const theme = @import("../shared/theme.zig");
 const types = @import("../shared/types.zig");
 const update_target = @import("../upgrade/update_target.zig");
-const compactor_settings = @import("../compactor/settings.zig");
+const compactor = @import("../compactor/compactor.zig");
 const tool_result_limits = @import("../tooling/tool_result_limits.zig");
 
 const Allocator = std.mem.Allocator;
@@ -180,7 +180,7 @@ pub fn change(options: Options, problem: *WriteProblem) error{ RefusedConfigSett
         },
         .auto_compact_percent => {
             const percent = std.fmt.parseUnsigned(u8, raw, 10) catch 0;
-            if (!compactor_settings.isValidPercent(percent)) return invalid(problem, "a whole number from 10 to 80");
+            if (!compactor.isValidPercent(percent)) return invalid(problem, "a whole number from 10 to 80");
             patch.auto_compact_percent = percent;
             return .{ .patch = patch, .value = .{ .integer = percent } };
         },
