@@ -820,12 +820,14 @@ fn hasLegacyWorkspacePreferences(root: std.json.Value) bool {
         if (workspace.get("prompt_history")) |value| {
             if (value == .object and value.object.contains("enabled")) return true;
         }
-        if (workspace.get("statusLine")) |value| {
-            if (value == .object and
-                (value.object.contains("context") or
-                    value.object.contains("session")))
-            {
-                return true;
+        for ([_]?std.json.Value{ workspace.get("statusLine"), workspace.get("status_line") }) |group| {
+            if (group) |value| {
+                if (value == .object and
+                    (value.object.contains("context") or
+                        value.object.contains("session")))
+                {
+                    return true;
+                }
             }
         }
     }
@@ -1818,41 +1820,46 @@ fn parseProfileOnlyFields(
         }
     }
 
-    if (root.object.get("statusLine")) |statusline_value| {
-        const value = statusline_value;
-        if (value != .object) {
-            if (!tolerate_non_object_user_containers) return error.InvalidStatusLineType;
-        } else {
-            if (value.object.get("context")) |v| {
-                if (v != .bool) return error.InvalidStatusLineContextType;
-                settings.statusline_context = v.bool;
-            }
-            if (value.object.get("session")) |v| {
-                if (v != .bool) return error.InvalidStatusLineSessionType;
-                settings.statusline_session = v.bool;
-            }
-            if (parse_workspace_statusline) {
-                if (value.object.get("workspace")) |v| {
-                    if (v != .bool) return error.InvalidStatusLineWorkspaceType;
-                    settings.statusline_workspace = v.bool;
+    // `status_line` and `sound` were `statusLine` and `notifications`. The
+    // older name is read first, so the current one wins any value both set.
+    for ([_]?std.json.Value{ root.object.get("statusLine"), root.object.get("status_line") }) |group| {
+        if (group) |value| {
+            if (value != .object) {
+                if (!tolerate_non_object_user_containers) return error.InvalidStatusLineType;
+            } else {
+                if (value.object.get("context")) |v| {
+                    if (v != .bool) return error.InvalidStatusLineContextType;
+                    settings.statusline_context = v.bool;
+                }
+                if (value.object.get("session")) |v| {
+                    if (v != .bool) return error.InvalidStatusLineSessionType;
+                    settings.statusline_session = v.bool;
+                }
+                if (parse_workspace_statusline) {
+                    if (value.object.get("workspace")) |v| {
+                        if (v != .bool) return error.InvalidStatusLineWorkspaceType;
+                        settings.statusline_workspace = v.bool;
+                    }
                 }
             }
         }
     }
 
-    if (root.object.get("notifications")) |notifications_value| {
-        if (notifications_value != .object) return error.InvalidNotificationsType;
-        if (notifications_value.object.get("turn_end")) |value| {
-            if (value != .bool) return error.InvalidNotificationTurnEndType;
-            settings.notification_turn_end = value.bool;
-        }
-        if (notifications_value.object.get("attention_required")) |value| {
-            if (value != .bool) return error.InvalidNotificationAttentionRequiredType;
-            settings.notification_attention_required = value.bool;
-        }
-        if (notifications_value.object.get("max")) |value| {
-            if (value != .bool) return error.InvalidNotificationMaxType;
-            settings.notification_max = value.bool;
+    for ([_]?std.json.Value{ root.object.get("notifications"), root.object.get("sound") }) |group| {
+        if (group) |sound_value| {
+            if (sound_value != .object) return error.InvalidNotificationsType;
+            if (sound_value.object.get("turn_end")) |value| {
+                if (value != .bool) return error.InvalidNotificationTurnEndType;
+                settings.notification_turn_end = value.bool;
+            }
+            if (sound_value.object.get("attention_required")) |value| {
+                if (value != .bool) return error.InvalidNotificationAttentionRequiredType;
+                settings.notification_attention_required = value.bool;
+            }
+            if (sound_value.object.get("max")) |value| {
+                if (value != .bool) return error.InvalidNotificationMaxType;
+                settings.notification_max = value.bool;
+            }
         }
     }
 
@@ -2967,6 +2974,24 @@ test "review_model parses, merges, and yields to FX_REVIEW_MODEL" {
     var result = try loadMergedSettingsDetailedFromHome(std.testing.allocator, home_root, workspace_root);
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("process/review", result.settings.review_model.?);
+}
+
+test "renamed groups read either spelling and the current one wins" {
+    const alloc = std.testing.allocator;
+    var both = try parseSettingsJson(alloc,
+        \\{"status_line":{"context":true},"statusLine":{"context":false,"session":true},
+        \\ "sound":{"max":true},"notifications":{"max":false,"turn_end":true}}
+    );
+    defer both.deinit(alloc);
+    try std.testing.expect(both.statusline_context.? and both.statusline_session.?);
+    try std.testing.expect(both.notification_max.? and both.notification_turn_end.?);
+
+    var older = try parseSettingsJson(alloc, "{\"statusLine\":{\"session\":true},\"notifications\":{\"attention_required\":false}}");
+    defer older.deinit(alloc);
+    try std.testing.expect(older.statusline_session.?);
+    try std.testing.expect(!older.notification_attention_required.?);
+
+    try std.testing.expectError(error.InvalidNotificationsType, parseSettingsJson(alloc, "{\"sound\":\"on\"}"));
 }
 
 test "setting overrides sit above the files, nest dotted keys, and keep the last value" {

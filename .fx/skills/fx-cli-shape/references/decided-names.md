@@ -41,8 +41,8 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 |---|---|
 | Settings command | `fx config list\|get\|set\|unset`; `--global`, `--workspace` (list and get), `--show-origin` |
 | Generic per-run override | `fx ask --config key=value`, with the keys `fx config set` takes |
-| Sound | `sound.turn_end`, `sound.attention_required`, `sound.max` (today `notifications.*`, still read); `/sound on\|off\|max` and `FX_SOUND` are presets for the group |
-| Status line | `status_line.*` (today `statusLine`, still read) |
+| Sound | `sound.turn_end`, `sound.attention_required`, `sound.max` (the older `notifications.*` is still read); `/sound on\|off\|max` and `FX_SOUND` are presets for the group |
+| Status line | `status_line.*` (the older `statusLine` is still read) |
 | Experiments | `experimental.<name>`, for example `experimental.sessions_v2` |
 | Home | `FX_HOME` (planned; default `~/.fx`) |
 | Test hooks | `FX_TEST_*` |

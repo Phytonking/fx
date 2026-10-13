@@ -18,7 +18,7 @@ pub const Origin = enum {
 pub const Scope = enum { all, global, workspace };
 
 pub const Entry = struct {
-    /// Dotted key, such as `statusLine.context`.
+    /// Dotted key under its current name, such as `status_line.context`.
     key: []const u8,
     /// Borrowed from the parsed file.
     value: std.json.Value,
@@ -74,8 +74,8 @@ pub fn collect(alloc: Allocator, files: Files, scope: Scope) !Entries {
     return .{ .items = try list.toOwnedSlice(alloc) };
 }
 
-/// The entries for `key` and the keys under it, such as every `statusLine.*`
-/// for `statusLine`, keeping only the entry fx uses for each. Caller frees the
+/// The entries for `key` and the keys under it, such as every `status_line.*`
+/// for `status_line`, keeping only the entry fx uses for each. Caller frees the
 /// returned slice; its entries borrow from `entries`.
 pub fn lookup(alloc: Allocator, entries: []const Entry, key: []const u8) ![]Entry {
     var found: std.ArrayList(Entry) = .empty;
@@ -120,7 +120,37 @@ fn appendSettings(alloc: Allocator, list: *std.ArrayList(Entry), object: std.jso
         }
         // Workspace overrides are shown as their own origin.
         if (std.mem.eql(u8, name, "workspaces")) continue;
+        if (key.renamed_to) |current| {
+            try appendRenamed(alloc, list, entry.value_ptr.*, object.get(current), settings_keys.find(current).?, origin);
+            continue;
+        }
         try appendValue(alloc, list, name, entry.value_ptr.*, origin, key);
+    }
+}
+
+/// Shows a setting saved under its older name, such as `statusLine`, under its
+/// current one, leaving out each value the current key also sets, since that
+/// one wins.
+fn appendRenamed(
+    alloc: Allocator,
+    list: *std.ArrayList(Entry),
+    older: std.json.Value,
+    current: ?std.json.Value,
+    key: settings_keys.Key,
+    origin: Origin,
+) !void {
+    if (older != .object) {
+        if (current == null) try appendValue(alloc, list, key.name, older, origin, key);
+        return;
+    }
+    const shadow: ?std.json.ObjectMap = if (current) |value| (if (value == .object) value.object else null) else null;
+    var iterator = older.object.iterator();
+    while (iterator.next()) |child| {
+        if (!key.hasChild(child.key_ptr.*)) continue;
+        if (shadow) |object| if (object.contains(child.key_ptr.*)) continue;
+        const child_key = try std.mem.concat(alloc, u8, &.{ key.name, ".", child.key_ptr.* });
+        defer alloc.free(child_key);
+        try appendValue(alloc, list, child_key, child.value_ptr.*, origin, null);
     }
 }
 
@@ -173,7 +203,7 @@ test "entries follow precedence and flatten nested values" {
         .{ .key = "max_agent_steps", .origin = .project },
         .{ .key = "fast_mode", .origin = .global },
         .{ .key = "model", .origin = .global },
-        .{ .key = "statusLine.context", .origin = .global },
+        .{ .key = "status_line.context", .origin = .global },
         .{ .key = "models.codex", .origin = .global },
         .{ .key = "provider_order", .origin = .global },
         .{ .key = "fast_mode", .origin = .workspace },
@@ -185,6 +215,28 @@ test "entries follow precedence and flatten nested values" {
         try std.testing.expectEqual(want.origin, got.origin);
     }
     try std.testing.expect(entries.items[5].value == .array);
+}
+
+test "an older name shows under the current one, which wins any value both set" {
+    const alloc = std.testing.allocator;
+    var profile = try parseForTest(
+        \\{"status_line":{"context":true},"statusLine":{"context":false,"session":true},
+        \\ "notifications":{"max":true}}
+    );
+    defer profile.deinit();
+    var entries = try collect(alloc, .{ .profile = profile.value, .workspace_root = "/w" }, .all);
+    defer entries.deinit(alloc);
+
+    const expected = [_]struct { key: []const u8, value: bool }{
+        .{ .key = "status_line.context", .value = true },
+        .{ .key = "status_line.session", .value = true },
+        .{ .key = "sound.max", .value = true },
+    };
+    try std.testing.expectEqual(expected.len, entries.items.len);
+    for (expected, entries.items) |want, got| {
+        try std.testing.expectEqualStrings(want.key, got.key);
+        try std.testing.expectEqual(want.value, got.value.bool);
+    }
 }
 
 test "scopes pick the profile's own settings or this workspace's override" {
@@ -219,7 +271,7 @@ test "lookup keeps the entry fx uses for each key under the name" {
     var profile = try parseForTest(
         \\{"fast_mode":true,"statusLine":{"context":true,"session":true},
         \\ "provider":"codex","provider_order":["x"],
-        \\ "workspaces":{"/w":{"fast_mode":false,"statusLine":{"context":false}}}}
+        \\ "workspaces":{"/w":{"fast_mode":false,"status_line":{"context":false}}}}
     );
     defer profile.deinit();
     var entries = try collect(alloc, .{ .profile = profile.value, .workspace_root = "/w" }, .all);
@@ -231,12 +283,12 @@ test "lookup keeps the entry fx uses for each key under the name" {
     try std.testing.expectEqual(Origin.workspace, fast[0].origin);
     try std.testing.expect(!fast[0].value.bool);
 
-    const status = try lookup(alloc, entries.items, "statusLine");
+    const status = try lookup(alloc, entries.items, "status_line");
     defer alloc.free(status);
     try std.testing.expectEqual(@as(usize, 2), status.len);
-    try std.testing.expectEqualStrings("statusLine.session", status[0].key);
+    try std.testing.expectEqualStrings("status_line.session", status[0].key);
     try std.testing.expectEqual(Origin.global, status[0].origin);
-    try std.testing.expectEqualStrings("statusLine.context", status[1].key);
+    try std.testing.expectEqualStrings("status_line.context", status[1].key);
     try std.testing.expectEqual(Origin.workspace, status[1].origin);
 
     const provider = try lookup(alloc, entries.items, "provider");

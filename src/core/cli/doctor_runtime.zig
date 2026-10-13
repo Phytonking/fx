@@ -188,6 +188,11 @@ fn appendUnknownSettingChecksFor(
     for (unknown) |key| {
         try appendCheckOwned(checks, alloc, "config", .warn, try settings_messages.formatUnknownSetting(alloc, key, display_path));
     }
+    const twice = try settings_keys.findRenamedTwice(alloc, parsed.value, file);
+    defer alloc.free(twice);
+    for (twice) |entry| {
+        try appendCheckOwned(checks, alloc, "config", .warn, try settings_messages.formatRenamedTwice(alloc, entry, display_path));
+    }
 }
 
 fn appendConfigCheck(

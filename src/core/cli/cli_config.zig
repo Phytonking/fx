@@ -72,7 +72,8 @@ pub fn parseArgs(
     if (word_count != expected_words) return error.InvalidConfigArgs;
     if (options.action == .list) return options;
 
-    const key = words[1];
+    // An older name, such as `statusLine.context`, means its current one.
+    const key = settings_keys.currentPath(words[1]);
     if (key.len == 0) return error.InvalidConfigArgs;
     if (settings_keys.unknownPart(key)) |part| {
         unknown_key.* = part;
@@ -102,17 +103,17 @@ const Writable = enum {
     fast_mode,
     max_agent_steps,
     max_tool_result_bytes,
-    @"notifications.attention_required",
-    @"notifications.max",
-    @"notifications.turn_end",
     @"prompt_history.enabled",
     provider_strict,
     session_titles,
     slash_menu_categories,
+    @"sound.attention_required",
+    @"sound.max",
+    @"sound.turn_end",
     startup_scrollback,
-    @"statusLine.context",
-    @"statusLine.session",
-    @"statusLine.workspace",
+    @"status_line.context",
+    @"status_line.session",
+    @"status_line.workspace",
     theme,
     ultrafast_mode,
     update_channel,
@@ -193,17 +194,17 @@ pub fn change(options: Options, problem: *WriteProblem) error{ RefusedConfigSett
         .collapse_tool_calls => patch.collapse_tool_calls = enabled,
         .context => patch.context = enabled,
         .fast_mode => patch.fast_mode = enabled,
-        .@"notifications.attention_required" => patch.notification_attention_required = enabled,
-        .@"notifications.max" => patch.notification_max = enabled,
-        .@"notifications.turn_end" => patch.notification_turn_end = enabled,
         .@"prompt_history.enabled" => patch.prompt_history_enabled = enabled,
         .provider_strict => patch.provider_strict = enabled,
         .session_titles => patch.session_titles = enabled,
         .slash_menu_categories => patch.slash_menu_categories = enabled,
+        .@"sound.attention_required" => patch.notification_attention_required = enabled,
+        .@"sound.max" => patch.notification_max = enabled,
+        .@"sound.turn_end" => patch.notification_turn_end = enabled,
         .startup_scrollback => patch.startup_scrollback = enabled,
-        .@"statusLine.context" => patch.statusline_item = .{ .item = .context, .enabled = enabled },
-        .@"statusLine.session" => patch.statusline_item = .{ .item = .session, .enabled = enabled },
-        .@"statusLine.workspace" => patch.statusline_item = .{ .item = .workspace, .enabled = enabled },
+        .@"status_line.context" => patch.statusline_item = .{ .item = .context, .enabled = enabled },
+        .@"status_line.session" => patch.statusline_item = .{ .item = .session, .enabled = enabled },
+        .@"status_line.workspace" => patch.statusline_item = .{ .item = .workspace, .enabled = enabled },
         .ultrafast_mode => patch.ultrafast_mode = enabled,
         .effort, .update_channel, .theme, .max_agent_steps, .max_tool_result_bytes, .auto_compact_percent => unreachable,
     }
@@ -238,8 +239,8 @@ fn ownerHint(key: []const u8) []const u8 {
         .{ .keys = &.{"context_limits"}, .hint = "use --context-limit for one run, or edit ~/.fx/settings.json" },
         .{ .keys = &.{"provider_order"}, .hint = "use --provider-order for one run, or edit ~/.fx/settings.json" },
         .{ .keys = &.{ "yolo_acknowledged", "fast_mode_model_bound", "skill_match_fuzzy" }, .hint = "fx manages it" },
-        .{ .keys = &.{"statusLine"}, .hint = "set statusLine.context, statusLine.session, or statusLine.workspace" },
-        .{ .keys = &.{"notifications"}, .hint = "set notifications.turn_end, notifications.attention_required, or notifications.max" },
+        .{ .keys = &.{"status_line"}, .hint = "set status_line.context, status_line.session, or status_line.workspace" },
+        .{ .keys = &.{"sound"}, .hint = "set sound.turn_end, sound.attention_required, or sound.max" },
         .{ .keys = &.{"prompt_history"}, .hint = "set prompt_history.enabled" },
     };
     for (hints) |entry| {
@@ -274,7 +275,7 @@ pub const OverrideProblem = union(enum) {
 /// from `text`.
 pub fn parseOverride(text: []const u8, problem: *OverrideProblem) error{InvalidConfigOverride}!config_runtime.SettingOverride {
     const at = std.mem.findScalar(u8, text, '=') orelse return overrideProblem(problem, .malformed);
-    const key = text[0..at];
+    const key = settings_keys.currentPath(text[0..at]);
     const value = text[at + 1 ..];
     if (key.len == 0) return overrideProblem(problem, .malformed);
     if (settings_keys.unknownPart(key)) |part| return overrideProblem(problem, .{ .unknown = part });
@@ -400,8 +401,9 @@ test "config args default to list and take scope, origin, and json flags" {
     try std.testing.expect(listed.show_origin);
     try std.testing.expectEqual(output_contracts.OutputFormat.json, listed.format);
 
+    // An older name means its current one.
     const got = try parseForTest(&.{ "get", "statusLine.context", "--global" });
-    try std.testing.expectEqualStrings("statusLine.context", got.key.?);
+    try std.testing.expectEqualStrings("status_line.context", got.key.?);
     try std.testing.expectEqual(settings_entries.Scope.global, got.scope);
 }
 
@@ -457,7 +459,7 @@ test "config set turns each value into the patch the save path writes" {
     try std.testing.expectEqualStrings("dev", channel.value.?.string);
 
     const removed = try changeForTest(&.{ "unset", "notifications.max" }, &problem);
-    try std.testing.expectEqualStrings("notifications.max", removed.patch.remove.?);
+    try std.testing.expectEqualStrings("sound.max", removed.patch.remove.?);
     try std.testing.expect(removed.value == null);
 }
 
@@ -488,7 +490,7 @@ test "--config takes key=value with the keys and checks of config set" {
     try std.testing.expectEqualStrings("fast_mode", fast.key);
     try std.testing.expect(fast.value.bool);
     const status = try parseOverride("statusLine.context=false", &problem);
-    try std.testing.expectEqualStrings("statusLine.context", status.key);
+    try std.testing.expectEqualStrings("status_line.context", status.key);
 
     const cases = [_]struct { text: []const u8, message: []const u8 }{
         .{ .text = "fast_mode", .message = "--config needs key=value, such as --config fast_mode=on" },
@@ -511,7 +513,7 @@ test "every key config set writes is a plain setting in the list" {
         try std.testing.expect(settings_keys.unknownPart(name) == null);
         const dot = comptime std.mem.findScalar(u8, name, '.');
         const key = settings_keys.find(name[0 .. dot orelse name.len]).?;
-        try std.testing.expect(!key.map and key.where != .retired);
+        try std.testing.expect(!key.map and key.where != .retired and key.renamed_to == null);
     }
 }
 
@@ -519,7 +521,7 @@ test "config get names the part of a key that isn't a setting" {
     var unknown: ?settings_keys.UnknownPart = null;
     try std.testing.expectError(error.UnknownConfigSetting, parseArgs(&.{ "get", "statusLine.contxt" }, &unknown));
     try std.testing.expectEqualStrings("contxt", unknown.?.name);
-    try std.testing.expectEqualStrings("statusLine", unknown.?.parent.?);
+    try std.testing.expectEqualStrings("status_line", unknown.?.parent.?);
 }
 
 test "load reads both files and keeps unknown keys for the scope" {

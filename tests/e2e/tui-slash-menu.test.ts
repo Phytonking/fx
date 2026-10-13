@@ -181,13 +181,13 @@ async function waitForStatuslineValue(
   let latest: unknown;
   while (Date.now() < deadline) {
     if (existsSync(settingsPath)) {
-      latest = JSON.parse(readFileSync(settingsPath, "utf8")).statusLine?.[key];
+      latest = JSON.parse(readFileSync(settingsPath, "utf8")).status_line?.[key];
       if (latest === expected) return;
     }
     await Bun.sleep(100);
   }
   throw new Error(
-    `Timed out waiting for statusLine.${key}=${expected}; last=${JSON.stringify(latest)}`,
+    `Timed out waiting for status_line.${key}=${expected}; last=${JSON.stringify(latest)}`,
   );
 }
 

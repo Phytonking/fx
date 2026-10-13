@@ -48,7 +48,7 @@ The full rules behind SKILL.md, by mechanism. Each rule says whether the code fo
 
 - Values use the same words everywhere, in storage too. Permission mode is `ask`, `auto`, or `full-access`: fx saves and prints `full-access` and keeps reading `yolo`. ACP's mode `_meta` keeps `yolo` because ACP clients may read it.
 - Boolean env values accept `1`/`0`, `true`/`false`, `on`/`off`, and `yes`/`no`, trimmed and case-insensitive.
-- Today `statusLine` is the one camelCase key. The target reads both and writes `status_line`.
+- `statusLine` was the one camelCase key. fx reads it and `status_line`, and writes only `status_line`. To rename a key, keep the older name in `settings_keys.zig` with `renamed_to`: the parser reads both with the current one winning, saving moves the old value, `fx config` accepts both spellings, and `fx doctor` notes a file that sets both.
 
 ## Precedence
 

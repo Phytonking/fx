@@ -36,6 +36,19 @@ pub fn formatUnknownSetting(alloc: Allocator, key: settings_keys.UnknownKey, dis
     return out.toOwnedSlice();
 }
 
+/// `statusLine and status_line are both set in ~/.fx/settings.json; fx uses
+/// status_line where they differ, so remove statusLine`. Caller owns the
+/// result.
+pub fn formatRenamedTwice(alloc: Allocator, twice: settings_keys.RenamedTwice, display_path: []const u8) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    const writer = &out.writer;
+    try writer.print("{s} and {s} are both set in {s}", .{ twice.older, twice.current, display_path });
+    if (twice.workspace) |workspace| try writer.print(" for workspace {s}", .{workspace});
+    try writer.print("; fx uses {s} where they differ, so remove {s}", .{ twice.current, twice.older });
+    return out.toOwnedSlice();
+}
+
 /// `unknown setting fast_mdoe (did you mean fast_mode?)`, for a key typed on
 /// the command line. Caller owns the result.
 pub fn formatUnknownPath(alloc: Allocator, part: settings_keys.UnknownPart) ![]u8 {
@@ -85,11 +98,22 @@ test "unknown settings name the file, the workspace, and the closest key" {
     }
 }
 
+test "a setting under both its older and its current name names the one to remove" {
+    const alloc = std.testing.allocator;
+    const top = try formatRenamedTwice(alloc, .{ .older = "statusLine", .current = "status_line" }, "~/.fx/settings.json");
+    defer alloc.free(top);
+    try std.testing.expectEqualStrings("statusLine and status_line are both set in ~/.fx/settings.json; fx uses status_line where they differ, so remove statusLine", top);
+    const workspace = try formatRenamedTwice(alloc, .{ .older = "notifications", .current = "sound", .workspace = "/w" }, "~/.fx/settings.json");
+    defer alloc.free(workspace);
+    try std.testing.expectEqualStrings("notifications and sound are both set in ~/.fx/settings.json for workspace /w; fx uses sound where they differ, so remove notifications", workspace);
+}
+
 test "a mistyped key on the command line gets the closest known key" {
     const alloc = std.testing.allocator;
     const cases = [_]struct { path: []const u8, expected: []const u8 }{
         .{ .path = "fast_mdoe", .expected = "unknown setting fast_mdoe (did you mean fast_mode?)" },
-        .{ .path = "statusLine.sesion", .expected = "unknown setting statusLine.sesion (did you mean statusLine.session?)" },
+        .{ .path = "status_line.sesion", .expected = "unknown setting status_line.sesion (did you mean status_line.session?)" },
+        .{ .path = "statusLine.sesion", .expected = "unknown setting status_line.sesion (did you mean status_line.session?)" },
         .{ .path = "fast_mode.on", .expected = "unknown setting fast_mode.on" },
     };
     for (cases) |case| {

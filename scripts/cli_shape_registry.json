@@ -379,7 +379,7 @@
       "--resume-": "Prefix of the removed --resume-<id> alias, kept so the removed spelling fails with a hint."
     },
     "setting_keys": {
-      "statusLine": "camelCase key, being renamed to status_line; both are read during migration"
+      "statusLine": "Older spelling of status_line, still read so existing settings files keep working; fx writes only status_line."
     }
   }
 }

@@ -712,6 +712,7 @@ describe("cli: status", () => {
           JSON.stringify({
             fast_mdoe: true,
             statusLine: { contxt: true },
+            status_line: { context: true },
             maxxing_mode: 1,
             workspaces: { [cwd]: { efort: "low" } },
           }) + "\n",
@@ -729,6 +730,7 @@ describe("cli: status", () => {
           "unknown setting fast_mdoe in ~/.fx/settings.json (did you mean fast_mode?)",
           "unknown setting statusLine.contxt in ~/.fx/settings.json (did you mean statusLine.context?)",
           `unknown setting efort in ~/.fx/settings.json for workspace ${cwd} (did you mean effort?)`,
+          "statusLine and status_line are both set in ~/.fx/settings.json; fx uses status_line where they differ, so remove statusLine",
           "unknown setting max_agent_step in .fx.json (did you mean max_agent_steps?)",
         ]);
 
@@ -774,7 +776,7 @@ describe("cli: status", () => {
           [
             "file:.fx.json\tmax_agent_steps=7",
             "file:~/.fx/settings.json\tfast_mode=true",
-            "file:~/.fx/settings.json\tstatusLine.context=true",
+            "file:~/.fx/settings.json\tstatus_line.context=true",
             "file:~/.fx/settings.json\tmodels.codex=gpt-5.5",
             'file:~/.fx/settings.json\tprovider_order=["a","b"]',
             `workspace:${cwd}\tfast_mode=false`,
@@ -839,7 +841,7 @@ describe("cli: status", () => {
           file: "~/.fx/settings.json",
         });
         const unset = await runFx(["config", "unset", "statusLine.session"], { cwd, env });
-        expect([unset.code, unset.stdout]).toEqual([0, "statusLine.session removed from ~/.fx/settings.json.\n"]);
+        expect([unset.code, unset.stdout]).toEqual([0, "status_line.session removed from ~/.fx/settings.json.\n"]);
         expect(settings()).toEqual({ fast_mode: true, max_agent_steps: 40 });
         const get = await runFx(["config", "get", "max_agent_steps"], { cwd, env });
         expect([get.code, get.stdout]).toEqual([0, "40\n"]);

@@ -386,7 +386,7 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
         expect(stored.fast_mode_model_bound).toBe(true);
         expect(stored.startup_scrollback).toBe(false);
         expect(stored.prompt_history).toMatchObject({ enabled: false });
-        expect(stored.statusLine).toMatchObject({
+        expect(stored.status_line).toMatchObject({
           context: true,
           session: true,
           workspace: true,
@@ -1806,7 +1806,7 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
         );
         expect(stored.future_global).toEqual({ nested: "keep-global" });
         expect(stored.startup_scrollback).toBe(false);
-        expect(stored.statusLine).toMatchObject({ context: true });
+        expect(stored.status_line).toMatchObject({ context: true });
         expect(stored.workspaces[workspaceRoot]).toMatchObject({
           future_workspace: {
             nested: { keep: true },

@@ -976,10 +976,20 @@ fn removePath(object: *std.json.ObjectMap, path: []const u8) bool {
         if (removed and std.mem.eql(u8, path, "fast_mode")) _ = object.orderedRemove("fast_mode_model_bound");
         return removed;
     };
-    const parent_key = path[0..dot];
+    var removed = removeChild(object, path[0..dot], path[dot + 1 ..]);
+    // A renamed group, such as `status_line`, may still hold the value under
+    // its older name, which would otherwise keep applying.
+    for (settings_keys.keys) |key| {
+        const current = key.renamed_to orelse continue;
+        if (std.mem.eql(u8, current, path[0..dot])) removed = removeChild(object, key.name, path[dot + 1 ..]) or removed;
+    }
+    return removed;
+}
+
+fn removeChild(object: *std.json.ObjectMap, parent_key: []const u8, child: []const u8) bool {
     const parent = object.getPtr(parent_key) orelse return false;
     if (parent.* != .object) return false;
-    if (!parent.object.orderedRemove(path[dot + 1 ..])) return false;
+    if (!parent.object.orderedRemove(child)) return false;
     if (parent.object.count() == 0) _ = object.orderedRemove(parent_key);
     return true;
 }
@@ -1216,35 +1226,23 @@ fn applyUserPatchToRoot(
     }
 
     if (patch.statusline_item) |item_patch| {
-        var statusline = if (root.object.getPtr("statusLine")) |value| blk: {
-            if (value.* != .object) return error.InvalidSettingsFormat;
-            break :blk value;
-        } else blk: {
-            try root.object.put(arena, "statusLine", .{ .object = .empty });
-            break :blk root.object.getPtr("statusLine").?;
-        };
-        application.changed = try putBool(arena, &statusline.object, @tagName(item_patch.item), item_patch.enabled) or application.changed;
+        const statusline = try renamedGroup(arena, &root.object, "statusLine", "status_line", &application.changed);
+        application.changed = try putBool(arena, statusline, @tagName(item_patch.item), item_patch.enabled) or application.changed;
     }
 
     if (patch.notification_turn_end != null or
         patch.notification_attention_required != null or
         patch.notification_max != null)
     {
-        var notifications = if (root.object.getPtr("notifications")) |value| blk: {
-            if (value.* != .object) return error.InvalidSettingsFormat;
-            break :blk value;
-        } else blk: {
-            try root.object.put(arena, "notifications", .{ .object = .empty });
-            break :blk root.object.getPtr("notifications").?;
-        };
+        const notifications = try renamedGroup(arena, &root.object, "notifications", "sound", &application.changed);
         if (patch.notification_turn_end) |enabled| {
-            application.changed = try putBool(arena, &notifications.object, "turn_end", enabled) or application.changed;
+            application.changed = try putBool(arena, notifications, "turn_end", enabled) or application.changed;
         }
         if (patch.notification_attention_required) |enabled| {
-            application.changed = try putBool(arena, &notifications.object, "attention_required", enabled) or application.changed;
+            application.changed = try putBool(arena, notifications, "attention_required", enabled) or application.changed;
         }
         if (patch.notification_max) |enabled| {
-            application.changed = try putBool(arena, &notifications.object, "max", enabled) or application.changed;
+            application.changed = try putBool(arena, notifications, "max", enabled) or application.changed;
         }
     }
     if (patch.theme) |value| application.changed = try putString(arena, &root.object, "theme", value) or application.changed;
@@ -1390,14 +1388,16 @@ fn cleanupLegacyWorkspacePreferences(
                 .workspace => null,
             };
             if (legacy_field) |field| {
-                removeLegacyNestedLeaf(
-                    &entry.value_ptr.object,
-                    "statusLine",
-                    @tagName(item_patch.item),
-                    field,
-                    true,
-                    application,
-                );
+                inline for (.{ "statusLine", "status_line" }) |name| {
+                    removeLegacyNestedLeaf(
+                        &entry.value_ptr.object,
+                        name,
+                        @tagName(item_patch.item),
+                        field,
+                        true,
+                        application,
+                    );
+                }
             }
         }
         if (application.legacy_fields_removed != removed_before) {
@@ -1762,6 +1762,35 @@ fn putStringArray(
     for (values) |value| array.appendAssumeCapacity(.{ .string = try arena.dupe(u8, value) });
     try object.put(arena, key, .{ .array = array });
     return true;
+}
+
+/// The object a renamed settings group is saved under, such as `status_line`
+/// for the older `statusLine`. Values that only the older key sets move into
+/// the current one, and the older key is removed, so the file keeps one
+/// spelling. Sets `changed` when the older key was there.
+fn renamedGroup(
+    arena: Allocator,
+    root: *std.json.ObjectMap,
+    older: []const u8,
+    current: []const u8,
+    changed: *bool,
+) !*std.json.ObjectMap {
+    if (root.get(current)) |value| {
+        if (value != .object) return error.InvalidSettingsFormat;
+    } else {
+        try root.put(arena, current, .{ .object = .empty });
+    }
+    if (root.get(older)) |value| {
+        if (value != .object) return error.InvalidSettingsFormat;
+        const group = &root.getPtr(current).?.object;
+        var iterator = value.object.iterator();
+        while (iterator.next()) |entry| {
+            if (!group.contains(entry.key_ptr.*)) try group.put(arena, entry.key_ptr.*, entry.value_ptr.*);
+        }
+        _ = root.orderedRemove(older);
+        changed.* = true;
+    }
+    return &root.getPtr(current).?.object;
 }
 
 fn putModelPreference(
@@ -2164,20 +2193,22 @@ fn validateKnownSettingsObject(
             return error.InvalidSettingsFormat;
         }
     }
-    if (object.get("statusLine")) |value| {
-        if (value == .object) {
-            inline for (&.{"context"}) |key| {
-                if (value.object.get(key)) |enabled| {
-                    if (enabled != .bool) return error.InvalidSettingsFormat;
+    inline for (.{ "statusLine", "status_line" }) |name| {
+        if (object.get(name)) |value| {
+            if (value == .object) {
+                inline for (&.{"context"}) |key| {
+                    if (value.object.get(key)) |enabled| {
+                        if (enabled != .bool) return error.InvalidSettingsFormat;
+                    }
                 }
-            }
-            if (!tolerate_non_object_user_containers) {
-                if (value.object.get("workspace")) |enabled| {
-                    if (enabled != .bool) return error.InvalidSettingsFormat;
+                if (!tolerate_non_object_user_containers) {
+                    if (value.object.get("workspace")) |enabled| {
+                        if (enabled != .bool) return error.InvalidSettingsFormat;
+                    }
                 }
+            } else if (!tolerate_non_object_user_containers) {
+                return error.InvalidSettingsFormat;
             }
-        } else if (!tolerate_non_object_user_containers) {
-            return error.InvalidSettingsFormat;
         }
     }
 }
@@ -2385,8 +2416,10 @@ test "user patch writes user preferences at top level" {
     try std.testing.expect(std.mem.find(u8, bytes, "\"update_channel\":\"dev\"") != null);
     try std.testing.expect(std.mem.find(u8, bytes, "\"startup_scrollback\":false") != null);
     try std.testing.expect(std.mem.find(u8, bytes, "\"prompt_history\":{\"enabled\":false}") != null);
-    try std.testing.expect(std.mem.find(u8, bytes, "\"statusLine\":{\"context\":true}") != null);
-    try std.testing.expect(std.mem.find(u8, bytes, "\"notifications\":{\"turn_end\":true,\"attention_required\":false}") != null);
+    try std.testing.expect(std.mem.find(u8, bytes, "\"status_line\":{\"context\":true}") != null);
+    try std.testing.expect(std.mem.find(u8, bytes, "\"sound\":{\"turn_end\":true,\"attention_required\":false}") != null);
+    try std.testing.expect(std.mem.find(u8, bytes, "statusLine") == null);
+    try std.testing.expect(std.mem.find(u8, bytes, "notifications") == null);
     try std.testing.expect(std.mem.find(u8, bytes, "\"future\":{\"nested\":7}") != null);
     try std.testing.expect(std.mem.find(u8, bytes, "\"workspaces\"") == null);
 }
@@ -2449,14 +2482,59 @@ test "workspace statusline patch writes globally and preserves nested leaf" {
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, bytes, .{});
     defer parsed.deinit();
 
-    const root_statusline = parsed.value.object.get("statusLine").?.object;
+    // Saving moves the older `statusLine` group, unknown children included.
+    try std.testing.expect(parsed.value.object.get("statusLine") == null);
+    const root_statusline = parsed.value.object.get("status_line").?.object;
     try std.testing.expectEqual(true, root_statusline.get("workspace").?.bool);
     try std.testing.expectEqual(@as(i64, 7), root_statusline.get("future").?.integer);
 
+    // A legacy workspace copy keeps its name; workspace preferences aren't saved.
     const nested_statusline = parsed.value.object.get("workspaces").?.object
         .get("/workspace").?.object.get("statusLine").?.object;
     try std.testing.expectEqual(false, nested_statusline.get("workspace").?.bool);
     try std.testing.expectEqual(@as(i64, 8), nested_statusline.get("future").?.integer);
+}
+
+test "saving moves a renamed group, and remove clears either spelling" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try writeStoreFixture(
+        tmp.dir,
+        "home/.fx/settings.json",
+        "{\"statusLine\":{\"context\":false,\"session\":true},\"status_line\":{\"context\":true},\"notifications\":{\"max\":true}}\n",
+    );
+    const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home");
+    defer alloc.free(home);
+    var store = try Store.initFromHome(alloc, home, .writable);
+    defer store.deinit(alloc);
+
+    var moved = try store.applyUserPatch(alloc, .{ .statusline_item = .{ .item = .workspace, .enabled = true } });
+    defer moved.deinit(alloc);
+    try std.testing.expect(moved == .committed);
+    {
+        const bytes = try store.readPrimaryForTest(alloc);
+        defer alloc.free(bytes);
+        var parsed = try std.json.parseFromSlice(std.json.Value, alloc, bytes, .{});
+        defer parsed.deinit();
+        try std.testing.expect(parsed.value.object.get("statusLine") == null);
+        const status = parsed.value.object.get("status_line").?.object;
+        // The current key keeps its own value; the older one only fills gaps.
+        try std.testing.expect(status.get("context").?.bool);
+        try std.testing.expect(status.get("session").?.bool);
+        try std.testing.expect(status.get("workspace").?.bool);
+        // A group nothing saved keeps its older name until it's saved.
+        try std.testing.expect(parsed.value.object.get("notifications").?.object.get("max").?.bool);
+    }
+
+    var removed = try store.applyUserPatch(alloc, .{ .remove = "sound.max" });
+    defer removed.deinit(alloc);
+    try std.testing.expect(removed == .committed);
+    const bytes = try store.readPrimaryForTest(alloc);
+    defer alloc.free(bytes);
+    try std.testing.expect(std.mem.find(u8, bytes, "notifications") == null);
+    try std.testing.expect(std.mem.find(u8, bytes, "\"max\"") == null);
 }
 
 test "durable validation rejects malformed workspace statusline" {
@@ -2509,7 +2587,9 @@ test "notification user patch preserves sibling fields and valid workspace overr
     defer alloc.free(bytes);
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, bytes, .{});
     defer parsed.deinit();
-    const notifications = parsed.value.object.get("notifications").?.object;
+    // Saving moves the older `notifications` group to `sound`.
+    try std.testing.expect(parsed.value.object.get("notifications") == null);
+    const notifications = parsed.value.object.get("sound").?.object;
     try std.testing.expectEqual(true, notifications.get("turn_end").?.bool);
     try std.testing.expectEqual(true, notifications.get("attention_required").?.bool);
     try std.testing.expectEqual(true, notifications.get("max").?.bool);
@@ -2807,7 +2887,8 @@ test "nested user cleanup preserves siblings and skips non-object containers" {
         return error.TestMissingRootPromptHistoryEnabled).bool);
     try std.testing.expectEqual(@as(i64, 1), (root_prompt_history.object.get("future") orelse
         return error.TestMissingRootPromptHistoryFuture).integer);
-    const root_statusline = parsed.value.object.get("statusLine") orelse
+    try std.testing.expect(parsed.value.object.get("statusLine") == null);
+    const root_statusline = parsed.value.object.get("status_line") orelse
         return error.TestMissingRootStatusline;
     try std.testing.expectEqual(true, (root_statusline.object.get("context") orelse
         return error.TestMissingRootStatuslineContext).bool);
