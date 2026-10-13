@@ -9,7 +9,7 @@ fx follows git and Unix conventions for how people and scripts control it. Each 
 
 ## Current versus target
 
-Several pieces the rules rely on aren't built yet: `fx config set` and `unset`, the generic `--config key=value` override, `FX_HOME`, `fx completion`, `experimental.*` settings, and the agent-run flags on `fx acp`. Design new work toward them, but never tell a user to run something that doesn't exist yet. Check `./zig-out/bin/fx help` and `./zig-out/bin/fx <command> --help` when unsure. When a target piece is missing, use the nearest current pattern and say what's missing.
+Several pieces the rules rely on aren't built yet: the generic `--config key=value` override, `FX_HOME`, `fx completion`, `experimental.*` settings, and the agent-run flags on `fx acp`. Design new work toward them, but never tell a user to run something that doesn't exist yet. Check `./zig-out/bin/fx help` and `./zig-out/bin/fx <command> --help` when unsure. When a target piece is missing, use the nearest current pattern and say what's missing.
 
 ## Decision order
 

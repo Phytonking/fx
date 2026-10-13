@@ -810,6 +810,66 @@ describe("cli: status", () => {
   );
 
   test(
+    "fx config set and unset change plain preferences and refuse the rest",
+    async () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-config-set-")));
+      try {
+        const home = join(root, "home");
+        const cwd = join(root, "workspace");
+        mkdirSync(join(home, ".fx"), { recursive: true });
+        mkdirSync(cwd);
+        const settingsPath = join(home, ".fx", "settings.json");
+        writeFileSync(settingsPath, JSON.stringify({ statusLine: { session: true } }) + "\n", { mode: 0o600 });
+        const env = { ...NO_GATEWAY_AUTH, HOME: home, FX_DISABLE_KEYCHAIN: "1" };
+        const settings = () => JSON.parse(readFileSync(settingsPath, "utf8"));
+
+        const set = await runFx(["config", "set", "fast_mode", "on"], { cwd, env });
+        expect([set.code, set.stdout, set.stderr]).toEqual([0, "fast_mode set to true in ~/.fx/settings.json.\n", ""]);
+        const again = await runFx(["config", "set", "fast_mode", "true"], { cwd, env });
+        expect([again.code, again.stdout]).toEqual([0, "fast_mode is already true.\n"]);
+        const steps = await runFx(["config", "set", "max_agent_steps", "40", "--json"], { cwd, env });
+        expect(steps.code).toBe(0);
+        expect(JSON.parse(steps.stdout)).toEqual({
+          kind: "config",
+          action: "set",
+          key: "max_agent_steps",
+          value: 40,
+          changed: true,
+          file: "~/.fx/settings.json",
+        });
+        const unset = await runFx(["config", "unset", "statusLine.session"], { cwd, env });
+        expect([unset.code, unset.stdout]).toEqual([0, "statusLine.session removed from ~/.fx/settings.json.\n"]);
+        expect(settings()).toEqual({ fast_mode: true, max_agent_steps: 40 });
+        const get = await runFx(["config", "get", "max_agent_steps"], { cwd, env });
+        expect([get.code, get.stdout]).toEqual([0, "40\n"]);
+
+        const before = readFileSync(settingsPath, "utf8");
+        const refusals: Array<[string[], string]> = [
+          [
+            ["config", "set", "permission_mode", "full-access"],
+            "fx config: can't change permission_mode with fx config; use /permissions in a session, or --permission-mode for one run\n",
+          ],
+          [["config", "set", "fast_mode", "maybe"], "fx config: invalid value for fast_mode: maybe (use true or false)\n"],
+          [["config", "set", "models.codex", "gpt-5.5"], "fx config: can't change models.codex with fx config; use /model in a session\n"],
+        ];
+        for (const [args, stderr] of refusals) {
+          const result = await runFx(args, { cwd, env });
+          expect([result.code, result.stdout, result.stderr]).toEqual([2, "", stderr]);
+        }
+        const workspace = await runFx(["config", "set", "--workspace", "fast_mode", "off"], { cwd, env });
+        expect(workspace.code).toBe(2);
+        expect(workspace.stderr).toStartWith(
+          "fx config: preferences apply to every workspace, so set and unset don't take --workspace\nusage: fx config",
+        );
+        expect(readFileSync(settingsPath, "utf8")).toBe(before);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
     "status and doctor share the missing auth snapshot",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "fx-e2e-status-noauth-"));

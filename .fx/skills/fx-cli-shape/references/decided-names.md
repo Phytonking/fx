@@ -39,7 +39,7 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 
 | Concept | Name |
 |---|---|
-| Settings command | `fx config list\|get` with `--global`, `--workspace`, `--show-origin`; `set\|unset` planned |
+| Settings command | `fx config list\|get\|set\|unset`; `--global`, `--workspace` (list and get), `--show-origin` |
 | Generic per-run override | Working name `--config key=value` (planned; spelling not settled) |
 | Sound | `sound.turn_end`, `sound.attention_required`, `sound.max` (today `notifications.*`, still read); `/sound on\|off\|max` and `FX_SOUND` are presets for the group |
 | Status line | `status_line.*` (today `statusLine`, still read) |
@@ -47,7 +47,7 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 | Home | `FX_HOME` (planned; default `~/.fx`) |
 | Test hooks | `FX_TEST_*` |
 | Release channel | `update_channel`; `fx upgrade --channel <name>` saves it, the way a setter command does |
-| Save a default model | Today `/model` in a session saves it to the profile. Planned: `fx config set model <id>` |
+| Save a default model | `/model` in a session saves it to the profile. `fx config set` refuses the model keys and points there |
 | User aliases | `alias.<name>` (planned) |
 
 ## Accounts

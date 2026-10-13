@@ -12,6 +12,8 @@ const model_provider = @import("model_provider.zig");
 const workspace_access = @import("../workspace/workspace_access.zig");
 const sort_utils = @import("../shared/sort_utils.zig");
 const update_target = @import("../upgrade/update_target.zig");
+const settings_keys = @import("settings_keys.zig");
+const theme_mod = @import("../shared/theme.zig");
 
 const Allocator = std.mem.Allocator;
 const max_settings_bytes: usize = 64 * 1024;
@@ -114,6 +116,18 @@ pub const UserSettingsPatch = struct {
     notification_turn_end: ?bool = null,
     notification_attention_required: ?bool = null,
     notification_max: ?bool = null,
+    /// `light`, `dark`, or a theme file name under ~/.fx/themes.
+    theme: ?[]const u8 = null,
+    auto_upgrade: ?bool = null,
+    max_agent_steps: ?u32 = null,
+    max_tool_result_bytes: ?u32 = null,
+    auto_compact_percent: ?u8 = null,
+    provider_strict: ?bool = null,
+    context: ?bool = null,
+    /// Removes a plain setting, such as `fast_mode` or `statusLine.context`,
+    /// so it falls back to its default. Distinct from the fields above, where
+    /// null means "leave unchanged".
+    remove: ?[]const u8 = null,
 
     fn isEmpty(self: UserSettingsPatch) bool {
         return self.model_preference == null and
@@ -134,7 +148,15 @@ pub const UserSettingsPatch = struct {
             self.session_titles == null and
             self.notification_turn_end == null and
             self.notification_attention_required == null and
-            self.notification_max == null;
+            self.notification_max == null and
+            self.theme == null and
+            self.auto_upgrade == null and
+            self.max_agent_steps == null and
+            self.max_tool_result_bytes == null and
+            self.auto_compact_percent == null and
+            self.provider_strict == null and
+            self.context == null and
+            self.remove == null;
     }
 };
 
@@ -918,12 +940,122 @@ pub fn validateProviderSlug(slug: []const u8) bool {
 
 fn validateUserPatch(patch: UserSettingsPatch) !void {
     if (patch.model_preference) |preference| try validateModel(preference.model);
+    if (patch.theme) |theme| {
+        if (theme_mod.classifyValue(theme)) |choice| switch (choice) {
+            .pin_light, .pin_dark => {},
+            .custom => |name| if (!theme_mod.validThemeName(name)) return error.InvalidSettingsFormat,
+        } else return error.InvalidSettingsFormat;
+    }
+    if (patch.max_tool_result_bytes) |bytes| {
+        if (bytes < tool_result_limits.min_configured_tool_result_bytes) return error.InvalidSettingsFormat;
+    }
+    if (patch.auto_compact_percent) |percent| {
+        if (!compactor.isValidPercent(percent)) return error.InvalidSettingsFormat;
+    }
+    if (patch.remove) |path| {
+        if (!removablePath(path)) return error.InvalidSettingsFormat;
+    }
+}
+
+/// A plain setting `remove` may clear: a listed key that isn't a map, or one
+/// fixed child such as `statusLine.context`.
+fn removablePath(path: []const u8) bool {
+    if (settings_keys.unknownPart(path) != null) return false;
+    const dot = std.mem.findScalar(u8, path, '.');
+    const key = settings_keys.find(path[0 .. dot orelse path.len]) orelse return false;
+    if (key.map) return false;
+    return dot == null or key.children.len > 0;
+}
+
+/// Removes `path` and reports whether it was set. A parent object left empty
+/// goes too, and clearing `fast_mode` drops the fx-managed
+/// `fast_mode_model_bound` that belongs to it.
+fn removePath(object: *std.json.ObjectMap, path: []const u8) bool {
+    const dot = std.mem.findScalar(u8, path, '.') orelse {
+        const removed = object.orderedRemove(path);
+        if (removed and std.mem.eql(u8, path, "fast_mode")) _ = object.orderedRemove("fast_mode_model_bound");
+        return removed;
+    };
+    const parent_key = path[0..dot];
+    const parent = object.getPtr(parent_key) orelse return false;
+    if (parent.* != .object) return false;
+    if (!parent.object.orderedRemove(path[dot + 1 ..])) return false;
+    if (parent.object.count() == 0) _ = object.orderedRemove(parent_key);
+    return true;
 }
 
 fn validAdditionalDirectoryPath(path: []const u8) bool {
     return path.len > 0 and path.len <= std.Io.Dir.max_path_bytes and
         std.Io.Dir.path.isAbsolute(path) and std.unicode.utf8ValidateSlice(path) and
         std.mem.findScalar(u8, path, 0) == null;
+}
+
+test "plain preference patches write their keys and report no change when equal" {
+    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    var root = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"theme\":\"dark\"}", .{});
+    const patch: UserSettingsPatch = .{
+        .theme = "dark",
+        .auto_upgrade = false,
+        .max_agent_steps = 40,
+        .max_tool_result_bytes = 4096,
+        .auto_compact_percent = 70,
+        .provider_strict = true,
+        .context = false,
+    };
+    const first = try applyUserPatchToRoot(arena.allocator(), &root, patch);
+    try std.testing.expect(first.changed);
+    try std.testing.expectEqual(false, root.object.get("auto_upgrade").?.bool);
+    try std.testing.expectEqual(@as(i64, 40), root.object.get("max_agent_steps").?.integer);
+    try std.testing.expectEqual(@as(i64, 4096), root.object.get("max_tool_result_bytes").?.integer);
+    try std.testing.expectEqual(@as(i64, 70), root.object.get("auto_compact_percent").?.integer);
+    try std.testing.expect(root.object.get("provider_strict").?.bool);
+    try std.testing.expect(!root.object.get("context").?.bool);
+
+    const again = try applyUserPatchToRoot(arena.allocator(), &root, patch);
+    try std.testing.expect(!again.changed);
+}
+
+test "removing a plain preference clears it and an emptied parent" {
+    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    var root = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        "{\"fast_mode\":true,\"fast_mode_model_bound\":true,\"statusLine\":{\"context\":true},\"notifications\":{\"max\":true,\"turn_end\":true}}",
+        .{},
+    );
+    try std.testing.expect((try applyUserPatchToRoot(arena.allocator(), &root, .{ .remove = "fast_mode" })).changed);
+    try std.testing.expect(!root.object.contains("fast_mode") and !root.object.contains("fast_mode_model_bound"));
+
+    try std.testing.expect((try applyUserPatchToRoot(arena.allocator(), &root, .{ .remove = "statusLine.context" })).changed);
+    try std.testing.expect(!root.object.contains("statusLine"));
+
+    try std.testing.expect((try applyUserPatchToRoot(arena.allocator(), &root, .{ .remove = "notifications.max" })).changed);
+    try std.testing.expect(root.object.get("notifications").?.object.contains("turn_end"));
+
+    try std.testing.expect(!(try applyUserPatchToRoot(arena.allocator(), &root, .{ .remove = "theme" })).changed);
+}
+
+test "plain preference patches reject values the parser would refuse" {
+    try validateUserPatch(.{ .theme = "light" });
+    try validateUserPatch(.{ .theme = "my-theme.v2" });
+    try validateUserPatch(.{ .remove = "statusLine.workspace" });
+    const bad = [_]UserSettingsPatch{
+        .{ .theme = "" },
+        .{ .theme = "../escape" },
+        .{ .max_tool_result_bytes = 10 },
+        .{ .auto_compact_percent = 95 },
+        .{ .remove = "models" },
+        .{ .remove = "models.codex" },
+        .{ .remove = "statusLine.contxt" },
+        .{ .remove = "fast_mdoe" },
+    };
+    for (bad) |patch| try std.testing.expectError(error.InvalidSettingsFormat, validateUserPatch(patch));
 }
 
 test "clearing the credential choice removes the key rather than blanking it" {
@@ -1115,6 +1247,14 @@ fn applyUserPatchToRoot(
             application.changed = try putBool(arena, &notifications.object, "max", enabled) or application.changed;
         }
     }
+    if (patch.theme) |value| application.changed = try putString(arena, &root.object, "theme", value) or application.changed;
+    if (patch.auto_upgrade) |value| application.changed = try putBool(arena, &root.object, "auto_upgrade", value) or application.changed;
+    if (patch.max_agent_steps) |value| application.changed = try putInteger(arena, &root.object, "max_agent_steps", value) or application.changed;
+    if (patch.max_tool_result_bytes) |value| application.changed = try putInteger(arena, &root.object, "max_tool_result_bytes", value) or application.changed;
+    if (patch.auto_compact_percent) |value| application.changed = try putInteger(arena, &root.object, "auto_compact_percent", value) or application.changed;
+    if (patch.provider_strict) |value| application.changed = try putBool(arena, &root.object, "provider_strict", value) or application.changed;
+    if (patch.context) |value| application.changed = try putBool(arena, &root.object, "context", value) or application.changed;
+    if (patch.remove) |path| application.changed = removePath(&root.object, path) or application.changed;
     try cleanupLegacyWorkspacePreferences(arena, root, patch, &application);
     return application;
 }
@@ -1673,6 +1813,14 @@ test "configured model preference keys survive their producer frame" {
     defer output.deinit();
     try std.json.Stringify.value(std.json.Value{ .object = root }, .{}, &output.writer);
     try std.testing.expectEqualStrings("{\"models\":{\"workspace-only-connection\":\"opaque-model\"}}", output.written());
+}
+
+fn putInteger(arena: Allocator, object: *std.json.ObjectMap, key: []const u8, value: u32) !bool {
+    if (object.get(key)) |existing| {
+        if (existing == .integer and existing.integer == value) return false;
+    }
+    try object.put(arena, key, .{ .integer = value });
+    return true;
 }
 
 fn putBool(arena: Allocator, object: *std.json.ObjectMap, key: []const u8, value: bool) !bool {

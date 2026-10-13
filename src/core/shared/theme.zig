@@ -814,13 +814,19 @@ pub fn resolveNamed(alloc: std.mem.Allocator, name: []const u8, terminal_light: 
 /// Loads `~/.fx/themes/<name>.json` and resolves it for the terminal's color
 /// capability. The returned Theme is process-lifetime state allocated from
 /// `alloc`; the caller keeps the allocation alive.
-pub fn loadNamed(alloc: std.mem.Allocator, name: []const u8, options: ParseOptions) LoadError!Theme {
-    if (name.len == 0 or name.len > 64) return error.InvalidName;
+/// Whether `name` can name a theme file under ~/.fx/themes: 1 to 64 letters,
+/// digits, `-`, `_`, or `.`, and not `.` or `..`.
+pub fn validThemeName(name: []const u8) bool {
+    if (name.len == 0 or name.len > 64) return false;
     for (name) |byte| {
         const ok = std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.';
-        if (!ok) return error.InvalidName;
+        if (!ok) return false;
     }
-    if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return error.InvalidName;
+    return !std.mem.eql(u8, name, ".") and !std.mem.eql(u8, name, "..");
+}
+
+pub fn loadNamed(alloc: std.mem.Allocator, name: []const u8, options: ParseOptions) LoadError!Theme {
+    if (!validThemeName(name)) return error.InvalidName;
 
     const home = io_mod.homeDir() orelse return error.ThemeNotFound;
     const dir_path = try alloc.print("{s}/.fx/themes", .{home});

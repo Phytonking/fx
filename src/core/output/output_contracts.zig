@@ -516,6 +516,41 @@ pub const ConfigSnapshot = struct {
     }
 };
 
+/// What `fx config set` or `fx config unset` did to the profile settings, as
+/// one line naming the key, the value, and the file, like other setters.
+pub const ConfigChangeSnapshot = struct {
+    unset: bool,
+    key: []const u8,
+    /// The saved value; null for `unset`.
+    value: ?std.json.Value = null,
+    changed: bool,
+
+    pub fn render(self: ConfigChangeSnapshot, alloc: Allocator, format: OutputFormat) ![]u8 {
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        defer out.deinit();
+        switch (format) {
+            .text => {
+                try writeTerminalSafe(&out.writer, alloc, self.key);
+                if (self.unset) {
+                    try out.writer.writeAll(if (self.changed) " removed from ~/.fx/settings.json.\n" else " isn't set in ~/.fx/settings.json.\n");
+                } else {
+                    try out.writer.writeAll(if (self.changed) " set to " else " is already ");
+                    try writeConfigValue(&out.writer, alloc, self.value orelse .null);
+                    try out.writer.writeAll(if (self.changed) " in ~/.fx/settings.json.\n" else ".\n");
+                }
+            },
+            .json => {
+                try out.writer.print("{{\"kind\":\"config\",\"action\":\"{s}\",\"key\":", .{if (self.unset) "unset" else "set"});
+                try std.json.Stringify.value(self.key, .{}, &out.writer);
+                try out.writer.writeAll(",\"value\":");
+                try std.json.Stringify.value(self.value orelse .null, .{}, &out.writer);
+                try out.writer.print(",\"changed\":{},\"file\":\"~/.fx/settings.json\"}}", .{self.changed});
+            },
+        }
+        return try out.toOwnedSlice();
+    }
+};
+
 /// A settings value as `fx config` prints it: text and numbers as they are,
 /// lists and objects as compact JSON.
 fn writeConfigValue(writer: *std.Io.Writer, alloc: Allocator, value: std.json.Value) !void {

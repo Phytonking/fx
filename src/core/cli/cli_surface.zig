@@ -2190,15 +2190,22 @@ fn runNonInteractiveWithDeps(
         .config => |rest| {
             var unknown_key: ?settings_keys.UnknownPart = null;
             const opts = cli_config.parseArgs(rest, &unknown_key) catch |err| {
-                if (unknown_key) |part| if (!argsContainJson(rest)) {
-                    const message = try settings_messages.formatUnknownPath(alloc, part);
-                    defer alloc.free(message);
-                    try writeStderrLine(alloc, deps, "fx config: {s}\n", message);
-                };
+                if (!argsContainJson(rest)) {
+                    if (unknown_key) |part| {
+                        const message = try settings_messages.formatUnknownPath(alloc, part);
+                        defer alloc.free(message);
+                        try writeStderrLine(alloc, deps, "fx config: {s}\n", message);
+                    } else if (err == error.WorkspaceConfigWrite) {
+                        try writeStderr(deps, "fx config: " ++ workspace_write_message ++ "\n");
+                    }
+                }
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .config, "config", err, rest);
                 return usage_failure;
             };
-            return runConfig(alloc, deps, opts);
+            return switch (opts.action) {
+                .list, .get => runConfig(alloc, deps, opts),
+                .set, .unset => runConfigWrite(alloc, deps, opts),
+            };
         },
         .replay => |rest| {
             const exit_code = try cli_replay.run(alloc, rest);
@@ -3876,6 +3883,7 @@ fn commandFailureMessage(err: anyerror) ?[]const u8 {
         error.InvalidConfigArgs,
         => "invalid arguments",
         error.UnknownConfigSetting => "unknown setting",
+        error.WorkspaceConfigWrite => workspace_write_message,
         else => null,
     };
 }
@@ -4199,6 +4207,45 @@ fn runConfig(alloc: Allocator, deps: RunDeps, opts: cli_config.Options) !RunResu
     defer alloc.free(text);
     try writeFormattedOutput(deps, text, opts.format);
     return if (opts.key != null and entries.len == 0) .handled_failure else .handled_success;
+}
+
+const workspace_write_message = "preferences apply to every workspace, so set and unset don't take --workspace";
+
+/// Saves what `fx config set` or `fx config unset` asks for to the profile's
+/// top level and prints one line naming the key, the value, and the file.
+fn runConfigWrite(alloc: Allocator, deps: RunDeps, opts: cli_config.Options) !RunResult {
+    var problem: cli_config.WriteProblem = .none;
+    const planned = cli_config.change(opts, &problem) catch |err| {
+        const message = try cli_config.formatWriteProblem(alloc, opts, problem);
+        defer alloc.free(message);
+        if (opts.format == .json) {
+            try writeJsonCommandFailure(alloc, deps, "config", err, message);
+        } else {
+            try writeStderrLine(alloc, deps, "fx config: {s}\n", message);
+        }
+        return usage_failure;
+    };
+
+    var outcome = config_runtime.setUserPreferences(alloc, planned.patch) catch |err| {
+        if (opts.format == .json) {
+            try writeJsonCommandFailure(alloc, deps, "config", err, "failed to save ~/.fx/settings.json");
+        } else {
+            try writeStderrLine(alloc, deps, "fx config: failed to save ~/.fx/settings.json ({s})\n", @errorName(err));
+        }
+        return .handled_failure;
+    };
+    defer outcome.deinit(alloc);
+
+    const snapshot: output_contracts.ConfigChangeSnapshot = .{
+        .unset = opts.action == .unset,
+        .key = opts.key.?,
+        .value = planned.value,
+        .changed = outcome == .committed,
+    };
+    const text = try snapshot.render(alloc, opts.format);
+    defer alloc.free(text);
+    try writeFormattedOutput(deps, text, opts.format);
+    return .handled_success;
 }
 
 fn writeStderrLine(alloc: Allocator, deps: RunDeps, comptime format: []const u8, value: []const u8) !void {

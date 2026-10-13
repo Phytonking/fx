@@ -51,8 +51,10 @@ pub const workspace_options = [_]command_specs.OptionDoc{
 pub const config_options = [_]command_specs.OptionDoc{
     .{ .flag = "list", .description = "List the values set in each settings file (default)" },
     .{ .flag = "get <key>", .description = "Print the value fx uses for a setting" },
+    .{ .flag = "set <key> <value>", .description = "Save a preference in ~/.fx/settings.json" },
+    .{ .flag = "unset <key>", .description = "Remove a preference from ~/.fx/settings.json" },
     .{ .flag = "--global", .description = "Only the profile's own settings" },
-    .{ .flag = "--workspace", .description = "Only this workspace's override in the profile" },
+    .{ .flag = "--workspace", .description = "Only this workspace's override in the profile (list and get)" },
     .{ .flag = "--show-origin", .description = "Start each line with where the value is set" },
     json_option,
 };
@@ -341,12 +343,13 @@ pub const top_level_specs = [_]TopLevelSpec{
     .{
         .kind = .config,
         .token = "config",
-        .usage = "config [list|get <key>] [--global|--workspace] [--show-origin] [--json]",
-        .summary = "Show the values set in the settings files",
+        .usage = "config [list|get <key>|set <key> <value>|unset <key>] [--global|--workspace] [--show-origin] [--json]",
+        .summary = "Show and change fx settings",
         .options = &config_options,
         .details = &.{
             "Values come from .fx.json, ~/.fx/settings.json, and this workspace's override in it. When a key repeats, the last line is the one fx uses.",
             "Keys are dotted, such as statusLine.context. A flag or an FX_* variable can override a value for one run; fx status shows what a run uses.",
+            "set and unset change plain preferences for every workspace, such as fast_mode, effort, theme, and statusLine.context. Switches take true or false. Permission, model, provider, and account settings keep their own commands.",
         },
     },
     command_specs.slack_install_spec,
