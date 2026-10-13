@@ -104,11 +104,19 @@ pub const Parser = struct {
     /// of failing, leaving `index` on it. The global flags before a command
     /// use this, because whatever follows them belongs to the command.
     prefix: bool = false,
+    /// Return a single-dash word that names no option as a positional
+    /// instead of failing. Session IDs are base64url and can start with `-`,
+    /// so the commands that take one as an operand use this.
+    dash_operands: bool = false,
     /// Set when `next` returns `error.InvalidFlag`.
     failure: ?Failure = null,
 
     pub fn init(docs: []const OptionDoc, args: []const [:0]const u8) Parser {
         return .{ .docs = docs, .args = args };
+    }
+
+    pub fn initDashOperands(docs: []const OptionDoc, args: []const [:0]const u8) Parser {
+        return .{ .docs = docs, .args = args, .dash_operands = true };
     }
 
     pub fn initPrefix(docs: []const OptionDoc, args: []const [:0]const u8) Parser {
@@ -130,6 +138,7 @@ pub const Parser = struct {
                 continue;
             }
             if (!is_flag) return .{ .positional = arg };
+            if (self.dash_operands and arg[1] != '-' and self.find(arg) == null) return .{ .positional = arg };
             return try self.option(arg);
         }
         return null;
@@ -193,7 +202,12 @@ pub const Parser = struct {
 
 /// Why `args` fail to parse against `docs`, or null when they parse.
 pub fn firstFailure(docs: []const OptionDoc, args: []const [:0]const u8) ?Failure {
-    var parser: Parser = .init(docs, args);
+    return failureOf(.init(docs, args));
+}
+
+/// The failure `start` would hit, for a parser set up in a non-default mode.
+pub fn failureOf(start: Parser) ?Failure {
+    var parser = start;
     while (parser.next() catch return parser.failure) |_| {}
     return null;
 }
@@ -259,6 +273,22 @@ test "a value may start with a dash" {
     var items: [2]Item = undefined;
     _ = try collect(&.{ "--model", "-weird" }, &items);
     try std.testing.expectEqualStrings("-weird", items[0].option.value.?);
+}
+
+test "dash-operand mode keeps a dash-leading operand but still checks long flags" {
+    const docs = [_]OptionDoc{
+        .{ .flag = "-h", .description = "" },
+        .{ .flag = "--json", .description = "" },
+    };
+    var parser: Parser = .initDashOperands(&docs, &.{ "-_u88j00skyI", "-h", "--json" });
+    try std.testing.expectEqualStrings("-_u88j00skyI", (try parser.next()).?.positional);
+    try std.testing.expectEqual(@as(usize, 0), (try parser.next()).?.option.index);
+    try std.testing.expectEqual(@as(usize, 1), (try parser.next()).?.option.index);
+    try std.testing.expectEqual(@as(?Item, null), try parser.next());
+
+    var typo: Parser = .initDashOperands(&docs, &.{"--jsno"});
+    try std.testing.expectError(error.InvalidFlag, typo.next());
+    try std.testing.expectEqualStrings("--jsno", typo.failure.?.unknown.flag);
 }
 
 test "bad flags fail with a message that names them" {

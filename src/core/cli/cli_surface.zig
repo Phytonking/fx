@@ -3011,7 +3011,8 @@ fn parsedOptions(kind: TopLevelKind) ?[]const command_specs.OptionDoc {
 /// Writes `fx <command>: <problem>` when a flag in `args` is malformed.
 fn writeFlagFailure(alloc: Allocator, deps: RunDeps, kind: TopLevelKind, args: anytype) !void {
     const docs = parsedOptions(kind) orelse return;
-    const failure = cli_flags.firstFailure(docs, args) orelse return;
+    // `fx session` reads its ID operand in dash-operand mode; report what its parser hit.
+    const failure = cli_flags.failureOf(if (kind == .session) .initDashOperands(docs, args) else .init(docs, args)) orelse return;
     var writer: std.Io.Writer.Allocating = .init(alloc);
     defer writer.deinit();
     try writer.writer.print("fx {s}: ", .{@tagName(kind)});
@@ -4041,7 +4042,7 @@ fn parseSessionTargetArgs(args: []const [:0]const u8) error{InvalidSessionArgs}!
     var parsed: SessionTargetArgs = .{};
     var positional: ?[]const u8 = null;
     var id_flag: ?[]const u8 = null;
-    var parser: cli_flags.Parser = .init(&builtin_commands.session_options, args);
+    var parser: cli_flags.Parser = .initDashOperands(&builtin_commands.session_options, args);
     while (parser.next() catch return error.InvalidSessionArgs) |item| switch (item) {
         .positional => |arg| {
             if (positional != null) return error.InvalidSessionArgs;
@@ -4304,8 +4305,6 @@ test "usage arguments accept today, 7d or 30d and one JSON flag" {
     });
     try std.testing.expectEqual(usage.Period.days_7, selected.period);
     try std.testing.expectEqual(usage.Period.today, (try parseUsageArgs(&.{ @constCast("--period"), @constCast("today") })).period);
-    // A repeated flag follows the shared parser: the last one wins.
-    try std.testing.expectEqual(usage.Period.days_7, (try parseUsageArgs(&.{ @constCast("--period"), @constCast("today"), @constCast("--period"), @constCast("7d") })).period);
     try std.testing.expectEqual(output_contracts.OutputFormat.json, selected.format);
 
     for ([_][]const [:0]const u8{
@@ -4319,8 +4318,8 @@ test "usage arguments accept today, 7d or 30d and one JSON flag" {
         try std.testing.expectError(error.InvalidUsageArgs, parseUsageArgs(invalid));
     }
 
-    const last = try parseUsageArgs(&.{ "--period", "24h", "--period=7d", "--json", "--json" });
-    try std.testing.expectEqual(usage_report.Scope.days_7, last.scope);
+    const last = try parseUsageArgs(&.{ "--period", "today", "--period=7d", "--json", "--json" });
+    try std.testing.expectEqual(usage.Period.days_7, last.period);
     try std.testing.expectEqual(output_contracts.OutputFormat.json, last.format);
 }
 
@@ -4787,6 +4786,27 @@ test "session target flags keep the last --id and reject two targets" {
     defer std.testing.allocator.free(migration.session_id);
     try std.testing.expect(migration.allow_large);
     try std.testing.expectEqualStrings("x", migration.session_id);
+}
+
+test "session targets accept a generated id that starts with a dash" {
+    const alloc = std.testing.allocator;
+    const id = "-_u88j00skyI";
+
+    var detail = try parseSessionDetailArgs(alloc, &.{ "--json", id });
+    defer detail.deinit(alloc);
+    try std.testing.expectEqualStrings(id, detail.target.?.id);
+
+    const migration = try parseSessionMigrationArgs(alloc, &.{id});
+    defer alloc.free(migration.session_id);
+    try std.testing.expectEqualStrings(id, migration.session_id);
+
+    var recovery = try parseSessionRecoveryArgs(alloc, &.{ id, "--json" });
+    defer recovery.deinit(alloc);
+    try std.testing.expectEqualStrings(id, recovery.session_id);
+    try std.testing.expectEqual(output_contracts.OutputFormat.json, recovery.format);
+
+    try std.testing.expectError(error.InvalidSessionRecoveryArgs, parseSessionRecoveryArgs(alloc, &.{ id, "--jsno" }));
+    try std.testing.expectError(error.InvalidSessionDetailArgs, parseSessionDetailArgs(alloc, &.{ id, "-other" }));
 }
 
 test "parse session detail args accepts explicit id flag" {
@@ -5603,6 +5623,20 @@ test "runIfRequested invalid local flags write usage" {
     try std.testing.expectEqual(usage_failure, result);
     try std.testing.expectEqualStrings("", capture.stdout.written());
     try std.testing.expectEqualStrings("fx status: unknown flag --wat\nusage: fx status [--json]\n", capture.stderr.written());
+}
+
+test "runIfRequested names the bad flag after a session id that starts with a dash" {
+    var capture = CaptureOutput.init(std.testing.allocator);
+    defer capture.deinit();
+
+    const result = try runIfRequestedWithDeps(
+        std.testing.allocator,
+        &.{ @constCast("session"), @constCast("recover"), @constCast("-_u88j00skyI"), @constCast("--jsno") },
+        testConfig(),
+        capture.deps(),
+    );
+    try std.testing.expectEqual(usage_failure, result);
+    try std.testing.expect(std.mem.startsWith(u8, capture.stderr.written(), "fx session: unknown flag --jsno (did you mean --json?)\n"));
 }
 
 test "runIfRequested invalid json local flags write json error" {
