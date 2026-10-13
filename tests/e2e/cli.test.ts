@@ -62,7 +62,7 @@ const NO_SETTING_ENV = Object.fromEntries(
   ].map((name) => [name, undefined]),
 );
 const MISSING_AUTH_MESSAGE =
-  "fx needs access to Vercel AI Gateway. Run fx login to sign in, fx setup to use an API key, or set AI_GATEWAY_API_KEY.";
+  "fx needs access to Vercel AI Gateway. Run fx login to sign in, fx login vercel --api-key to use an API key, or set AI_GATEWAY_API_KEY.";
 const MODERN_MCP_FIXTURE = join(
   import.meta.dirname,
   "fixtures",
@@ -362,7 +362,9 @@ describe("cli: help", () => {
       expect(stdout).toContain("Sign in to a model provider");
       expect(stdout).toContain("Sign out of a model provider");
       expect(stdout).toContain("Choose the active model provider");
-      expect(stdout).toContain("Configure a Vercel AI Gateway API key");
+      // `fx setup` is deprecated and hidden; `fx login --api-key` replaces it.
+      expect(stdout).not.toContain("Configure a Vercel AI Gateway API key");
+      expect(stdout).toContain("login [vercel|codex|grok] [--api-key]");
       expect(stdout).toContain("Choose a Vercel AI Gateway team");
       expect(stdout).toContain("Show Vercel AI Gateway credits");
       expect(stdout).not.toContain("Sign in to Vercel or a selected provider");
@@ -545,7 +547,7 @@ With --prompt-permissions, JSON and quiet requests may prompt on stderr only whe
         expect(r.stderr).toBe("");
         expect(r.stdout).toContain("Commands:");
         expect(r.stdout).toContain("ask");
-        expect(r.stdout).toContain("setup");
+        expect(r.stdout).toContain("login");
         expect(r.stdout).toContain("status");
         expect(r.stdout).toContain("doctor");
         expect(maxLineWidth(r.stdout)).toBeLessThanOrEqual(60);
@@ -2357,7 +2359,40 @@ describe("cli: setup", () => {
       });
       expect(r.code).toBe(1);
       expect(r.stdout).toBe("");
-      expect(r.stderr).toContain("stored API keys are disabled");
+      expect(r.stderr).toBe(
+        "fx setup is deprecated; use fx login vercel --api-key\n" +
+          "fx setup: stored API keys are disabled by FX_DISABLE_KEYCHAIN\n",
+      );
+    },
+    TIMEOUT,
+  );
+
+  test(
+    "fx login --api-key replaces fx setup and is only for vercel",
+    async () => {
+      for (const args of [["login", "--api-key"], ["login", "vercel", "--api-key"]]) {
+        const disabled = await runFx(args, { env: { ...NO_GATEWAY_AUTH, FX_DISABLE_KEYCHAIN: "1" } });
+        expect(disabled.code).toBe(1);
+        expect(disabled.stdout).toBe("");
+        expect(disabled.stderr).toBe("fx login: stored API keys are disabled by FX_DISABLE_KEYCHAIN\n");
+      }
+
+      const noTerminal = await runFx(["login", "--api-key"], { env: { ...NO_GATEWAY_AUTH } });
+      expect(noTerminal.code).toBe(1);
+      expect(noTerminal.stderr).toBe("fx login: an interactive terminal is required to paste an API key\n");
+
+      const usage = "usage: fx login [vercel|codex|grok] [--api-key]\n";
+      const cases: [string[], string][] = [
+        [["login", "codex", "--api-key"], "fx login: --api-key works only with vercel\n"],
+        [["login", "--bogus"], "fx login: unknown flag --bogus\n" + usage],
+        [["login", "vercel", "codex"], usage],
+      ];
+      for (const [args, stderr] of cases) {
+        const r = await runFx(args, { env: { ...NO_GATEWAY_AUTH } });
+        expect(r.code).toBe(2);
+        expect(r.stdout).toBe("");
+        expect(r.stderr).toBe(stderr);
+      }
     },
     TIMEOUT,
   );
@@ -2391,6 +2426,7 @@ exit 99
         });
         expect(r.code).toBe(1);
         expect(r.stdout).toBe("");
+        expect(r.stderr).toContain("fx setup is deprecated; use fx login vercel --api-key\n");
         expect(r.stderr).toContain("interactive terminal is required");
         expect(existsSync(invocationLog)).toBe(false);
       } finally {

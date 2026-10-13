@@ -766,6 +766,10 @@ describe.skipIf(SKIP_TMUX)("tui: credential onboarding", () => {
       );
       expect(picker).not.toContain("Connections");
       expect(picker).not.toContain("Credential source");
+      // `/setup` is the deprecated alias of `/provider`.
+      expect(await session.captureFullScrollback()).toContain(
+        "/setup is deprecated; use /login to sign in or add an API key, or /provider to choose a provider",
+      );
 
       await session.sendKeys("Enter");
       await session.waitForPane(

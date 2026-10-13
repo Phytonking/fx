@@ -23,6 +23,10 @@ const json_option = command_specs.OptionDoc{ .flag = "--json", .description = "E
 /// Options for local commands that only take `--json`.
 pub const json_only_options = [_]command_specs.OptionDoc{json_option};
 
+pub const login_options = [_]command_specs.OptionDoc{
+    .{ .flag = "--api-key", .description = "Paste a Vercel AI Gateway API key instead of signing in through the browser" },
+};
+
 pub const sessions_options = [_]command_specs.OptionDoc{
     .{ .flag = "--all", .description = "List saved sessions across every workspace in this profile" },
     .{ .flag = "--limit <1-100>", .description = "Set the maximum sessions returned per page" },
@@ -193,8 +197,9 @@ pub const top_level_specs = [_]TopLevelSpec{
     .{
         .kind = .login,
         .token = "login",
-        .usage = "login [vercel|codex|grok]",
+        .usage = "login [vercel|codex|grok] [--api-key]",
         .summary = "Sign in to Vercel or a selected provider",
+        .options = &login_options,
     },
     .{
         .kind = .logout,
@@ -205,8 +210,11 @@ pub const top_level_specs = [_]TopLevelSpec{
     .{
         .kind = .setup,
         .token = "setup",
+        // Warns until it is removed.
+        .hidden_from_top_level_help = true,
+        .replaced_by = "fx login vercel --api-key",
         .usage = "setup",
-        .summary = "Configure an AI Gateway API key",
+        .summary = "Paste an AI Gateway API key (deprecated: use fx login vercel --api-key)",
     },
     .{
         .kind = .status,
@@ -389,13 +397,12 @@ pub const top_level_help_groups = [_]TopLevelHelpGroup{
         .{ .usage = "session recover <id>", .summary = "Copy a recoverable corrupt session" },
     } },
     .{ .entries = &.{
-        .{ .kind = .login, .usage = "login [vercel|codex|grok]", .summary = "Sign in to a model provider" },
+        .{ .kind = .login, .usage = "login [vercel|codex|grok] [--api-key]", .summary = "Sign in to a model provider" },
         .{ .kind = .logout, .usage = "logout [vercel|codex|grok]", .summary = "Sign out of a model provider" },
         .{ .kind = .provider, .usage = "provider <name>", .summary = "Choose the active model provider" },
         .{ .kind = .models, .usage = "models" },
     } },
     .{ .entries = &.{
-        .{ .kind = .setup, .usage = "setup", .summary = "Configure a Vercel AI Gateway API key" },
         .{ .kind = .teams, .usage = "teams", .summary = "Choose a Vercel AI Gateway team" },
         .{ .kind = .credits, .usage = "credits|balance", .summary = "Show Vercel AI Gateway credits" },
     } },
@@ -575,7 +582,7 @@ pub const slash_specs = [_]SlashSpec{
     .{ .kind = .rename_session, .command = "/rename", .help_entry = "/rename <title>", .completion_description = "rename the current session", .presentation_category = .session, .has_args = true, .accepts_payload = true },
     .{ .kind = .login, .command = "/login", .help_entry = "/login", .completion_description = "choose the model provider and how it signs in", .presentation_category = .account, .has_args = true },
     .{ .kind = .logout, .command = "/logout", .help_entry = "/logout [vercel|codex|grok]", .completion_description = "sign out of a provider session", .presentation_category = .account, .has_args = true, .accepts_payload = true },
-    .{ .kind = .provider, .command = "/provider", .aliases = &.{"/setup"}, .help_entry = "/provider (/setup)", .completion_description = "choose the model provider and how it signs in", .presentation_category = .account, .has_args = true },
+    .{ .kind = .provider, .command = "/provider", .aliases = &.{"/setup"}, .show_aliases_in_completion = false, .help_entry = "/provider", .completion_description = "choose the model provider and how it signs in", .presentation_category = .account, .has_args = true },
     .{ .kind = .stats, .command = "/stats", .help_entry = "/stats", .completion_description = "show token and turn statistics", .presentation_category = .account },
     .{ .kind = .usage, .command = "/usage", .aliases = &.{}, .help_entry = "/usage", .completion_description = "show your provider's usage and spend", .presentation_category = .account },
     .{ .kind = .status, .command = "/status", .help_entry = "/status", .completion_description = "show runtime configuration", .presentation_category = .general, .show_in_welcome = true },

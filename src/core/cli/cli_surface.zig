@@ -286,6 +286,36 @@ fn parseLoginProvider(rest: []const [:0]const u8) !?model_provider.ProviderId {
     return provider_catalog.parse(rest[0]) orelse error.InvalidLoginProviderArgs;
 }
 
+const LoginArgs = struct {
+    provider: ?model_provider.ProviderId = null,
+    /// Paste an AI Gateway API key instead of signing in through the browser.
+    api_key: bool = false,
+};
+
+const LoginFlag = enum { api_key };
+const login_flag_ids = cli_flags.idTable(LoginFlag, &builtin_commands.login_options);
+
+/// `fx login [vercel|codex|grok] [--api-key]`, in either order.
+fn parseLoginArgs(rest: []const [:0]const u8) error{ InvalidLoginProviderArgs, ApiKeyNeedsVercel }!LoginArgs {
+    var parsed: LoginArgs = .{};
+    var provider_arg: ?[]const u8 = null;
+    var parser: cli_flags.Parser = .init(&builtin_commands.login_options, rest);
+    while (parser.next() catch return error.InvalidLoginProviderArgs) |item| switch (item) {
+        .positional => |arg| {
+            if (provider_arg != null) return error.InvalidLoginProviderArgs;
+            provider_arg = arg;
+        },
+        .option => |match| switch (login_flag_ids[match.index].?) {
+            .api_key => parsed.api_key = true,
+        },
+    };
+    if (provider_arg) |name| {
+        parsed.provider = provider_catalog.parse(name) orelse return error.InvalidLoginProviderArgs;
+    }
+    if (parsed.api_key and (parsed.provider orelse .gateway) != .gateway) return error.ApiKeyNeedsVercel;
+    return parsed;
+}
+
 fn selectCatalogModel(
     entries: []const model_catalog.ModelCatalogEntry,
     saved: ?[]const u8,
@@ -1431,16 +1461,25 @@ fn runNonInteractiveWithDeps(
         .pr => |rest| return runGithubWorkflow(alloc, rest, cfg, global_args.modifiers, deps, .pull_request),
         .issue => |rest| return runGithubWorkflow(alloc, rest, cfg, global_args.modifiers, deps, .issue),
         .login => |rest| {
-            const maybe_login_provider = parseLoginProvider(rest) catch {
-                try writeStderr(deps, "usage: fx login [vercel|codex|grok]\n");
+            const login_args = parseLoginArgs(rest) catch |err| {
+                switch (err) {
+                    error.ApiKeyNeedsVercel => try writeStderr(deps, "fx login: --api-key works only with vercel\n"),
+                    error.InvalidLoginProviderArgs => {
+                        try writeFlagFailure(alloc, deps, .login, rest);
+                        try writeStderr(deps, "usage: fx login [vercel|codex|grok] [--api-key]\n");
+                    },
+                }
                 return usage_failure;
             };
             if (cfg.auth_mode == .host_managed) {
                 try writeHostManagedAuthResult(deps);
                 return .handled_success;
             }
+            if (login_args.api_key) {
+                return if (try runPasteSetup(alloc, cfg.secret_store, deps, "fx login")) .handled_success else .handled_failure;
+            }
             // Preserve the original `fx login` behavior for scripts and users.
-            const login_provider = maybe_login_provider orelse .gateway;
+            const login_provider = login_args.provider orelse .gateway;
             runProviderLogin(alloc, cfg, login_provider) catch |err| {
                 try writeProviderLoginFailure(alloc, deps, login_provider, .provider_login, err);
                 return .handled_failure;
@@ -1609,6 +1648,10 @@ fn runNonInteractiveWithDeps(
                 .handled_failure;
         },
         .setup => |rest| {
+            if (try command_specs.deprecationWarning(alloc, cfg.command_catalog, .setup)) |warning| {
+                defer alloc.free(warning);
+                try writeStderr(deps, warning);
+            }
             if (rest.len != 0) {
                 try writeTopLevelUsage(cfg.command_catalog, deps, .setup);
                 return usage_failure;
@@ -1617,7 +1660,7 @@ fn runNonInteractiveWithDeps(
                 try writeHostManagedAuthResult(deps);
                 return .handled_success;
             }
-            return if (try runPasteSetup(alloc, cfg.secret_store, deps)) .handled_success else .handled_failure;
+            return if (try runPasteSetup(alloc, cfg.secret_store, deps, "fx setup")) .handled_success else .handled_failure;
         },
         .status => |rest| {
             const opts = parseLocalSurfaceArgs(rest) catch |err| {
@@ -2382,23 +2425,28 @@ fn writeStderr(deps: RunDeps, text: []const u8) !void {
     try deps.write_stderr(deps.stderr_ctx, text);
 }
 
+/// Reads and stores an AI Gateway API key. `command` names the command in
+/// failure messages: `fx login` for `fx login --api-key`, `fx setup` for the
+/// deprecated spelling.
 fn runPasteSetup(
     alloc: Allocator,
     secret_store: host.SecretStore,
     deps: RunDeps,
+    command: []const u8,
 ) !bool {
     if (secret_store.isDisabled()) {
-        try writeStderr(deps, "fx setup: stored API keys are disabled by FX_DISABLE_KEYCHAIN\n");
+        try writePasteFailure(alloc, deps, command, "stored API keys are disabled by FX_DISABLE_KEYCHAIN");
         return false;
     }
     if (!deps.setup_terminal_available(deps.setup_ctx)) {
-        try writeStderr(deps, "fx setup: an interactive terminal is required to paste an API key\n");
+        try writePasteFailure(alloc, deps, command, "an interactive terminal is required to paste an API key");
         return false;
     }
 
     try writeStderr(deps, "Paste AI Gateway API key (input hidden): ");
     const stored_interactively = secret_store.storeInteractive() catch {
-        try writeStderr(deps, "\nfx setup: API key was not saved\n");
+        try writeStderr(deps, "\n");
+        try writePasteFailure(alloc, deps, command, "API key was not saved");
         return false;
     };
     if (!stored_interactively) {
@@ -2408,13 +2456,14 @@ fn runPasteSetup(
             deps.write_stderr,
             deps.stderr_ctx,
         ) catch {
-            try writeStderr(deps, "\nfx setup: API key was not saved\n");
+            try writeStderr(deps, "\n");
+            try writePasteFailure(alloc, deps, command, "API key was not saved");
             return false;
         };
         defer secret.zeroAndFree(alloc, key);
         try writeStderr(deps, "\n");
         secret_store.store(alloc, key) catch {
-            try writeStderr(deps, "fx setup: API key was not saved\n");
+            try writePasteFailure(alloc, deps, command, "API key was not saved");
             return false;
         };
     }
@@ -2426,6 +2475,12 @@ fn runPasteSetup(
     defer alloc.free(message);
     try writeStdout(deps, message);
     return true;
+}
+
+fn writePasteFailure(alloc: Allocator, deps: RunDeps, command: []const u8, problem: []const u8) !void {
+    const message = try alloc.print("{s}: {s}\n", .{ command, problem });
+    defer alloc.free(message);
+    try writeStderr(deps, message);
 }
 
 fn setupTerminalAvailableDefault(_: ?*anyopaque) bool {
@@ -3327,6 +3382,7 @@ fn parsedOptions(kind: TopLevelKind) ?[]const command_specs.OptionDoc {
     return switch (kind) {
         .status, .doctor, .models, .permissions => &builtin_commands.json_only_options,
         .sessions => &builtin_commands.sessions_options,
+        .login => &builtin_commands.login_options,
         .usage => &builtin_commands.usage_options,
         .upgrade => &builtin_commands.upgrade_options,
         .workspace => &builtin_commands.workspace_options,
@@ -5979,9 +6035,51 @@ test "setup preserves the disabled secret-store failure" {
     try std.testing.expectEqual(@as(usize, 0), capture.setup_store_calls);
     try std.testing.expectEqual(@as(usize, 0), capture.setup_read_calls);
     try std.testing.expectEqualStrings(
-        "fx setup: stored API keys are disabled by FX_DISABLE_KEYCHAIN\n",
+        "fx setup is deprecated; use fx login vercel --api-key\n" ++
+            "fx setup: stored API keys are disabled by FX_DISABLE_KEYCHAIN\n",
         capture.stderr.written(),
     );
+}
+
+test "login --api-key stores a pasted key like setup, without the deprecation warning" {
+    for ([_][]const [:0]const u8{
+        &.{"--api-key"},
+        &.{ "vercel", "--api-key" },
+        &.{ "--api-key", "vercel" },
+    }) |rest| {
+        var capture = CaptureOutput.init(std.testing.allocator);
+        defer capture.deinit();
+        var cfg = testConfig();
+        cfg.secret_store = capture.secretStore();
+        var argv: [3][:0]const u8 = undefined;
+        argv[0] = "login";
+        @memcpy(argv[1 .. rest.len + 1], rest);
+
+        const result = try runIfRequestedWithDeps(std.testing.allocator, argv[0 .. rest.len + 1], cfg, capture.deps());
+        try std.testing.expectEqual(RunResult.handled_success, result);
+        try std.testing.expectEqual(@as(usize, 1), capture.setup_store_calls);
+        try std.testing.expect(capture.setup_value_matched);
+        try std.testing.expect(std.mem.find(u8, capture.stderr.written(), "deprecated") == null);
+        try std.testing.expect(std.mem.find(u8, capture.stdout.written(), cfg.secret_store.backend_label) != null);
+    }
+
+    var capture = CaptureOutput.init(std.testing.allocator);
+    defer capture.deinit();
+    capture.setup_store_disabled = true;
+    var cfg = testConfig();
+    cfg.secret_store = capture.secretStore();
+    const result = try runIfRequestedWithDeps(std.testing.allocator, &.{ "login", "--api-key" }, cfg, capture.deps());
+    try std.testing.expectEqual(RunResult.handled_failure, result);
+    try std.testing.expectEqualStrings("fx login: stored API keys are disabled by FX_DISABLE_KEYCHAIN\n", capture.stderr.written());
+}
+
+test "login arguments take one provider and --api-key only for vercel" {
+    try std.testing.expectEqual(LoginArgs{}, try parseLoginArgs(&.{}));
+    try std.testing.expectEqual(LoginArgs{ .provider = .codex }, try parseLoginArgs(&.{"codex"}));
+    try std.testing.expectEqual(LoginArgs{ .provider = .gateway, .api_key = true }, try parseLoginArgs(&.{ "--api-key", "vercel" }));
+    try std.testing.expectError(error.ApiKeyNeedsVercel, parseLoginArgs(&.{ "codex", "--api-key" }));
+    try std.testing.expectError(error.InvalidLoginProviderArgs, parseLoginArgs(&.{ "vercel", "codex" }));
+    try std.testing.expectError(error.InvalidLoginProviderArgs, parseLoginArgs(&.{"--bogus"}));
 }
 
 test "workspace indeterminate errors report the reconciled durable state" {
@@ -6734,7 +6832,7 @@ test "runIfRequested local json success appends exactly one newline" {
     const result = try runIfRequestedWithDeps(std.testing.allocator, &.{ @constCast("status"), @constCast("--json") }, testConfig(), deps);
     try std.testing.expectEqual(RunResult.handled_success, result);
     try std.testing.expectEqualStrings(
-        "{\"kind\":\"status\",\"model\":\"test-model\",\"model_origin\":\"default\",\"effort\":\"auto\",\"update_channel\":\"stable\",\"build_channel\":\"stable\",\"build_revision\":\"\",\"auth\":\"missing\",\"auth_refreshable\":false,\"auth_help\":\"fx needs access to Vercel AI Gateway. Run fx login to sign in, fx setup to use an API key, or set AI_GATEWAY_API_KEY.\",\"permission_mode\":\"auto\",\"workspace\":\"/tmp/fx\",\"history_turns\":0,\"session_permission_grants\":0,\"agent_step_limit\":42,\"ultrafast_requested\":false,\"mcp\":{\"connection_check\":\"not_checked\",\"servers\":[],\"configuration_issues\":[],\"inspection_error\":null}}\n",
+        "{\"kind\":\"status\",\"model\":\"test-model\",\"model_origin\":\"default\",\"effort\":\"auto\",\"update_channel\":\"stable\",\"build_channel\":\"stable\",\"build_revision\":\"\",\"auth\":\"missing\",\"auth_refreshable\":false,\"auth_help\":\"fx needs access to Vercel AI Gateway. Run fx login to sign in, fx login vercel --api-key to use an API key, or set AI_GATEWAY_API_KEY.\",\"permission_mode\":\"auto\",\"workspace\":\"/tmp/fx\",\"history_turns\":0,\"session_permission_grants\":0,\"agent_step_limit\":42,\"ultrafast_requested\":false,\"mcp\":{\"connection_check\":\"not_checked\",\"servers\":[],\"configuration_issues\":[],\"inspection_error\":null}}\n",
         capture.stdout.written(),
     );
     try std.testing.expect(!std.mem.endsWith(u8, capture.stdout.written(), "\n\n"));
@@ -6824,7 +6922,7 @@ test "writeRenderedJsonLine falls back to heap and appends exactly one newline" 
     );
 
     try std.testing.expectEqualStrings(
-        "{\"kind\":\"status\",\"model\":\"test-model\",\"model_origin\":\"default\",\"effort\":\"auto\",\"update_channel\":\"stable\",\"build_channel\":\"stable\",\"build_revision\":\"\",\"auth\":\"missing\",\"auth_refreshable\":false,\"auth_help\":\"fx needs access to Vercel AI Gateway. Run fx login to sign in, fx setup to use an API key, or set AI_GATEWAY_API_KEY.\",\"permission_mode\":\"ask\",\"workspace\":\"/tmp/fx\",\"history_turns\":0,\"session_permission_grants\":0,\"agent_step_limit\":42,\"ultrafast_requested\":true}\n",
+        "{\"kind\":\"status\",\"model\":\"test-model\",\"model_origin\":\"default\",\"effort\":\"auto\",\"update_channel\":\"stable\",\"build_channel\":\"stable\",\"build_revision\":\"\",\"auth\":\"missing\",\"auth_refreshable\":false,\"auth_help\":\"fx needs access to Vercel AI Gateway. Run fx login to sign in, fx login vercel --api-key to use an API key, or set AI_GATEWAY_API_KEY.\",\"permission_mode\":\"ask\",\"workspace\":\"/tmp/fx\",\"history_turns\":0,\"session_permission_grants\":0,\"agent_step_limit\":42,\"ultrafast_requested\":true}\n",
         capture.stdout.written(),
     );
 }

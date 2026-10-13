@@ -55,7 +55,7 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 | Concept | Name |
 |---|---|
 | Sign in, including pasting an AI Gateway key | `fx login [vercel\|codex\|grok]` |
-| `fx setup`, `/setup` | Being folded into `fx login`; don't give "setup" a new meaning |
+| Paste an AI Gateway API key | `fx login vercel --api-key`; in a session, `/login` offers sign-in or an API key. `fx setup` and `/setup` warn and are hidden from help |
 | Choose the active provider | `fx provider <name>`, `/provider` |
 
 ## Other

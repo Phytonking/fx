@@ -93,6 +93,9 @@ pub const TopLevelSpec = struct {
     options: []const OptionDoc = &.{},
     details: []const []const u8 = &.{},
     hidden_from_top_level_help: bool = false,
+    /// Set on a deprecated command: the spelling that replaces it. Running the
+    /// command prints a warning that names it.
+    replaced_by: ?[]const u8 = null,
 };
 
 pub const TopLevelHelpEntry = struct {
@@ -1309,6 +1312,17 @@ fn renderSlashEntries(alloc: Allocator, registry: SlashRegistry, welcome_only: b
     return try out.toOwnedSlice();
 }
 
+/// The warning a deprecated command prints before it runs, or null for a
+/// current command. Caller owns the returned text.
+pub fn deprecationWarning(alloc: Allocator, registry: TopLevelRegistry, kind: TopLevelKind) !?[]u8 {
+    for (registry.specs) |spec| {
+        if (spec.kind != kind) continue;
+        const replacement = spec.replaced_by orelse return null;
+        return try alloc.print("fx {s} is deprecated; use {s}\n", .{ spec.token, replacement });
+    }
+    return null;
+}
+
 fn topLevelSpec(registry: TopLevelRegistry, kind: TopLevelKind) TopLevelSpec {
     for (registry.specs) |spec| {
         if (spec.kind == kind) return spec;
@@ -1628,7 +1642,9 @@ test "rendered top-level help is a complete CLI navigation page" {
     try std.testing.expect(std.mem.find(u8, text, "Sign in to a model provider") != null);
     try std.testing.expect(std.mem.find(u8, text, "Sign out of a model provider") != null);
     try std.testing.expect(std.mem.find(u8, text, "Choose the active model provider") != null);
-    try std.testing.expect(std.mem.find(u8, text, "Configure a Vercel AI Gateway API key") != null);
+    // `fx setup` is deprecated and hidden; `fx login --api-key` replaces it.
+    try std.testing.expect(std.mem.find(u8, text, "Configure a Vercel AI Gateway API key") == null);
+    try std.testing.expect(std.mem.find(u8, text, "login [vercel|codex|grok] [--api-key]") != null);
     try std.testing.expect(std.mem.find(u8, text, "Choose a Vercel AI Gateway team") != null);
     try std.testing.expect(std.mem.find(u8, text, "Show Vercel AI Gateway credits") != null);
     try std.testing.expect(std.mem.find(u8, text, "Sign in to Vercel or a selected provider") == null);
@@ -1703,7 +1719,7 @@ test "top-level help renders flags as compact aligned rows" {
     try std.testing.expect(lineContainsBoth(wide, "-c, --continue", "Resume the remembered workspace session"));
     try std.testing.expect(lineContainsBoth(wide, "-r, --resume [last|<id>]", "Pick a saved session, or resume the latest or an exact ID"));
     try std.testing.expect(std.mem.find(u8, wide, "Print the fx version and exit\n\nExamples:") != null);
-    try std.testing.expect(std.mem.find(u8, wide, "List available models\n\n  setup") != null);
+    try std.testing.expect(std.mem.find(u8, wide, "List available models\n\n  teams") != null);
     try std.testing.expect(std.mem.find(u8, wide, "Show Vercel AI Gateway credits\n\n  usage") != null);
     try expectAllLinesFit(narrow, 60);
 }
@@ -1949,6 +1965,14 @@ test "top-level specs keep unique tokens and aliases" {
             try std.testing.expectEqual(@as(usize, 1), topLevelTokenOccurrences(registry, alias));
         }
     }
+}
+
+test "a deprecated command warns with its replacement and a current one does not" {
+    const alloc = std.testing.allocator;
+    const warning = (try deprecationWarning(alloc, testTopLevelRegistry(), .setup)).?;
+    defer alloc.free(warning);
+    try std.testing.expectEqualStrings("fx setup is deprecated; use fx login vercel --api-key\n", warning);
+    try std.testing.expect((try deprecationWarning(alloc, testTopLevelRegistry(), .login)) == null);
 }
 
 test "top-level help index covers visible commands once" {
