@@ -1712,7 +1712,15 @@ fn checkLaunchSelection(alloc: Allocator, ctx: *AskContext, options: RunOptions)
 
 /// JSON output reports the rejection through its `error` code alone, like
 /// every other `fx ask --json` failure; other modes explain it on stderr.
-fn launchRejectionResult(alloc: Allocator, options: RunOptions, rejection: launch_selection.Rejection) !PromptRunResult {
+fn launchRejectionResult(
+    alloc: Allocator,
+    ctx: *AskContext,
+    options: RunOptions,
+    rejection: launch_selection.Rejection,
+) !PromptRunResult {
+    // The terminal presentation has drawn the prompt with line wrap off;
+    // restore the terminal so the message starts on its own line and wraps.
+    if (ctx.presenter) |presenter| try presenter.finish();
     if (!options.output_mode.capturesJson()) {
         try options.deps.write_stderr(options.deps.stderr_ctx, "fx ask: ");
         try options.deps.write_stderr(options.deps.stderr_ctx, rejection.message);
@@ -2034,7 +2042,7 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
             defer rejection.deinit(alloc);
             const discarded = discardFreshSession(&ctx, "rejected launch");
             debug_trace.logf("ask", "launch flags rejected code={s} fresh_session_discarded={}", .{ rejection.code.errorCode(), discarded });
-            return launchRejectionResult(alloc, options, rejection);
+            return launchRejectionResult(alloc, &ctx, options, rejection);
         },
     }
 
