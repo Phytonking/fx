@@ -10617,7 +10617,7 @@ describe.skipIf(!HAS_API_KEY)("acp: model-backed protocol", () => {
   test(
     "session modes are the CLI permission modes and start in the saved mode",
     async () => {
-      for (const [saved, expected] of [[undefined, "auto"], ["ask", "ask"], ["auto", "auto"], ["yolo", "full-access"]] as const) {
+      for (const [saved, expected] of [[undefined, "auto"], ["ask", "ask"], ["auto", "auto"], ["yolo", "full-access"], ["full-access", "full-access"]] as const) {
         const root = createIsolatedRoot("fx-acp-permission-modes-");
         if (saved) writeFileSync(join(root.home, ".fx", "settings.json"), JSON.stringify({ permission_mode: saved }));
         const gateway = startFakeGateway([]);
@@ -10707,7 +10707,7 @@ describe.skipIf(!HAS_API_KEY)("acp: model-backed protocol", () => {
 
         const legacy = await client.request("session/set_mode", { modeId: "full-access" }, 7) as any;
         expect(legacy.error).toBeUndefined();
-        expect(savedMode()).toBe("yolo");
+        expect(savedMode()).toBe("full-access");
         const next = await client.request("session/new", { mcpServers: [] }, 8) as any;
         await client.readLine();
         expect(next.result.modes.currentModeId).toBe("full-access");

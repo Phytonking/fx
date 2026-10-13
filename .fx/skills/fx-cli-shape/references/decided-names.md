@@ -20,7 +20,7 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 | Surface | Name |
 |---|---|
 | Setting | `permission_mode`: `ask`, `auto`, or `full-access` (legacy `yolo` is read, never written) |
-| Flag | `--permission-mode <mode>` (planned), with aliases `--ask` (planned), `--auto`, `--full-access`, `--yolo` |
+| Flag | `--permission-mode <mode>`, with aliases `--ask`, `--auto`, `--full-access`, `--yolo` |
 | Env var | `FX_PERMISSION_MODE` |
 | Slash command | `/permissions [ask\|auto\|full-access\|reset]` |
 | Read-only view | `fx permissions` |

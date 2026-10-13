@@ -46,7 +46,7 @@ The full rules behind SKILL.md, by mechanism. Each rule says whether the code fo
   | Slash command | `/` plus the setting or group name | `/permissions` |
   | libfx and ACP options | The host language's case | `permissionMode` |
 
-- Values use the same words everywhere, in storage too. Permission mode is `ask`, `auto`, or `full-access`. Today full access is still saved as `yolo`; the target writes `full-access` and keeps reading `yolo`.
+- Values use the same words everywhere, in storage too. Permission mode is `ask`, `auto`, or `full-access`: fx saves and prints `full-access` and keeps reading `yolo`. ACP's mode `_meta` keeps `yolo` because ACP clients may read it.
 - Boolean env values accept `1`/`0`, `true`/`false`, `on`/`off`, and `yes`/`no`, trimmed and case-insensitive.
 - Today `statusLine` is the one camelCase key. The target reads both and writes `status_line`.
 

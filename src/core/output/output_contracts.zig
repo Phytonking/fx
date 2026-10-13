@@ -2482,7 +2482,7 @@ test "status JSON lists the session modes after the permission mode" {
     try std.testing.expect(std.mem.find(
         u8,
         json,
-        "\"permission_mode\":\"yolo\",\"mode\":\"open\",\"modes\":[{\"id\":\"careful\",\"name\":\"Careful\",\"description\":\"Asks first\"},{\"id\":\"open\",\"name\":\"Open\",\"description\":\"\"}],\"workspace\":",
+        "\"permission_mode\":\"full-access\",\"mode\":\"open\",\"modes\":[{\"id\":\"careful\",\"name\":\"Careful\",\"description\":\"Asks first\"},{\"id\":\"open\",\"name\":\"Open\",\"description\":\"\"}],\"workspace\":",
     ) != null);
 
     const text = try snapshot.renderText(std.testing.allocator);
