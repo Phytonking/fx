@@ -94,7 +94,7 @@ Run flags and env vars never save; setter commands do (see Flags). Every effecti
 
 - Keys are snake_case; nested groups are fine (`sound.turn_end`).
 - `.fx.json` accepts only project-safe keys. Today they are `context`, `max_agent_steps`, `max_tool_result_bytes`, `provider_order`, and `provider_strict`, enforced by `parseProjectSafeFields` in `src/core/config/config_runtime.zig`. A new project-safe key needs a maintainer's approval, because anyone who can commit to a repo controls that file.
-- A new profile-only key also goes in `isProfileOnlySettingKey`, the hand-kept list that warns when a project file sets it.
+- Every settings key goes in `src/core/config/settings_keys.zig`, the list of keys fx knows, marked `.profile` or `.project_safe`. A project file that sets a `.profile` key is ignored with a warning, and `fx doctor` reports keys missing from the list, with the closest known one. A retired key stays listed as `.retired` so it is ignored without a report.
 - Scope words are `--global` (the profile), `--workspace` (this folder's entry in the profile), and `--project` only for commands that write a committed file, such as `fx mcp` with `.mcp.json`. Today `fx mcp` uses `--project` and `--profile`, and `/allowlist` uses `local` and `user`.
 - Planned: `fx config list|get|set|unset` with `--global`, `--workspace`, and `--show-origin`. `fx config` never writes committed files and never handles credentials. `set` and `unset` print one line on stderr naming the key, value, and file, and nothing on stdout. Unknown keys are ignored at startup, reported by `fx doctor` and `fx config list`, and rejected by `fx config get` and `set`.
 - Slash commands that change a setting save to the profile and name the file in their confirmation.

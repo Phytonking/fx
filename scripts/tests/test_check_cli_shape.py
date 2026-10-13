@@ -68,16 +68,14 @@ test "tests may use odd arguments" {
 }
 """
 
-CONFIG_RUNTIME = """\
-fn isProfileOnlySettingKey(key: []const u8) bool {
-    const keys = [_][]const u8{
-        "model",
-    };
-    _ = keys;
-    _ = key;
-    return false;
-}
+SETTINGS_KEYS = """\
+pub const keys = [_]Key{
+    .{ .name = "max_agent_steps", .where = .project_safe },
+    .{ .name = "model", .where = .profile },
+};
+"""
 
+CONFIG_RUNTIME = """\
 fn parseProfileOnlyFields(root: std.json.Value) void {
     if (root.object.get("model")) |value| {
         _ = value;
@@ -116,6 +114,7 @@ class CheckCliShapeTests(unittest.TestCase):
             check_cli_shape.CLI_SURFACE: CLI_SURFACE,
             check_cli_shape.CLI_ASK: CLI_ASK,
             check_cli_shape.CONFIG_RUNTIME: CONFIG_RUNTIME,
+            check_cli_shape.SETTINGS_KEYS: SETTINGS_KEYS,
             "src/env.zig": ENV,
         }
         self.registry = registry()
@@ -210,7 +209,11 @@ class CheckCliShapeTests(unittest.TestCase):
         self.assertOnly(self.run_check(), "registry", 'hand_parsed_flags lists "--gone"')
 
     def test_settings_keys_must_be_snake_case(self) -> None:
-        self.edit(check_cli_shape.CONFIG_RUNTIME, '"model",\n', '"model",\n        "statusLine",\n')
+        self.edit(
+            check_cli_shape.SETTINGS_KEYS,
+            '.{ .name = "model", .where = .profile },\n',
+            '.{ .name = "model", .where = .profile },\n    .{ .name = "statusLine", .where = .profile },\n',
+        )
         self.edit(
             check_cli_shape.CONFIG_RUNTIME,
             'fn parseProfileOnlyFields(root: std.json.Value) void {\n',
@@ -228,15 +231,35 @@ class CheckCliShapeTests(unittest.TestCase):
         )
         problems = self.run_check()
         self.assertOnly(problems, "warnings", '"auto_compact_percent" is profile-only')
-        self.assertEqual((check_cli_shape.CONFIG_RUNTIME, 11), (problems[0].path, problems[0].number))
+        self.assertEqual((check_cli_shape.CONFIG_RUNTIME, 2), (problems[0].path, problems[0].number))
 
     def test_project_safe_keys_need_no_profile_warning(self) -> None:
+        self.edit(check_cli_shape.CONFIG_RUNTIME, '"max_agent_steps"', '"max_tool_result_bytes"')
+        self.edit(check_cli_shape.SETTINGS_KEYS, '"max_agent_steps"', '"max_tool_result_bytes"')
+        self.assertEqual([], self.run_check())
+
+    def test_project_safe_read_missing_from_the_list_fails(self) -> None:
         self.edit(
             check_cli_shape.CONFIG_RUNTIME,
-            '"max_agent_steps"',
-            '"max_tool_result_bytes"',
+            'fn parseProjectSafeFields(root: std.json.Value) void {\n',
+            'fn parseProjectSafeFields(root: std.json.Value) void {\n    _ = root.object.get("provider_strict");\n',
         )
-        self.assertEqual([], self.run_check())
+        self.assertOnly(self.run_check(), "settings", 'may set "provider_strict"')
+
+    def test_project_safe_entry_the_parser_does_not_read_fails(self) -> None:
+        self.edit(
+            check_cli_shape.SETTINGS_KEYS,
+            '.{ .name = "model", .where = .profile },\n',
+            '.{ .name = "model", .where = .profile },\n    .{ .name = "provider_order", .where = .project_safe },\n',
+        )
+        problems = self.run_check()
+        self.assertOnly(problems, "settings", 'marks "provider_order" project-safe')
+        self.assertEqual(check_cli_shape.SETTINGS_KEYS, problems[0].path)
+
+    def test_missing_settings_list_is_a_source_error(self) -> None:
+        self.files[check_cli_shape.SETTINGS_KEYS] = "pub const keys = [_]Key{};\n"
+        with self.assertRaises(check_cli_shape.ShapeSourceError):
+            self.run_check()
 
     def test_missing_parser_is_a_source_error(self) -> None:
         self.edit(check_cli_shape.CONFIG_RUNTIME, "fn parseProfileOnlyFields(", "fn parseProfileRenamed(")

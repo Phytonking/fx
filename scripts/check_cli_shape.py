@@ -7,8 +7,12 @@ The check reads the real source rather than a model of it:
   flags     flags are kebab-case and carry no value inside their name
   parsing   CLI code reads flags through cli_flags and the option lists help
             renders, so no command compares an argument with a flag by hand
-  settings  settings keys are snake_case
-  warnings  every profile-only key warns when a project .fx.json sets it
+  settings  settings keys are snake_case, and the settings list in
+            src/core/config/settings_keys.zig marks exactly the keys
+            parseProjectSafeFields reads as project-safe
+  warnings  every key the profile parser reads is in the settings list as
+            profile-only, so fx doctor knows it and a project .fx.json that
+            sets it gets a warning
 
 Known exceptions live in scripts/cli_shape_registry.json, each with the reason
 and the finding that removes it. An exception that no longer matches anything
@@ -31,6 +35,7 @@ COMMANDS = "src/builtins/commands.zig"
 CLI_SURFACE = "src/core/cli/cli_surface.zig"
 CLI_ASK = "src/core/cli/cli_ask.zig"
 CONFIG_RUNTIME = "src/core/config/config_runtime.zig"
+SETTINGS_KEYS = "src/core/config/settings_keys.zig"
 
 JOBS = {
     "setting-override",
@@ -52,7 +57,7 @@ GETENV_LITERAL = re.compile(r'getenv\("([A-Za-z_][A-Za-z0-9_]*)"\)')
 FLAG_LITERAL = re.compile(r'"(--?[A-Za-z0-9][A-Za-z0-9_<>-]*)=?"')
 KEY_READ = re.compile(r'\.(?:get|getPtr|contains)\("([^"]+)"\)')
 TOP_LEVEL_KEY_READ = re.compile(r'\broot\.object\.(?:get|getPtr|contains)\("([^"]+)"\)')
-LIST_ENTRY = re.compile(r'^\s*"([A-Za-z0-9_]+)",')
+SETTING_ENTRY = re.compile(r'\.name = "([^"]+)", \.where = \.([a-z_]+)')
 TEST_START = re.compile(r"^\s*test\b")
 HAND_COMPARE = re.compile(r'(?:eql|startsWith)\(u8,\s*[^,]+,\s*"(-{1,2}[A-Za-z][A-Za-z0-9-]*=?)"')
 CLI_DIR = "src/core/cli"
@@ -294,25 +299,48 @@ class Checker:
                 if SNAKE_KEY.match(key) or self.excepted("setting_keys", key):
                     continue
                 self.report(line, "settings", f'settings key "{key}" must be snake_case (shape rule S-8)')
-        warned = {
-            match.group(1)
-            for line in function_body(config, "isProfileOnlySettingKey")
-            if (match := LIST_ENTRY.match(line.text))
+        listed = {
+            match.group(1): (line, match.group(2))
+            for line in self.lines(SETTINGS_KEYS)
+            if (match := SETTING_ENTRY.search(line.text))
         }
-        if not warned:
-            raise ShapeSourceError("cannot read the isProfileOnlySettingKey list")
+        if not listed:
+            raise ShapeSourceError(f"cannot read the settings list in {SETTINGS_KEYS}")
         reported: set[str] = set()
         for line in profile:
             for match in TOP_LEVEL_KEY_READ.finditer(line.text):
                 key = match.group(1)
-                if key in warned or key in reported:
+                if key in reported or listed.get(key, (None, ""))[1] == "profile":
                     continue
                 reported.add(key)
                 self.report(
                     line,
                     "warnings",
                     f'"{key}" is profile-only, so a project .fx.json that sets it is '
-                    "ignored. Add it to isProfileOnlySettingKey so the user is told.",
+                    f"ignored. List it in {SETTINGS_KEYS} with .where = .profile so the "
+                    "user is told and fx doctor knows the key.",
+                )
+        project_reads: set[str] = set()
+        for line in project:
+            for match in TOP_LEVEL_KEY_READ.finditer(line.text):
+                key = match.group(1)
+                project_reads.add(key)
+                if key in reported or listed.get(key, (None, ""))[1] == "project_safe":
+                    continue
+                reported.add(key)
+                self.report(
+                    line,
+                    "settings",
+                    f'.fx.json may set "{key}", so list it in {SETTINGS_KEYS} with .where = .project_safe.',
+                )
+        for key, (line, where) in sorted(listed.items()):
+            if where == "project_safe" and key not in project_reads:
+                self.report(
+                    line,
+                    "settings",
+                    f'{SETTINGS_KEYS} marks "{key}" project-safe, but parseProjectSafeFields '
+                    "doesn't read it. Mark it .profile, or read it there.",
+                    SETTINGS_KEYS,
                 )
 
 

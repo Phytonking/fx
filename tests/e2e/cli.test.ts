@@ -698,6 +698,50 @@ describe("cli: status", () => {
   );
 
   test(
+    "doctor names unknown settings keys while status stays quiet",
+    async () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-unknown-settings-")));
+      try {
+        const home = join(root, "home");
+        const cwd = join(root, "workspace");
+        mkdirSync(join(home, ".fx"), { recursive: true });
+        mkdirSync(cwd);
+        writeFileSync(
+          join(home, ".fx", "settings.json"),
+          JSON.stringify({
+            fast_mdoe: true,
+            statusLine: { contxt: true },
+            maxxing_mode: 1,
+            workspaces: { [cwd]: { efort: "low" } },
+          }) + "\n",
+          { mode: 0o600 },
+        );
+        writeFileSync(join(cwd, ".fx.json"), JSON.stringify({ max_agent_step: 5 }) + "\n");
+        const env = { ...NO_GATEWAY_AUTH, HOME: home, FX_DISABLE_KEYCHAIN: "1" };
+
+        const doctor = await runFx(["doctor", "--json"], { cwd, env });
+        expect(doctor.code).toBe(0);
+        const warnings = JSON.parse(doctor.stdout)
+          .checks.filter((check: { name: string; status: string }) => check.name === "config" && check.status === "warn")
+          .map((check: { detail: string }) => check.detail);
+        expect(warnings).toEqual([
+          "unknown setting fast_mdoe in ~/.fx/settings.json (did you mean fast_mode?)",
+          "unknown setting statusLine.contxt in ~/.fx/settings.json (did you mean statusLine.context?)",
+          `unknown setting efort in ~/.fx/settings.json for workspace ${cwd} (did you mean effort?)`,
+          "unknown setting max_agent_step in .fx.json (did you mean max_agent_steps?)",
+        ]);
+
+        const status = await runFx(["status"], { cwd, env });
+        expect(status.code).toBe(0);
+        expect(status.stderr).toBe("");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
     "status and doctor share the missing auth snapshot",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "fx-e2e-status-noauth-"));

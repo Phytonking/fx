@@ -8,6 +8,7 @@ const compactor = @import("../compactor/compactor.zig");
 const types = @import("../shared/types.zig");
 const workspace_access = @import("../workspace/workspace_access.zig");
 const settings_store = @import("settings_store.zig");
+const settings_keys = @import("settings_keys.zig");
 const project_config = @import("../mcp/project_config.zig");
 const model_provider = @import("model_provider.zig");
 const model_preferences = @import("model_preferences.zig");
@@ -831,45 +832,6 @@ fn hasLegacyWorkspacePreferences(root: std.json.Value) bool {
     return false;
 }
 
-fn isProfileOnlySettingKey(key: []const u8) bool {
-    inline for (&.{
-        "model",
-        "models",
-        "provider",
-        "providers",
-        "codex_model",
-        "grok_model",
-        "review_model",
-        "effort",
-        "fast_mode",
-        "ultrafast_mode",
-        "fast_mode_model_bound",
-        "slash_menu_categories",
-        "collapse_tool_calls",
-        "theme",
-        "session_titles",
-        "startup_scrollback",
-        "prompt_history",
-        "statusLine",
-        "notifications",
-        "context_limits",
-        "skill_match_fuzzy",
-        "first_call_tool_choice",
-        "auto_compact_percent",
-        "auto_upgrade",
-        "update_channel",
-        "permission_mode",
-        "credential_source",
-        "yolo_acknowledged",
-        "permission",
-        "additional_directories",
-        "skill_symlink_authorities",
-    }) |profile_key| {
-        if (std.mem.eql(u8, key, profile_key)) return true;
-    }
-    return false;
-}
-
 fn appendIgnoredProjectProfileSettingDiagnostics(
     alloc: Allocator,
     diagnostics: *std.ArrayList(ConfigDiagnostic),
@@ -878,7 +840,7 @@ fn appendIgnoredProjectProfileSettingDiagnostics(
     if (root != .object) return;
     var iterator = root.object.iterator();
     while (iterator.next()) |entry| {
-        if (!isProfileOnlySettingKey(entry.key_ptr.*)) continue;
+        if (!settings_keys.ignoredInProject(entry.key_ptr.*)) continue;
         try diagnostics.append(alloc, .{
             .layer = .project,
             .cause = .ignored_project_user_only_setting,
@@ -1427,6 +1389,15 @@ fn readOptionalFile(alloc: Allocator, path: []const u8) !?[]u8 {
     const stat = try file.stat(io_mod.getIo());
     if (stat.kind != .file or stat.size > max_settings_bytes) return error.StreamTooLong;
     return try io_mod.readFileToEnd(alloc, &file, max_settings_bytes + 1);
+}
+
+/// Reads and parses one settings file for inspection, such as `fx doctor`'s
+/// unknown-key check, with the same size limit as loading. Null when the file
+/// is absent. Caller deinits the result, which owns all of its strings.
+pub fn readSettingsFileJson(alloc: Allocator, path: []const u8) !?std.json.Parsed(std.json.Value) {
+    const bytes = try readOptionalFile(alloc, path) orelse return null;
+    defer alloc.free(bytes);
+    return try std.json.parseFromSlice(std.json.Value, alloc, bytes, .{ .allocate = .alloc_always });
 }
 
 fn parseSettingsJson(alloc: Allocator, json_text: []const u8) !Settings {
