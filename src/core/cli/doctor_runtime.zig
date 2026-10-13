@@ -5,7 +5,7 @@ const io_mod = @import("../shared/io.zig");
 const agent_steps = @import("../config/agent_steps.zig");
 const config_runtime = @import("../config/config_runtime.zig");
 const settings_keys = @import("../config/settings_keys.zig");
-const cli_flags = @import("cli_flags.zig");
+const settings_messages = @import("settings_messages.zig");
 const host = @import("../hosts/host.zig");
 const mcp_contract = @import("../mcp/mcp_contract.zig");
 const session_store = @import("../session/session_store.zig");
@@ -186,40 +186,8 @@ fn appendUnknownSettingChecksFor(
     const unknown = try settings_keys.findUnknown(alloc, parsed.value, file);
     defer alloc.free(unknown);
     for (unknown) |key| {
-        try appendCheckOwned(checks, alloc, "config", .warn, try formatUnknownSetting(alloc, key, display_path));
+        try appendCheckOwned(checks, alloc, "config", .warn, try settings_messages.formatUnknownSetting(alloc, key, display_path));
     }
-}
-
-/// `unknown setting statusLine.contxt in ~/.fx/settings.json (did you mean
-/// statusLine.context?)`. Caller owns the result.
-fn formatUnknownSetting(alloc: Allocator, key: settings_keys.UnknownKey, display_path: []const u8) ![]u8 {
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    errdefer out.deinit();
-    const writer = &out.writer;
-    try writer.writeAll("unknown setting ");
-    if (key.parent) |parent| try writer.print("{s}.", .{parent});
-    try writer.print("{s} in {s}", .{ key.name, display_path });
-    if (key.workspace) |workspace| try writer.print(" for workspace {s}", .{workspace});
-    if (closestSetting(key.name, key.known)) |suggestion| {
-        try writer.writeAll(" (did you mean ");
-        if (key.parent) |parent| try writer.print("{s}.", .{parent});
-        try writer.print("{s}?)", .{suggestion});
-    }
-    return out.toOwnedSlice();
-}
-
-/// The known key closest to `name` within two edits, if any.
-fn closestSetting(name: []const u8, known: []const []const u8) ?[]const u8 {
-    var best: ?[]const u8 = null;
-    var best_distance: usize = 3;
-    for (known) |candidate| {
-        const distance = cli_flags.editDistance(name, candidate) orelse continue;
-        if (distance < best_distance) {
-            best = candidate;
-            best_distance = distance;
-        }
-    }
-    return best;
 }
 
 fn appendConfigCheck(
@@ -779,32 +747,6 @@ fn permissionModeLabel(mode: types.PermissionMode) []const u8 {
         .auto => "auto",
         .yolo => "full access",
     };
-}
-
-test "unknown settings name the file, the workspace, and the closest key" {
-    const alloc = std.testing.allocator;
-    const cases = [_]struct { key: settings_keys.UnknownKey, file: []const u8, expected: []const u8 }{
-        .{
-            .key = .{ .name = "fast_mdoe", .known = &.{ "fast_mode", "model" } },
-            .file = "~/.fx/settings.json",
-            .expected = "unknown setting fast_mdoe in ~/.fx/settings.json (did you mean fast_mode?)",
-        },
-        .{
-            .key = .{ .name = "contxt", .parent = "statusLine", .workspace = "/w", .known = &.{ "context", "session" } },
-            .file = "~/.fx/settings.json",
-            .expected = "unknown setting statusLine.contxt in ~/.fx/settings.json for workspace /w (did you mean statusLine.context?)",
-        },
-        .{
-            .key = .{ .name = "colour", .known = &.{ "model", "theme" } },
-            .file = ".fx.json",
-            .expected = "unknown setting colour in .fx.json",
-        },
-    };
-    for (cases) |case| {
-        const detail = try formatUnknownSetting(alloc, case.key, case.file);
-        defer alloc.free(detail);
-        try std.testing.expectEqualStrings(case.expected, detail);
-    }
 }
 
 test "format config presence names existing layers" {

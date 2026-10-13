@@ -21,6 +21,8 @@ const update_notes = @import("../upgrade/update_notes.zig");
 const update_target = @import("../upgrade/update_target.zig");
 const workspace_access = @import("../workspace/workspace_access.zig");
 const workspace_commands = @import("../workspace/workspace_commands.zig");
+const settings_entries = @import("../config/settings_entries.zig");
+const settings_keys = @import("../config/settings_keys.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -422,6 +424,115 @@ pub fn workspaceErrorMessage(err: anyerror) ?[]const u8 {
         error.DurablePathUnsafe, error.PrivateStatePermissionsUnsupported => "settings path is unsafe",
         else => "workspace update failed",
     };
+}
+
+pub const ConfigUnknownSetting = struct {
+    key: settings_keys.UnknownKey,
+    /// Where the key is: `~/.fx/settings.json` or `.fx.json`.
+    file: []const u8,
+    suggestion: ?[]const u8 = null,
+};
+
+/// `fx config list` and `fx config get` in git's format: one `key=value`
+/// per line, lowest precedence first, with the origin first and a tab when
+/// asked.
+pub const ConfigSnapshot = struct {
+    entries: []const settings_entries.Entry,
+    /// Keys fx doesn't know. The JSON form lists them; the text form leaves
+    /// them to the warnings on stderr.
+    unknown: []const ConfigUnknownSetting = &.{},
+    workspace_root: []const u8,
+    show_origin: bool = false,
+    /// `fx config get` of one plain key prints the value alone.
+    value_only: bool = false,
+
+    pub fn render(self: ConfigSnapshot, alloc: Allocator, format: OutputFormat) ![]u8 {
+        return switch (format) {
+            .text => self.renderText(alloc),
+            .json => self.renderJson(alloc),
+        };
+    }
+
+    fn renderText(self: ConfigSnapshot, alloc: Allocator) ![]u8 {
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        defer out.deinit();
+        for (self.entries) |entry| {
+            if (self.show_origin) {
+                switch (entry.origin) {
+                    .project => try out.writer.writeAll("file:.fx.json"),
+                    .global => try out.writer.writeAll("file:~/.fx/settings.json"),
+                    .workspace => {
+                        try out.writer.writeAll("workspace:");
+                        try writeTerminalSafe(&out.writer, alloc, self.workspace_root);
+                    },
+                }
+                try out.writer.writeByte('\t');
+            }
+            if (!self.value_only) {
+                try writeTerminalSafe(&out.writer, alloc, entry.key);
+                try out.writer.writeByte('=');
+            }
+            try writeConfigValue(&out.writer, alloc, entry.value);
+            try out.writer.writeByte('\n');
+        }
+        return try out.toOwnedSlice();
+    }
+
+    fn renderJson(self: ConfigSnapshot, alloc: Allocator) ![]u8 {
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        defer out.deinit();
+        try out.writer.writeAll("{\"kind\":\"config\",\"entries\":[");
+        for (self.entries, 0..) |entry, index| {
+            if (index > 0) try out.writer.writeByte(',');
+            try out.writer.writeAll("{\"key\":");
+            try std.json.Stringify.value(entry.key, .{}, &out.writer);
+            try out.writer.writeAll(",\"value\":");
+            try std.json.Stringify.value(entry.value, .{}, &out.writer);
+            try out.writer.print(",\"origin\":\"{s}\",\"file\":", .{@tagName(entry.origin)});
+            try std.json.Stringify.value(if (entry.origin == .project) ".fx.json" else "~/.fx/settings.json", .{}, &out.writer);
+            if (entry.origin == .workspace) {
+                try out.writer.writeAll(",\"workspace\":");
+                try std.json.Stringify.value(self.workspace_root, .{}, &out.writer);
+            }
+            try out.writer.writeByte('}');
+        }
+        try out.writer.writeAll("],\"unknown\":[");
+        for (self.unknown, 0..) |unknown, index| {
+            if (index > 0) try out.writer.writeByte(',');
+            try out.writer.writeAll("{\"key\":\"");
+            if (unknown.key.parent) |parent| try std.json.Stringify.encodeJsonStringChars(parent, .{}, &out.writer);
+            if (unknown.key.parent != null) try out.writer.writeByte('.');
+            try std.json.Stringify.encodeJsonStringChars(unknown.key.name, .{}, &out.writer);
+            try out.writer.writeAll("\",\"file\":");
+            try std.json.Stringify.value(unknown.file, .{}, &out.writer);
+            try out.writer.writeAll(",\"workspace\":");
+            try std.json.Stringify.value(unknown.key.workspace, .{}, &out.writer);
+            try out.writer.writeAll(",\"suggestion\":");
+            try std.json.Stringify.value(unknown.suggestion, .{}, &out.writer);
+            try out.writer.writeByte('}');
+        }
+        try out.writer.writeAll("]}");
+        return try out.toOwnedSlice();
+    }
+};
+
+/// A settings value as `fx config` prints it: text and numbers as they are,
+/// lists and objects as compact JSON.
+fn writeConfigValue(writer: *std.Io.Writer, alloc: Allocator, value: std.json.Value) !void {
+    switch (value) {
+        .string => |text| try writeTerminalSafe(writer, alloc, text),
+        .number_string => |text| try writeTerminalSafe(writer, alloc, text),
+        .bool => |flag| try writer.writeAll(if (flag) "true" else "false"),
+        .integer => |number| try writer.print("{d}", .{number}),
+        .float => |number| try writer.print("{d}", .{number}),
+        .null => try writer.writeAll("null"),
+        .array, .object => {
+            var json: std.Io.Writer.Allocating = .init(alloc);
+            defer json.deinit();
+            try std.json.Stringify.value(value, .{}, &json.writer);
+            try writeTerminalSafe(writer, alloc, json.written());
+        },
+    }
 }
 
 pub const WorkspaceSnapshot = struct {

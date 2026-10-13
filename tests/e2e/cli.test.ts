@@ -742,6 +742,74 @@ describe("cli: status", () => {
   );
 
   test(
+    "fx config lists settings in precedence order and gets the value fx uses",
+    async () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-config-")));
+      try {
+        const home = join(root, "home");
+        const cwd = join(root, "workspace");
+        mkdirSync(join(home, ".fx"), { recursive: true });
+        mkdirSync(cwd);
+        const settingsPath = join(home, ".fx", "settings.json");
+        writeFileSync(
+          settingsPath,
+          JSON.stringify({
+            fast_mode: true,
+            fast_mdoe: 1,
+            statusLine: { context: true },
+            models: { codex: "gpt-5.5" },
+            provider_order: ["a", "b"],
+            workspaces: { [cwd]: { fast_mode: false } },
+          }) + "\n",
+          { mode: 0o600 },
+        );
+        writeFileSync(join(cwd, ".fx.json"), JSON.stringify({ max_agent_steps: 7, model: "ignored/here" }) + "\n");
+        const env = { ...NO_GATEWAY_AUTH, HOME: home, FX_DISABLE_KEYCHAIN: "1" };
+        const before = readFileSync(settingsPath, "utf8");
+
+        const list = await runFx(["config", "list", "--show-origin"], { cwd, env });
+        expect(list.code).toBe(0);
+        expect(list.stdout).toBe(
+          [
+            "file:.fx.json\tmax_agent_steps=7",
+            "file:~/.fx/settings.json\tfast_mode=true",
+            "file:~/.fx/settings.json\tstatusLine.context=true",
+            "file:~/.fx/settings.json\tmodels.codex=gpt-5.5",
+            'file:~/.fx/settings.json\tprovider_order=["a","b"]',
+            `workspace:${cwd}\tfast_mode=false`,
+            "",
+          ].join("\n"),
+        );
+        expect(list.stderr).toBe("fx config: unknown setting fast_mdoe in ~/.fx/settings.json (did you mean fast_mode?)\n");
+
+        const get = await runFx(["config", "get", "fast_mode"], { cwd, env });
+        expect([get.code, get.stdout, get.stderr]).toEqual([0, "false\n", ""]);
+        const global = await runFx(["config", "get", "fast_mode", "--global"], { cwd, env });
+        expect([global.code, global.stdout]).toEqual([0, "true\n"]);
+        const unset = await runFx(["config", "get", "theme"], { cwd, env });
+        expect([unset.code, unset.stdout, unset.stderr]).toEqual([1, "", ""]);
+
+        const typo = await runFx(["config", "get", "fast_mdoe"], { cwd, env });
+        expect(typo.code).toBe(2);
+        expect(typo.stderr).toStartWith("fx config: unknown setting fast_mdoe (did you mean fast_mode?)\nusage: fx config");
+
+        const json = await runFx(["config", "--workspace", "--json"], { cwd, env });
+        expect(json.code).toBe(0);
+        expect(JSON.parse(json.stdout)).toEqual({
+          kind: "config",
+          entries: [{ key: "fast_mode", value: false, origin: "workspace", file: "~/.fx/settings.json", workspace: cwd }],
+          unknown: [],
+        });
+
+        expect(readFileSync(settingsPath, "utf8")).toBe(before);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
     "status and doctor share the missing auth snapshot",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "fx-e2e-status-noauth-"));

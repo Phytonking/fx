@@ -39,7 +39,7 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 
 | Concept | Name |
 |---|---|
-| Settings command | `fx config list\|get\|set\|unset` with `--global`, `--workspace`, `--show-origin` (planned) |
+| Settings command | `fx config list\|get` with `--global`, `--workspace`, `--show-origin`; `set\|unset` planned |
 | Generic per-run override | Working name `--config key=value` (planned; spelling not settled) |
 | Sound | `sound.turn_end`, `sound.attention_required`, `sound.max` (today `notifications.*`, still read); `/sound on\|off\|max` and `FX_SOUND` are presets for the group |
 | Status line | `status_line.*` (today `statusLine`, still read) |

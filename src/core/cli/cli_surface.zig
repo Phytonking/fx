@@ -9,6 +9,10 @@ const acp_runner = @import("acp_runner.zig");
 const cli_ask = @import("cli_ask.zig");
 const cli_replay = @import("cli_replay.zig");
 const cli_flags = @import("cli_flags.zig");
+const cli_config = @import("cli_config.zig");
+const settings_messages = @import("settings_messages.zig");
+const settings_entries = @import("../config/settings_entries.zig");
+const settings_keys = @import("../config/settings_keys.zig");
 const builtin_commands = @import("../../builtins/commands.zig");
 const command_specs = @import("../slash_commands/command_specs.zig");
 const collections = @import("../shared/collections.zig");
@@ -92,6 +96,7 @@ pub const Command = union(enum) {
     upgrade: []const [:0]const u8,
     replay: []const [:0]const u8,
     workspace: []const [:0]const u8,
+    config: []const [:0]const u8,
     unknown: []const u8,
 };
 
@@ -663,6 +668,7 @@ pub fn parse(command_catalog: CommandCatalog, args: []const [:0]const u8) Comman
         'b' => if (command_specs.matchesTopLevel(command_catalog, command, .credits)) return .{ .credits = args[1..] },
         'c' => {
             if (command_specs.matchesTopLevel(command_catalog, command, .credits)) return .{ .credits = args[1..] };
+            if (command_specs.matchesTopLevel(command_catalog, command, .config)) return .{ .config = args[1..] };
         },
         'd' => {
             if (command_specs.matchesTopLevel(command_catalog, command, .doctor)) return .{ .doctor = args[1..] };
@@ -2181,6 +2187,19 @@ fn runNonInteractiveWithDeps(
             if (opts.format == .json) try writeStdout(deps, "\n");
             return if (result.snapshot.status == .failed) .handled_failure else .handled_success;
         },
+        .config => |rest| {
+            var unknown_key: ?settings_keys.UnknownPart = null;
+            const opts = cli_config.parseArgs(rest, &unknown_key) catch |err| {
+                if (unknown_key) |part| if (!argsContainJson(rest)) {
+                    const message = try settings_messages.formatUnknownPath(alloc, part);
+                    defer alloc.free(message);
+                    try writeStderrLine(alloc, deps, "fx config: {s}\n", message);
+                };
+                try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .config, "config", err, rest);
+                return usage_failure;
+            };
+            return runConfig(alloc, deps, opts);
+        },
         .replay => |rest| {
             const exit_code = try cli_replay.run(alloc, rest);
             return if (exit_code == 0) .handled_success else .{ .handled_exit = exit_code };
@@ -3251,6 +3270,7 @@ fn parsedOptions(kind: TopLevelKind) ?[]const command_specs.OptionDoc {
         .usage => &builtin_commands.usage_options,
         .upgrade => &builtin_commands.upgrade_options,
         .workspace => &builtin_commands.workspace_options,
+        .config => &builtin_commands.config_options,
         .session => &builtin_commands.session_options,
         .acp => &builtin_commands.acp_options,
         .pr, .issue => &builtin_commands.pr_options,
@@ -3853,7 +3873,9 @@ fn commandFailureMessage(err: anyerror) ?[]const u8 {
         error.InvalidSessionRecoveryArgs,
         error.InvalidResumeArgs,
         error.InvalidUpgradeArgs,
+        error.InvalidConfigArgs,
         => "invalid arguments",
+        error.UnknownConfigSetting => "unknown setting",
         else => null,
     };
 }
@@ -4128,6 +4150,61 @@ test "ACP arguments accept an explicit ultrafast override" {
     const last = try parseAcpArgs(&.{ "--ultrafast", "--no-ultrafast", "--model=a", "--model", "b" });
     try std.testing.expectEqual(@as(?bool, false), last.ultrafast_override);
     try std.testing.expectEqualStrings("b", last.model.?);
+}
+
+/// Prints the settings `fx config list` or `fx config get` asks for. `get` of a
+/// key that isn't set prints nothing and fails, as `git config get` does.
+fn runConfig(alloc: Allocator, deps: RunDeps, opts: cli_config.Options) !RunResult {
+    const workspace_root = try io_mod.realpathAlloc(alloc, ".");
+    defer alloc.free(workspace_root);
+    var paths = try config_runtime.discoverPaths(alloc, workspace_root);
+    defer paths.deinit(alloc);
+
+    var failed_file: ?[]const u8 = null;
+    var loaded = cli_config.load(alloc, paths, workspace_root, opts.scope, &failed_file) catch |err| {
+        const file = failed_file orelse return err;
+        const message = try alloc.print("{s} {s}", .{ file, cli_config.loadFailureReason(err) });
+        defer alloc.free(message);
+        if (opts.format == .json) {
+            try writeJsonCommandFailure(alloc, deps, "config", err, message);
+        } else {
+            try writeStderrLine(alloc, deps, "fx config: {s}\n", message);
+        }
+        return .handled_failure;
+    };
+    defer loaded.deinit(alloc);
+
+    const matches: ?[]settings_entries.Entry = if (opts.key) |key|
+        try settings_entries.lookup(alloc, loaded.entries.items, key)
+    else
+        null;
+    defer if (matches) |found| alloc.free(found);
+    const entries = matches orelse loaded.entries.items;
+    const snapshot: output_contracts.ConfigSnapshot = .{
+        .entries = entries,
+        .unknown = if (opts.key == null) loaded.unknown else &.{},
+        .workspace_root = workspace_root,
+        .show_origin = opts.show_origin,
+        .value_only = opts.key != null and entries.len == 1 and std.mem.eql(u8, entries[0].key, opts.key.?),
+    };
+    if (opts.format == .text) {
+        for (snapshot.unknown) |unknown| {
+            const message = try settings_messages.formatUnknownSetting(alloc, unknown.key, unknown.file);
+            defer alloc.free(message);
+            try writeStderrLine(alloc, deps, "fx config: {s}\n", message);
+        }
+    }
+
+    const text = try snapshot.render(alloc, opts.format);
+    defer alloc.free(text);
+    try writeFormattedOutput(deps, text, opts.format);
+    return if (opts.key != null and entries.len == 0) .handled_failure else .handled_success;
+}
+
+fn writeStderrLine(alloc: Allocator, deps: RunDeps, comptime format: []const u8, value: []const u8) !void {
+    const line = try alloc.print(format, .{value});
+    defer alloc.free(line);
+    try writeStderr(deps, line);
 }
 
 fn parseLocalSurfaceArgs(args: []const [:0]const u8) !LocalSurfaceOptions {

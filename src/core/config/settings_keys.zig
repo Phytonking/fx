@@ -21,8 +21,17 @@ pub const Key = struct {
     name: []const u8,
     where: Where,
     /// Fixed child keys of an object setting, such as `statusLine.context`.
-    /// Empty for scalars and for maps whose keys are free-form.
+    /// Empty for plain values and for maps.
     children: []const []const u8 = &.{},
+    /// An object whose keys are free-form, such as `models.codex`.
+    map: bool = false,
+
+    pub fn hasChild(self: Key, name: []const u8) bool {
+        for (self.children) |child| {
+            if (std.mem.eql(u8, child, name)) return true;
+        }
+        return false;
+    }
 };
 
 pub const keys = [_]Key{
@@ -32,7 +41,7 @@ pub const keys = [_]Key{
     .{ .name = "codex_model", .where = .profile },
     .{ .name = "collapse_tool_calls", .where = .profile },
     .{ .name = "context", .where = .project_safe },
-    .{ .name = "context_limits", .where = .profile },
+    .{ .name = "context_limits", .where = .profile, .map = true },
     .{ .name = "credential_source", .where = .profile },
     .{ .name = "disabledMcpjsonServers", .where = .profile },
     .{ .name = "effort", .where = .profile },
@@ -47,15 +56,15 @@ pub const keys = [_]Key{
     .{ .name = "max_tool_result_bytes", .where = .project_safe },
     .{ .name = "maxxing_mode", .where = .retired },
     .{ .name = "model", .where = .profile },
-    .{ .name = "models", .where = .profile },
+    .{ .name = "models", .where = .profile, .map = true },
     .{ .name = "notifications", .where = .profile, .children = &.{ "attention_required", "max", "turn_end" } },
-    .{ .name = "permission", .where = .profile },
+    .{ .name = "permission", .where = .profile, .map = true },
     .{ .name = "permission_mode", .where = .profile },
     .{ .name = "prompt_history", .where = .profile, .children = &.{"enabled"} },
     .{ .name = "provider", .where = .profile },
     .{ .name = "provider_order", .where = .project_safe },
     .{ .name = "provider_strict", .where = .project_safe },
-    .{ .name = "providers", .where = .profile },
+    .{ .name = "providers", .where = .profile, .map = true },
     .{ .name = "review_model", .where = .profile },
     .{ .name = "session_titles", .where = .profile },
     // Retired, but still read so that fx can explain the migration.
@@ -68,7 +77,7 @@ pub const keys = [_]Key{
     .{ .name = "ultrafast_mode", .where = .profile },
     .{ .name = "update_channel", .where = .profile },
     .{ .name = "web_fetch_worker_model", .where = .retired },
-    .{ .name = "workspaces", .where = .profile },
+    .{ .name = "workspaces", .where = .profile, .map = true },
     .{ .name = "yolo_acknowledged", .where = .profile },
 };
 
@@ -147,7 +156,7 @@ fn appendUnknown(
         if (key.children.len == 0 or entry.value_ptr.* != .object) continue;
         var children = entry.value_ptr.object.iterator();
         while (children.next()) |child| {
-            if (contains(key.children, child.key_ptr.*)) continue;
+            if (key.hasChild(child.key_ptr.*)) continue;
             try found.append(alloc, .{
                 .name = child.key_ptr.*,
                 .parent = key.name,
@@ -158,11 +167,30 @@ fn appendUnknown(
     }
 }
 
-fn contains(list: []const []const u8, name: []const u8) bool {
-    for (list) |item| {
-        if (std.mem.eql(u8, item, name)) return true;
-    }
-    return false;
+pub const UnknownPart = struct {
+    /// The part of the path that names no setting.
+    name: []const u8,
+    /// The setting holding it, such as `statusLine`, or null at the top level.
+    parent: ?[]const u8 = null,
+    /// The known keys at the same level, for a "did you mean" suggestion.
+    known: []const []const u8,
+};
+
+/// Null when a dotted `path` names a setting: a listed key, a fixed child
+/// such as `statusLine.context`, or any path into a map such as
+/// `models.codex`. Otherwise the part that isn't known. Retired keys aren't
+/// settings. Slices borrow from `path` and the list.
+pub fn unknownPart(path: []const u8) ?UnknownPart {
+    const dot = std.mem.findScalar(u8, path, '.');
+    const head = path[0 .. dot orelse path.len];
+    const key = find(head) orelse return .{ .name = head, .known = &names };
+    if (key.where == .retired) return .{ .name = head, .known = &names };
+    const at = dot orelse return null;
+    if (key.map) return null;
+    const rest = path[at + 1 ..];
+    if (key.children.len == 0) return .{ .name = rest, .parent = key.name, .known = &.{} };
+    if (std.mem.findScalar(u8, rest, '.') == null and key.hasChild(rest)) return null;
+    return .{ .name = rest, .parent = key.name, .known = key.children };
 }
 
 test "keys are unique and sorted so the list stays easy to scan" {
@@ -228,6 +256,28 @@ test "a project file is checked at its top level only" {
     defer alloc.free(unknown);
     try std.testing.expectEqual(@as(usize, 1), unknown.len);
     try std.testing.expectEqualStrings("max_agent_step", unknown[0].name);
+}
+
+test "dotted paths name listed keys, fixed children, and paths into maps" {
+    for ([_][]const u8{ "fast_mode", "statusLine", "statusLine.context", "models", "models.codex", "providers.local.base_url" }) |path| {
+        try std.testing.expect(unknownPart(path) == null);
+    }
+
+    const top = unknownPart("fast_mdoe").?;
+    try std.testing.expectEqualStrings("fast_mdoe", top.name);
+    try std.testing.expect(top.parent == null and top.known.len == keys.len);
+
+    const child = unknownPart("statusLine.contxt").?;
+    try std.testing.expectEqualStrings("contxt", child.name);
+    try std.testing.expectEqualStrings("statusLine", child.parent.?);
+    try std.testing.expectEqual(@as(usize, 3), child.known.len);
+
+    const under_value = unknownPart("fast_mode.on").?;
+    try std.testing.expectEqualStrings("on", under_value.name);
+    try std.testing.expectEqual(@as(usize, 0), under_value.known.len);
+
+    try std.testing.expect(unknownPart("statusLine.context.x") != null);
+    try std.testing.expect(unknownPart("maxxing_mode") != null);
 }
 
 test "a non-object file has no unknown keys" {

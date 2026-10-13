@@ -48,6 +48,15 @@ pub const workspace_options = [_]command_specs.OptionDoc{
     json_option,
 };
 
+pub const config_options = [_]command_specs.OptionDoc{
+    .{ .flag = "list", .description = "List the values set in each settings file (default)" },
+    .{ .flag = "get <key>", .description = "Print the value fx uses for a setting" },
+    .{ .flag = "--global", .description = "Only the profile's own settings" },
+    .{ .flag = "--workspace", .description = "Only this workspace's override in the profile" },
+    .{ .flag = "--show-origin", .description = "Start each line with where the value is set" },
+    json_option,
+};
+
 pub const session_options = [_]command_specs.OptionDoc{
     .{ .flag = "last", .description = "Inspect the current workspace session" },
     .{ .flag = "--id <id>", .description = "Inspect a saved session by exact id" },
@@ -329,6 +338,17 @@ pub const top_level_specs = [_]TopLevelSpec{
             "Additional directories are stored for the current primary workspace.",
         },
     },
+    .{
+        .kind = .config,
+        .token = "config",
+        .usage = "config [list|get <key>] [--global|--workspace] [--show-origin] [--json]",
+        .summary = "Show the values set in the settings files",
+        .options = &config_options,
+        .details = &.{
+            "Values come from .fx.json, ~/.fx/settings.json, and this workspace's override in it. When a key repeats, the last line is the one fx uses.",
+            "Keys are dotted, such as statusLine.context. A flag or an FX_* variable can override a value for one run; fx status shows what a run uses.",
+        },
+    },
     command_specs.slack_install_spec,
 };
 
@@ -371,6 +391,7 @@ pub const top_level_help_groups = [_]TopLevelHelpGroup{
         .{ .kind = .slack, .usage = "slack <install|status|refresh>" },
         .{ .kind = .permissions, .usage = "permissions" },
         .{ .kind = .workspace, .usage = "workspace" },
+        .{ .kind = .config, .usage = "config" },
         .{ .kind = .upgrade, .usage = "upgrade", .summary = "Upgrade fx on the selected release channel" },
         .{ .kind = .acp, .usage = "acp" },
         .{ .kind = .help, .usage = "help" },
