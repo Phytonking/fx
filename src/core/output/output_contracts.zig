@@ -465,6 +465,7 @@ pub const ConfigSnapshot = struct {
                         try out.writer.writeAll("workspace:");
                         try writeTerminalSafe(&out.writer, alloc, self.workspace_root);
                     },
+                    .env => try out.writer.print("env:{s}", .{entry.variable.?}),
                 }
                 try out.writer.writeByte('\t');
             }
@@ -488,8 +489,14 @@ pub const ConfigSnapshot = struct {
             try std.json.Stringify.value(entry.key, .{}, &out.writer);
             try out.writer.writeAll(",\"value\":");
             try std.json.Stringify.value(entry.value, .{}, &out.writer);
-            try out.writer.print(",\"origin\":\"{s}\",\"file\":", .{@tagName(entry.origin)});
-            try std.json.Stringify.value(if (entry.origin == .project) ".fx.json" else "~/.fx/settings.json", .{}, &out.writer);
+            try out.writer.print(",\"origin\":\"{s}\"", .{@tagName(entry.origin)});
+            if (entry.origin == .env) {
+                try out.writer.writeAll(",\"variable\":");
+                try std.json.Stringify.value(entry.variable.?, .{}, &out.writer);
+            } else {
+                try out.writer.writeAll(",\"file\":");
+                try std.json.Stringify.value(if (entry.origin == .project) ".fx.json" else "~/.fx/settings.json", .{}, &out.writer);
+            }
             if (entry.origin == .workspace) {
                 try out.writer.writeAll(",\"workspace\":");
                 try std.json.Stringify.value(self.workspace_root, .{}, &out.writer);
@@ -2493,6 +2500,22 @@ test "status JSON lists the session modes after the permission mode" {
     const plain = try snapshot.renderJson(std.testing.allocator);
     defer std.testing.allocator.free(plain);
     try std.testing.expect(std.mem.find(u8, plain, "\"modes\"") == null);
+}
+
+test "config entries from the environment name their variable" {
+    const alloc = std.testing.allocator;
+    const entries = [_]settings_entries.Entry{
+        .{ .key = "max_agent_steps", .value = .{ .integer = 5 }, .origin = .global },
+        .{ .key = "max_agent_steps", .value = .{ .integer = 20 }, .origin = .env, .variable = "FX_MAX_AGENT_STEPS" },
+    };
+    const snapshot: ConfigSnapshot = .{ .entries = &entries, .workspace_root = "/w", .show_origin = true };
+    const text = try snapshot.render(alloc, .text);
+    defer alloc.free(text);
+    try std.testing.expectEqualStrings("file:~/.fx/settings.json\tmax_agent_steps=5\nenv:FX_MAX_AGENT_STEPS\tmax_agent_steps=20\n", text);
+    const json = try snapshot.render(alloc, .json);
+    defer alloc.free(json);
+    try std.testing.expect(std.mem.find(u8, json, "{\"key\":\"max_agent_steps\",\"value\":20,\"origin\":\"env\",\"variable\":\"FX_MAX_AGENT_STEPS\"}") != null);
+    try std.testing.expect(std.mem.find(u8, json, "\"origin\":\"global\",\"file\":\"~/.fx/settings.json\"") != null);
 }
 
 test "MCP config diagnostic renders in status text and JSON but not interactive body" {

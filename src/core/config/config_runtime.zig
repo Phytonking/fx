@@ -749,7 +749,9 @@ pub fn ultrafastModeEnvOverride() UltrafastModeEnvError!?bool {
     return parseEnvBool(trimmed) orelse error.InvalidUltrafastMode;
 }
 
-fn parseEnvBool(raw: []const u8) ?bool {
+/// The env-var booleans: `1`, `true`, `on`, or `yes`, and `0`, `false`, `off`,
+/// or `no`, in any case.
+pub fn parseEnvBool(raw: []const u8) ?bool {
     if (std.ascii.eqlIgnoreCase(raw, "1") or std.ascii.eqlIgnoreCase(raw, "true") or
         std.ascii.eqlIgnoreCase(raw, "on") or std.ascii.eqlIgnoreCase(raw, "yes")) return true;
     if (std.ascii.eqlIgnoreCase(raw, "0") or std.ascii.eqlIgnoreCase(raw, "false") or

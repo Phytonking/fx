@@ -5,6 +5,8 @@ const std = @import("std");
 const builtin_commands = @import("../../builtins/commands.zig");
 const cli_flags = @import("cli_flags.zig");
 const config_runtime = @import("../config/config_runtime.zig");
+const env_settings = @import("../config/env_settings.zig");
+const model_provider = @import("../config/model_provider.zig");
 const output_contracts = @import("../output/output_contracts.zig");
 const settings_entries = @import("../config/settings_entries.zig");
 const settings_keys = @import("../config/settings_keys.zig");
@@ -306,10 +308,13 @@ pub const Loaded = struct {
     project: ?std.json.Parsed(std.json.Value) = null,
     entries: settings_entries.Entries,
     unknown: []output_contracts.ConfigUnknownSetting,
+    /// Holds the values of the `FX_*` entries.
+    env: std.heap.ArenaAllocator,
 
     pub fn deinit(self: *Loaded, alloc: Allocator) void {
         alloc.free(self.unknown);
         self.entries.deinit(alloc);
+        self.env.deinit();
         if (self.project) |*parsed| parsed.deinit();
         if (self.profile) |*parsed| parsed.deinit();
         self.* = undefined;
@@ -317,8 +322,10 @@ pub const Loaded = struct {
 };
 
 /// Reads the settings files in `paths` and collects the entries and unknown
-/// keys for `scope`. When a file can't be read or parsed, sets `failed_file`
-/// to its display name and returns the error. Caller deinits the result.
+/// keys for `scope`. Without a scope, the `FX_*` setting overrides set in this
+/// process come last, as fx applies them. When a file can't be read or parsed,
+/// sets `failed_file` to its display name and returns the error. Caller deinits
+/// the result.
 pub fn load(
     alloc: Allocator,
     paths: config_runtime.Paths,
@@ -347,6 +354,13 @@ pub fn load(
     }, scope);
     errdefer entries.deinit(alloc);
 
+    var env: std.heap.ArenaAllocator = .init(alloc);
+    errdefer env.deinit();
+    if (scope == .all) {
+        const overrides = try env_settings.collect(env.allocator(), savedProvider(entries.items));
+        try settings_entries.appendEnv(alloc, &entries, overrides);
+    }
+
     var unknown: std.ArrayList(output_contracts.ConfigUnknownSetting) = .empty;
     errdefer unknown.deinit(alloc);
     if (profile) |parsed| {
@@ -371,7 +385,20 @@ pub fn load(
         .project = project,
         .entries = entries,
         .unknown = try unknown.toOwnedSlice(alloc),
+        .env = env,
     };
+}
+
+/// The provider the settings files choose, which `FX_MODEL` applies to unless
+/// `FX_PROVIDER` picks another.
+fn savedProvider(entries: []const settings_entries.Entry) model_provider.ProviderId {
+    var index = entries.len;
+    while (index > 0) {
+        index -= 1;
+        if (!std.mem.eql(u8, entries[index].key, "provider")) continue;
+        return model_provider.parse_saved(entries[index].value) catch .gateway;
+    }
+    return .gateway;
 }
 
 fn unknownSetting(key: settings_keys.UnknownKey, file: []const u8) output_contracts.ConfigUnknownSetting {
@@ -557,6 +584,47 @@ test "load reads both files and keeps unknown keys for the scope" {
     defer global.deinit(alloc);
     try std.testing.expectEqual(@as(usize, 1), global.unknown.len);
     try std.testing.expectEqualStrings("fast_mdoe", global.unknown[0].key.name);
+}
+
+test "load ends with the FX_* overrides fx applies, only without a scope" {
+    const alloc = std.testing.allocator;
+    const io_mod = @import("../shared/io.zig");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "settings.json", .data = "{\"provider\":\"codex\",\"max_agent_steps\":3}" });
+    const dir = try io_mod.dirRealpathAlloc(alloc, tmp.dir, ".");
+    defer alloc.free(dir);
+    var paths: config_runtime.Paths = .{
+        .user_settings = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "settings.json"),
+        .workspace_settings = try std.mem.concat(alloc, u8, &.{ dir, "/missing.fx.json" }),
+        .workspace_root = try alloc.dupe(u8, "/w"),
+    };
+    defer paths.deinit(alloc);
+
+    const restore = io_mod.environMap() orelse try env_settings.emptyTestEnviron();
+    var env: std.process.Environ.Map = .init(alloc);
+    defer env.deinit();
+    try env.put("FX_MAX_AGENT_STEPS", "9");
+    try env.put("FX_MODEL", "gpt-env");
+    io_mod.setEnvironMap(&env);
+    defer io_mod.setEnvironMap(restore);
+
+    var failed: ?[]const u8 = null;
+    var all = try load(alloc, paths, "/w", .all, &failed);
+    defer all.deinit(alloc);
+    const steps = try settings_entries.lookup(alloc, all.entries.items, "max_agent_steps");
+    defer alloc.free(steps);
+    try std.testing.expectEqual(settings_entries.Origin.env, steps[0].origin);
+    try std.testing.expectEqualStrings("FX_MAX_AGENT_STEPS", steps[0].variable.?);
+    try std.testing.expectEqual(@as(i64, 9), steps[0].value.integer);
+    // The saved provider decides which model FX_MODEL replaces.
+    const models = try settings_entries.lookup(alloc, all.entries.items, "models.codex");
+    defer alloc.free(models);
+    try std.testing.expectEqualStrings("gpt-env", models[0].value.string);
+
+    var global = try load(alloc, paths, "/w", .global, &failed);
+    defer global.deinit(alloc);
+    for (global.entries.items) |entry| try std.testing.expect(entry.origin != .env);
 }
 
 test "load names the file it can't parse" {

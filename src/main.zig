@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
 const io_mod = @import("core/shared/io.zig");
+const env_settings = @import("core/config/env_settings.zig");
 
 pub const version = "0.0.14";
 
@@ -736,10 +737,7 @@ const App = struct {
                 SessionAppRuntime.syncTerminalTitle(&app);
             }
         }
-        const env_disabled = if (io_mod.getenv("FX_AUTO_UPGRADE")) |val|
-            std.mem.eql(u8, val, "0") or std.ascii.eqlIgnoreCase(val, "false")
-        else
-            false;
+        const env_disabled = if (io_mod.getenv("FX_AUTO_UPGRADE")) |val| env_settings.autoUpgradeOff(val) else false;
         if (env_disabled or !auto_upgrade.shouldEnableForCurrentExecutable()) {
             app.auto_upgrade_enabled = false;
         }

@@ -2,6 +2,7 @@
 //! `fx config list` and `fx config get`.
 
 const std = @import("std");
+const env_settings = @import("env_settings.zig");
 const settings_keys = @import("settings_keys.zig");
 
 const Allocator = std.mem.Allocator;
@@ -13,6 +14,8 @@ pub const Origin = enum {
     global,
     /// This workspace's override inside the profile `settings.json`.
     workspace,
+    /// An `FX_*` variable set for this process.
+    env,
 };
 
 pub const Scope = enum { all, global, workspace };
@@ -20,9 +23,11 @@ pub const Scope = enum { all, global, workspace };
 pub const Entry = struct {
     /// Dotted key under its current name, such as `status_line.context`.
     key: []const u8,
-    /// Borrowed from the parsed file.
+    /// Borrowed from the parsed file or the environment.
     value: std.json.Value,
     origin: Origin,
+    /// The variable an `env` entry comes from, such as `FX_MAX_AGENT_STEPS`.
+    variable: ?[]const u8 = null,
 };
 
 pub const Files = struct {
@@ -72,6 +77,24 @@ pub fn collect(alloc: Allocator, files: Files, scope: Scope) !Entries {
         }
     }
     return .{ .items = try list.toOwnedSlice(alloc) };
+}
+
+/// Adds the `FX_*` setting overrides as the last, highest-precedence entries,
+/// as fx applies them. Their values stay borrowed from `overrides`.
+pub fn appendEnv(alloc: Allocator, entries: *Entries, overrides: []const env_settings.Override) !void {
+    if (overrides.len == 0) return;
+    const start = entries.items.len;
+    const grown = try alloc.alloc(Entry, start + overrides.len);
+    errdefer alloc.free(grown);
+    @memcpy(grown[0..start], entries.items);
+    var added: usize = 0;
+    errdefer for (grown[start..][0..added]) |entry| alloc.free(entry.key);
+    for (overrides, grown[start..]) |override, *slot| {
+        slot.* = .{ .key = try alloc.dupe(u8, override.key), .value = override.value, .origin = .env, .variable = override.variable };
+        added += 1;
+    }
+    alloc.free(entries.items);
+    entries.items = grown;
 }
 
 /// The entries for `key` and the keys under it, such as every `status_line.*`

@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const io_mod = @import("../shared/io.zig");
 const agent_steps = @import("../config/agent_steps.zig");
+const env_settings = @import("../config/env_settings.zig");
 const config_runtime = @import("../config/config_runtime.zig");
 const auth_runtime = @import("../auth/auth_runtime.zig");
 const credentials = @import("../auth/credentials.zig");
@@ -1790,17 +1791,8 @@ fn credentialOnboardingDisabled() bool {
     return !std.mem.eql(u8, trimmed, "0") and !std.ascii.eqlIgnoreCase(trimmed, "false");
 }
 
-const SoundEnvLevel = enum { off, on, max };
-
-fn soundEnvOverride() ?SoundEnvLevel {
-    const value = io_mod.getenv("FX_SOUND") orelse return null;
-    const trimmed = std.mem.trim(u8, value, " \t\r\n");
-    if (trimmed.len == 0) return null;
-    if (std.ascii.eqlIgnoreCase(trimmed, "max")) return .max;
-    const off = std.mem.eql(u8, trimmed, "0") or
-        std.ascii.eqlIgnoreCase(trimmed, "false") or
-        std.ascii.eqlIgnoreCase(trimmed, "off");
-    return if (off) .off else .on;
+fn soundEnvOverride() ?env_settings.SoundPreset {
+    return env_settings.soundPreset(io_mod.getenv("FX_SOUND") orelse return null);
 }
 
 var stable_test_environ: ?*std.process.Environ.Map = null;

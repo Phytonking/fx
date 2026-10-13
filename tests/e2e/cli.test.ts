@@ -54,6 +54,13 @@ const NO_GATEWAY_AUTH = {
   AI_GATEWAY_API_KEY: undefined,
   VERCEL_OIDC_TOKEN: undefined,
 };
+// `fx config` shows these when they're set, so its tests clear them.
+const NO_SETTING_ENV = Object.fromEntries(
+  [
+    "FX_PROVIDER", "FX_MODEL", "FX_ULTRAFAST", "FX_REVIEW_MODEL", "FX_PROVIDER_ORDER", "FX_PROVIDER_STRICT",
+    "FX_PERMISSION_MODE", "FX_MAX_AGENT_STEPS", "FX_AUTO_COMPACT_PERCENT", "FX_THEME", "FX_SOUND", "FX_AUTO_UPGRADE",
+  ].map((name) => [name, undefined]),
+);
 const MISSING_AUTH_MESSAGE =
   "fx needs access to Vercel AI Gateway. Run fx login to sign in, fx setup to use an API key, or set AI_GATEWAY_API_KEY.";
 const MODERN_MCP_FIXTURE = join(
@@ -767,7 +774,7 @@ describe("cli: status", () => {
           { mode: 0o600 },
         );
         writeFileSync(join(cwd, ".fx.json"), JSON.stringify({ max_agent_steps: 7, model: "ignored/here" }) + "\n");
-        const env = { ...NO_GATEWAY_AUTH, HOME: home, FX_DISABLE_KEYCHAIN: "1" };
+        const env = { ...NO_GATEWAY_AUTH, ...NO_SETTING_ENV, HOME: home, FX_DISABLE_KEYCHAIN: "1" };
         const before = readFileSync(settingsPath, "utf8");
 
         const list = await runFx(["config", "list", "--show-origin"], { cwd, env });
@@ -796,6 +803,22 @@ describe("cli: status", () => {
         expect(typo.code).toBe(2);
         expect(typo.stderr).toStartWith("fx config: unknown setting fast_mdoe (did you mean fast_mode?)\nusage: fx config");
 
+        // Documented FX_* overrides come last, as fx applies them; an ignored value doesn't show.
+        const withEnv = { ...env, FX_MAX_AGENT_STEPS: "20", FX_SOUND: "off" };
+        const fromEnv = await runFx(["config", "list", "--show-origin"], { cwd, env: withEnv });
+        expect(fromEnv.stdout.trimEnd().split("\n").slice(-4)).toEqual([
+          "env:FX_MAX_AGENT_STEPS\tmax_agent_steps=20",
+          "env:FX_SOUND\tsound.turn_end=false",
+          "env:FX_SOUND\tsound.attention_required=false",
+          "env:FX_SOUND\tsound.max=false",
+        ]);
+        const envGet = await runFx(["config", "get", "max_agent_steps"], { cwd, env: withEnv });
+        expect([envGet.code, envGet.stdout]).toEqual([0, "20\n"]);
+        const ignored = await runFx(["config", "get", "max_agent_steps"], { cwd, env: { ...env, FX_MAX_AGENT_STEPS: "many" } });
+        expect([ignored.code, ignored.stdout]).toEqual([0, "7\n"]);
+        const scoped = await runFx(["config", "list", "--global", "--show-origin"], { cwd, env: withEnv });
+        expect(scoped.stdout).not.toContain("env:");
+
         const json = await runFx(["config", "--workspace", "--json"], { cwd, env });
         expect(json.code).toBe(0);
         expect(JSON.parse(json.stdout)).toEqual({
@@ -823,7 +846,7 @@ describe("cli: status", () => {
         mkdirSync(cwd);
         const settingsPath = join(home, ".fx", "settings.json");
         writeFileSync(settingsPath, JSON.stringify({ statusLine: { session: true } }) + "\n", { mode: 0o600 });
-        const env = { ...NO_GATEWAY_AUTH, HOME: home, FX_DISABLE_KEYCHAIN: "1" };
+        const env = { ...NO_GATEWAY_AUTH, ...NO_SETTING_ENV, HOME: home, FX_DISABLE_KEYCHAIN: "1" };
         const settings = () => JSON.parse(readFileSync(settingsPath, "utf8"));
 
         const set = await runFx(["config", "set", "fast_mode", "on"], { cwd, env });
