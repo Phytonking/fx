@@ -5054,10 +5054,12 @@ describe("cli: error handling", () => {
   );
 
   test(
-    "fx unknown-command exits 2",
+    "fx with a mistyped command exits 2",
     async () => {
-      const r = await runFx(["unknown-command"]);
+      // A word that isn't close to a command is a first prompt instead.
+      const r = await runFx(["statsu"]);
       expect(r.code).toBe(2);
+      expect(r.stderr).toBe("fx: unknown command statsu (did you mean status?)\n");
     },
     TIMEOUT,
   );
