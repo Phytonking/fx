@@ -485,7 +485,7 @@ With --prompt-permissions, JSON and quiet requests may prompt on stderr only whe
         expect(r.code).toBe(0);
         expect(r.stderr).toBe("");
         expect(r.stdout).toContain(
-          "Usage:\n  fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]",
+          "Usage:\n  fx acp [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--log-file <path>]",
         );
         expect(r.stdout).toContain("--model <id>");
         expect(r.stdout).toContain("--ultrafast");
@@ -517,6 +517,11 @@ With --prompt-permissions, JSON and quiet requests may prompt on stderr only whe
         [["--bogus"], "fx acp: unknown flag --bogus\n"],
         [["--model"], "fx acp: --model needs a value\n"],
         [["--log-file"], "fx acp: --log-file needs a value\n"],
+        [["--effort", "high effort"], "fx acp: invalid value for --effort: high effort\n"],
+        [["--permission-mode", "never"], "fx acp: invalid value for --permission-mode: never\n"],
+        // ACP sessions don't apply gateway provider routing.
+        [["--provider-order", "a"], "fx acp: unknown flag --provider-order\n"],
+        [["--add-dir", "/tmp"], "fx acp: unknown flag --add-dir; it goes before the command: fx --add-dir <path> acp\n"],
       ];
       for (const [args, problem] of cases) {
         const result = await runFx(["acp", ...args]);
@@ -524,7 +529,7 @@ With --prompt-permissions, JSON and quiet requests may prompt on stderr only whe
         expect(result.stdout).toBe("");
         expect(result.stderr).toBe(
           problem +
-            "usage: fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]\n",
+            "usage: fx acp [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--log-file <path>]\n",
         );
       }
     },
@@ -5368,7 +5373,7 @@ describe("cli: workspace access", () => {
 
       const beforeCommand = await runFx(["--auto", "status"], { env: enabled });
       expect(beforeCommand.code).toBe(2);
-      expect(beforeCommand.stderr).toContain("for one-shot runs pass them after `fx ask`");
+      expect(beforeCommand.stderr).toBe("fx: agent-run flags such as --permission-mode apply to a session and to fx ask, fx pr, fx issue, and fx acp\n");
     },
     TIMEOUT,
   );

@@ -1438,6 +1438,50 @@ describe("gateway stream lifecycle", () => {
     }
   }, 60_000);
 
+  test("issue applies the agent-run flags to the gateway request", async () => {
+    const root = createFixtureRoot("issue-agent-run-flags");
+    const tracePath = join(root.root, "trace.log");
+    const gateway = startDynamicFakeGateway(
+      () => fakeGatewayFinalText("ISSUE_FLAGS_COMPLETE"),
+      {
+        models: [{
+          id: MODEL,
+          type: "language",
+          tags: ["tool-use", "reasoning"],
+          fast_options: [{ type: "toggle" }],
+          reasoning_options: [{ type: "effort", values: ["low", "high"] }],
+        }],
+      },
+    );
+
+    try {
+      const result = await runFx(
+        ["issue", "--auto", "--model", MODEL, "--effort", "high", "--fast", "Login fails after an upgrade"],
+        {
+          cwd: root.workspace,
+          env: {
+            ...fixtureEnv(root, gateway, tracePath),
+            FX_MODEL: undefined,
+            FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+          },
+          timeoutMs: 30_000,
+        },
+      );
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("ISSUE_FLAGS_COMPLETE");
+      expect(gateway.requests).toHaveLength(1);
+      expect(gateway.requests[0]!.headers.get("ai-language-model-id")).toBe(MODEL);
+      expect(JSON.parse(gateway.requests[0]!.body)).toMatchObject({
+        reasoning: "high",
+        providerOptions: { gateway: { speed: "fast" } },
+      });
+    } finally {
+      gateway.stop();
+      rmSync(root.root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   test("ask --model without --fast keeps fast mode off", async () => {
     const root = createFixtureRoot("ask-model-override-no-fast");
     const tracePath = join(root.root, "trace.log");

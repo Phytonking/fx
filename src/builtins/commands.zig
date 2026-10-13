@@ -69,16 +69,18 @@ pub const session_options = [_]command_specs.OptionDoc{
     json_option,
 };
 
-pub const acp_options = [_]command_specs.OptionDoc{
-    .{ .flag = "--model <id>", .description = "Override the default model" },
-    .{ .flag = "--ultrafast", .description = "Request Ultra mode when the model supports it" },
-    .{ .flag = "--no-ultrafast", .description = "Disable Ultra mode" },
+pub const acp_options = agentRunOptions("sessions this server starts", false) ++ [_]command_specs.OptionDoc{
     .{ .flag = "--log-file <path>", .description = "Write ACP logs to a file" },
 };
 
-pub const pr_options = [_]command_specs.OptionDoc{
-    .{ .flag = "--auto", .description = "Automatically review unresolved permission requests" },
+pub const acp_usage = "acp " ++ agent_run_usage_base ++ " [--log-file <path>]";
+
+pub const pr_options = agentRunOptions("this request", true) ++ [_]command_specs.OptionDoc{
     .{ .flag = "--create", .description = "Publish the drafted pull request via the GitHub CLI" },
+};
+
+const issue_options = agentRunOptions("this request", true) ++ [_]command_specs.OptionDoc{
+    .{ .flag = "--create", .description = "Publish the drafted issue via the GitHub CLI" },
 };
 
 pub const replay_options = [_]command_specs.OptionDoc{
@@ -94,22 +96,37 @@ pub const mcp_list_options = [_]command_specs.OptionDoc{
     json_option,
 };
 
-pub const ask_options = [_]command_specs.OptionDoc{
-    .{ .flag = "--permission-mode <mode>", .description = "Set the permission mode for this request: ask, auto, or full-access" },
-    .{ .flag = "--ask", .description = "Ask before each action that needs permission" },
-    .{ .flag = "--auto", .description = "Automatically review unresolved permission requests" },
-    .{ .flag = "--full-access", .description = "Disable fx permission checks" },
-    .{ .flag = "--yolo", .description = "Alias for --full-access" },
-    .{ .flag = "--provider <name>", .description = "Override the model provider for this request (gateway, codex, grok, or a configured name)" },
-    .{ .flag = "--model <id>", .description = "Override the model for this request" },
-    .{ .flag = "--effort <level>", .description = "Override the reasoning effort for this request" },
-    .{ .flag = "--fast", .description = "Enable Fast mode for this request when the model supports it" },
-    .{ .flag = "--no-fast", .description = "Disable Fast mode for this request" },
-    .{ .flag = "--ultrafast", .description = "Request Ultra mode for this request when the model supports it" },
-    .{ .flag = "--no-ultrafast", .description = "Disable Ultra mode for this request" },
-    .{ .flag = "--provider-order <a,b,...>", .description = "Prefer these gateway providers in order for this request" },
-    .{ .flag = "--provider-strict", .description = "Restrict this request to only the providers in --provider-order" },
-    .{ .flag = "--no-provider-strict", .description = "Clear the provider restriction for this request" },
+/// The flags that shape an agent run, the same on every command that runs the
+/// agent: `fx ask`, `fx pr`, `fx issue`, and `fx acp`. `scope` names what they
+/// shape, such as "this request". `src/core/cli/agent_run_flags.zig` parses
+/// them. `fx acp` leaves out the provider-order flags, because ACP sessions
+/// don't apply gateway provider routing.
+fn agentRunOptions(comptime scope: []const u8, comptime routing: bool) [if (routing) 15 else 12]command_specs.OptionDoc {
+    const all = [_]command_specs.OptionDoc{
+        .{ .flag = "--permission-mode <mode>", .description = "Set the permission mode for " ++ scope ++ ": ask, auto, or full-access" },
+        .{ .flag = "--ask", .description = "Ask before each action that needs permission" },
+        .{ .flag = "--auto", .description = "Automatically review unresolved permission requests" },
+        .{ .flag = "--full-access", .description = "Disable fx permission checks" },
+        .{ .flag = "--yolo", .description = "Alias for --full-access" },
+        .{ .flag = "--provider <name>", .description = "Override the model provider for " ++ scope ++ " (gateway, codex, grok, or a configured name)" },
+        .{ .flag = "--model <id>", .description = "Override the model for " ++ scope },
+        .{ .flag = "--effort <level>", .description = "Override the reasoning effort for " ++ scope },
+        .{ .flag = "--fast", .description = "Enable Fast mode for " ++ scope ++ " when the model supports it" },
+        .{ .flag = "--no-fast", .description = "Disable Fast mode for " ++ scope },
+        .{ .flag = "--ultrafast", .description = "Request Ultra mode for " ++ scope ++ " when the model supports it" },
+        .{ .flag = "--no-ultrafast", .description = "Disable Ultra mode for " ++ scope },
+        .{ .flag = "--provider-order <a,b,...>", .description = "Prefer these gateway providers in order for " ++ scope },
+        .{ .flag = "--provider-strict", .description = "Restrict " ++ scope ++ " to only the providers in --provider-order" },
+        .{ .flag = "--no-provider-strict", .description = "Clear the provider restriction for " ++ scope },
+    };
+    return if (routing) all else all[0..12].*;
+}
+
+/// The usage-line form of `agentRunOptions`.
+const agent_run_usage_base = "[--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast]";
+const agent_run_usage = agent_run_usage_base ++ " [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict]";
+
+pub const ask_options = agentRunOptions("this request", true) ++ [_]command_specs.OptionDoc{
     .{ .flag = "--image PATH", .description = "Attach an image file; repeat for multiple images" },
     .{ .flag = "--system TEXT", .description = "Replace the built-in system prompt for this request" },
     json_option,
@@ -137,7 +154,7 @@ pub const top_level_specs = [_]TopLevelSpec{
     .{
         .kind = .ask,
         .token = "ask",
-        .usage = "ask [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--timeout <seconds>] [--config <key=value>] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>] [--continue-recovery] [--] <prompt>",
+        .usage = "ask " ++ agent_run_usage ++ " [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--timeout <seconds>] [--config <key=value>] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>] [--continue-recovery] [--] <prompt>",
         .summary = "Run one noninteractive request",
         .options = &ask_options,
         .details = &.{
@@ -152,14 +169,14 @@ pub const top_level_specs = [_]TopLevelSpec{
     .{
         .kind = .acp,
         .token = "acp",
-        .usage = "acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]",
+        .usage = acp_usage,
         .summary = "Start an ACP server over stdio",
         .options = &acp_options,
     },
     .{
         .kind = .pr,
         .token = "pr",
-        .usage = "pr [--auto] [--create] [context]",
+        .usage = "pr " ++ agent_run_usage ++ " [--create] [context]",
         .summary = "Draft or publish a pull request",
         .options = &pr_options,
         .details = &.{
@@ -169,12 +186,9 @@ pub const top_level_specs = [_]TopLevelSpec{
     .{
         .kind = .issue,
         .token = "issue",
-        .usage = "issue [--auto] [--create] [context]",
+        .usage = "issue " ++ agent_run_usage ++ " [--create] [context]",
         .summary = "Draft or publish a GitHub issue",
-        .options = &.{
-            .{ .flag = "--auto", .description = "Automatically review unresolved permission requests" },
-            .{ .flag = "--create", .description = "Publish the drafted issue via the GitHub CLI" },
-        },
+        .options = &issue_options,
     },
     .{
         .kind = .login,

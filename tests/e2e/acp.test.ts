@@ -10073,6 +10073,149 @@ describe("acp: model-independent", () => {
     },
     TIMEOUT,
   );
+
+  test(
+    "session modes are the CLI permission modes and start in the saved mode",
+    async () => {
+      for (const [saved, expected] of [[undefined, "auto"], ["ask", "ask"], ["auto", "auto"], ["yolo", "full-access"], ["full-access", "full-access"]] as const) {
+        const root = createIsolatedRoot("fx-acp-permission-modes-");
+        if (saved) writeFileSync(join(root.home, ".fx", "settings.json"), JSON.stringify({ permission_mode: saved }));
+        const gateway = startFakeGateway([]);
+        try {
+          client = await AcpClient.create({ cwd: root.workspace, env: fakeGatewayEnv(root, gateway) });
+          await client.request("initialize", { protocolVersion: 1 }, 1);
+          const created = await client.request("session/new", { mcpServers: [] }, 2) as any;
+          const mode = created.result.configOptions.find((option: any) => option.id === "mode");
+          expect(mode.currentValue).toBe(expected);
+          expect(created.result.modes.currentModeId).toBe(expected);
+          expect(mode.options).toEqual([
+            { value: "auto", name: "Auto", description: expect.any(String), _meta: { fx: { permissionMode: "auto" } } },
+            { value: "ask", name: "Ask", description: expect.any(String), _meta: { fx: { permissionMode: "ask" } } },
+            { value: "full-access", name: "Full access", description: expect.any(String), _meta: { fx: { permissionMode: "yolo" } } },
+          ]);
+          expect(created.result.modes.availableModes.map((entry: any) => entry.id)).toEqual(["auto", "ask", "full-access"]);
+        } finally {
+          await client?.close();
+          gateway.stop();
+          rmSync(root.root, { recursive: true, force: true });
+        }
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
+    "fx acp --permission-mode sets the starting mode without saving it",
+    async () => {
+      const root = createIsolatedRoot("fx-acp-permission-flag-");
+      const settingsPath = join(root.home, ".fx", "settings.json");
+      writeFileSync(settingsPath, JSON.stringify({ permission_mode: "auto" }));
+      const gateway = startFakeGateway([]);
+      try {
+        for (const [args, expected] of [
+          [["acp", "--permission-mode", "ask"], "ask"],
+          [["acp", "--full-access"], "full-access"],
+        ] as const) {
+          client = await AcpClient.create({ cwd: root.workspace, env: fakeGatewayEnv(root, gateway), args: [...args] });
+          try {
+            await client.request("initialize", { protocolVersion: 1 }, 1);
+            const created = await client.request("session/new", { mcpServers: [] }, 2) as any;
+            expect(created.result.modes.currentModeId).toBe(expected);
+          } finally {
+            await client.close();
+          }
+        }
+        expect(JSON.parse(readFileSync(settingsPath, "utf8")).permission_mode).toBe("auto");
+      } finally {
+        gateway.stop();
+        rmSync(root.root, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
+    "fx status --json lists the modes and the one a new ACP session starts in",
+    async () => {
+      for (const [saved, expected] of [[undefined, "auto"], ["ask", "ask"], ["yolo", "full-access"]] as const) {
+        const root = createIsolatedRoot("fx-acp-status-modes-");
+        if (saved) writeFileSync(join(root.home, ".fx", "settings.json"), JSON.stringify({ permission_mode: saved }));
+        const gateway = startFakeGateway([]);
+        try {
+          const env = fakeGatewayEnv(root, gateway);
+          const status = await runFx(["status", "--json"], { cwd: root.workspace, env });
+          expect(status.code).toBe(0);
+          const reported = JSON.parse(status.stdout.trim());
+          expect(reported.mode).toBe(expected);
+
+          client = await AcpClient.create({ cwd: root.workspace, env });
+          await client.request("initialize", { protocolVersion: 1 }, 1);
+          const created = await client.request("session/new", { mcpServers: [] }, 2) as any;
+          const mode = created.result.configOptions.find((option: any) => option.id === "mode");
+          expect(mode.currentValue).toBe(reported.mode);
+          expect(reported.modes).toEqual(mode.options.map((option: any) => ({
+            id: option.value,
+            name: option.name,
+            description: option.description,
+          })));
+        } finally {
+          await client?.close();
+          gateway.stop();
+          rmSync(root.root, { recursive: true, force: true });
+        }
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
+    "a mode change is saved like /permissions and unknown modes are rejected",
+    async () => {
+      const root = createIsolatedRoot("fx-acp-permission-mode-save-");
+      const settingsPath = join(root.home, ".fx", "settings.json");
+      const savedMode = () => JSON.parse(readFileSync(settingsPath, "utf8")).permission_mode;
+      const gateway = startFakeGateway([]);
+      try {
+        client = await AcpClient.create({ cwd: root.workspace, env: fakeGatewayEnv(root, gateway) });
+        await client.request("initialize", { protocolVersion: 1 }, 1);
+        await client.request("session/new", { mcpServers: [] }, 2);
+        await client.readLine();
+
+        const asked = await client.request("session/set_config_option", { configId: "mode", value: "ask" }, 3) as any;
+        expect(asked.result.configOptions.find((option: any) => option.id === "mode").currentValue).toBe("ask");
+        expect(savedMode()).toBe("ask");
+
+        for (const [id, method, params] of [
+          [4, "session/set_config_option", { configId: "mode", value: "code" }],
+          [5, "session/set_mode", { modeId: "code" }],
+          [6, "session/set_mode", { modeId: "yolo" }],
+        ] as const) {
+          const response = await client.request(method, params, id) as any;
+          expect(response.error).toMatchObject({ code: -32602, message: "Unknown mode" });
+        }
+        expect(savedMode()).toBe("ask");
+
+        const legacy = await client.request("session/set_mode", { modeId: "full-access" }, 7) as any;
+        expect(legacy.error).toBeUndefined();
+        expect(savedMode()).toBe("full-access");
+        const next = await client.request("session/new", { mcpServers: [] }, 8) as any;
+        await client.readLine();
+        expect(next.result.modes.currentModeId).toBe("full-access");
+
+        // Another fx process, such as the CLI's /permissions, saves a mode.
+        writeFileSync(settingsPath, JSON.stringify({ ...JSON.parse(readFileSync(settingsPath, "utf8")), permission_mode: "ask" }));
+        const afterOther = await client.request("session/new", { mcpServers: [] }, 9) as any;
+        await client.readLine();
+        expect(afterOther.result.configOptions.find((option: any) => option.id === "mode").currentValue).toBe("ask");
+        expect(client.stderr).toBe("");
+      } finally {
+        await client?.close();
+        gateway.stop();
+        rmSync(root.root, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT,
+  );
 });
 
 describe("acp: model catalog authentication", () => {
@@ -10605,119 +10748,6 @@ describe.skipIf(!HAS_API_KEY)("acp: model-backed protocol", () => {
         expect(Array.isArray(loadResp.result.configOptions)).toBe(true);
         expect(loadResp.result.modes).toBeDefined();
         expect(loadResp.result.modes.currentModeId).toBe("auto");
-      } finally {
-        await client?.close();
-        gateway.stop();
-        rmSync(root.root, { recursive: true, force: true });
-      }
-    },
-    TIMEOUT,
-  );
-
-  test(
-    "session modes are the CLI permission modes and start in the saved mode",
-    async () => {
-      for (const [saved, expected] of [[undefined, "auto"], ["ask", "ask"], ["auto", "auto"], ["yolo", "full-access"], ["full-access", "full-access"]] as const) {
-        const root = createIsolatedRoot("fx-acp-permission-modes-");
-        if (saved) writeFileSync(join(root.home, ".fx", "settings.json"), JSON.stringify({ permission_mode: saved }));
-        const gateway = startFakeGateway([]);
-        try {
-          client = await AcpClient.create({ cwd: root.workspace, env: fakeGatewayEnv(root, gateway) });
-          await client.request("initialize", { protocolVersion: 1 }, 1);
-          const created = await client.request("session/new", { mcpServers: [] }, 2) as any;
-          const mode = created.result.configOptions.find((option: any) => option.id === "mode");
-          expect(mode.currentValue).toBe(expected);
-          expect(created.result.modes.currentModeId).toBe(expected);
-          expect(mode.options).toEqual([
-            { value: "auto", name: "Auto", description: expect.any(String), _meta: { fx: { permissionMode: "auto" } } },
-            { value: "ask", name: "Ask", description: expect.any(String), _meta: { fx: { permissionMode: "ask" } } },
-            { value: "full-access", name: "Full access", description: expect.any(String), _meta: { fx: { permissionMode: "yolo" } } },
-          ]);
-          expect(created.result.modes.availableModes.map((entry: any) => entry.id)).toEqual(["auto", "ask", "full-access"]);
-        } finally {
-          await client?.close();
-          gateway.stop();
-          rmSync(root.root, { recursive: true, force: true });
-        }
-      }
-    },
-    TIMEOUT,
-  );
-
-  test(
-    "fx status --json lists the modes and the one a new ACP session starts in",
-    async () => {
-      for (const [saved, expected] of [[undefined, "auto"], ["ask", "ask"], ["yolo", "full-access"]] as const) {
-        const root = createIsolatedRoot("fx-acp-status-modes-");
-        if (saved) writeFileSync(join(root.home, ".fx", "settings.json"), JSON.stringify({ permission_mode: saved }));
-        const gateway = startFakeGateway([]);
-        try {
-          const env = fakeGatewayEnv(root, gateway);
-          const status = await runFx(["status", "--json"], { cwd: root.workspace, env });
-          expect(status.code).toBe(0);
-          const reported = JSON.parse(status.stdout.trim());
-          expect(reported.mode).toBe(expected);
-
-          client = await AcpClient.create({ cwd: root.workspace, env });
-          await client.request("initialize", { protocolVersion: 1 }, 1);
-          const created = await client.request("session/new", { mcpServers: [] }, 2) as any;
-          const mode = created.result.configOptions.find((option: any) => option.id === "mode");
-          expect(mode.currentValue).toBe(reported.mode);
-          expect(reported.modes).toEqual(mode.options.map((option: any) => ({
-            id: option.value,
-            name: option.name,
-            description: option.description,
-          })));
-        } finally {
-          await client?.close();
-          gateway.stop();
-          rmSync(root.root, { recursive: true, force: true });
-        }
-      }
-    },
-    TIMEOUT,
-  );
-
-  test(
-    "a mode change is saved like /permissions and unknown modes are rejected",
-    async () => {
-      const root = createIsolatedRoot("fx-acp-permission-mode-save-");
-      const settingsPath = join(root.home, ".fx", "settings.json");
-      const savedMode = () => JSON.parse(readFileSync(settingsPath, "utf8")).permission_mode;
-      const gateway = startFakeGateway([]);
-      try {
-        client = await AcpClient.create({ cwd: root.workspace, env: fakeGatewayEnv(root, gateway) });
-        await client.request("initialize", { protocolVersion: 1 }, 1);
-        await client.request("session/new", { mcpServers: [] }, 2);
-        await client.readLine();
-
-        const asked = await client.request("session/set_config_option", { configId: "mode", value: "ask" }, 3) as any;
-        expect(asked.result.configOptions.find((option: any) => option.id === "mode").currentValue).toBe("ask");
-        expect(savedMode()).toBe("ask");
-
-        for (const [id, method, params] of [
-          [4, "session/set_config_option", { configId: "mode", value: "code" }],
-          [5, "session/set_mode", { modeId: "code" }],
-          [6, "session/set_mode", { modeId: "yolo" }],
-        ] as const) {
-          const response = await client.request(method, params, id) as any;
-          expect(response.error).toMatchObject({ code: -32602, message: "Unknown mode" });
-        }
-        expect(savedMode()).toBe("ask");
-
-        const legacy = await client.request("session/set_mode", { modeId: "full-access" }, 7) as any;
-        expect(legacy.error).toBeUndefined();
-        expect(savedMode()).toBe("full-access");
-        const next = await client.request("session/new", { mcpServers: [] }, 8) as any;
-        await client.readLine();
-        expect(next.result.modes.currentModeId).toBe("full-access");
-
-        // Another fx process, such as the CLI's /permissions, saves a mode.
-        writeFileSync(settingsPath, JSON.stringify({ ...JSON.parse(readFileSync(settingsPath, "utf8")), permission_mode: "ask" }));
-        const afterOther = await client.request("session/new", { mcpServers: [] }, 9) as any;
-        await client.readLine();
-        expect(afterOther.result.configOptions.find((option: any) => option.id === "mode").currentValue).toBe("ask");
-        expect(client.stderr).toBe("");
       } finally {
         await client?.close();
         gateway.stop();

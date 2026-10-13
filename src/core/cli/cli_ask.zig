@@ -38,6 +38,8 @@ const session_title_generation = @import("../session/session_title_generation.zi
 const compactor = @import("../compactor/compactor.zig");
 const config_runtime = @import("../config/config_runtime.zig");
 const cli_config = @import("cli_config.zig");
+const agent_run_flags = @import("agent_run_flags.zig");
+const flag_placement = @import("flag_placement.zig");
 const model_capabilities = @import("../config/model_capabilities.zig");
 const model_provider = @import("../config/model_provider.zig");
 const builtin_commands = @import("../../builtins/commands.zig");
@@ -356,14 +358,9 @@ const ResumeTarget = session_store.ResumeTarget;
 const AskOptions = struct {
     prompt: []u8,
     resume_target: ?ResumeTarget = null,
-    permission_override: ?PermissionMode = null,
-    provider_override: ?model_provider.ProviderId = null,
-    model_override: ?[]u8 = null,
-    effort_override: ?types.ReasoningEffort = null,
-    fast_override: ?bool = null,
-    ultrafast_override: ?bool = null,
-    provider_order_override: ?[][]const u8 = null,
-    provider_strict_override: ?bool = null,
+    /// `--model`, `--effort`, the permission mode, and the rest of the
+    /// agent-run flags.
+    agent: agent_run_flags.Overrides = .{},
     image_paths: std.ArrayList([]u8) = .empty,
     images: std.ArrayList(ImageAttachment) = .empty,
     system_prompt_override: ?[]u8 = null,
@@ -388,11 +385,7 @@ const AskOptions = struct {
         for (self.images.items) |image| types.freeImageAttachment(alloc, image);
         self.images.deinit(alloc);
         if (self.system_prompt_override) |s| alloc.free(s);
-        if (self.model_override) |m| alloc.free(m);
-        if (self.provider_order_override) |order| {
-            for (order) |slug| alloc.free(@constCast(slug));
-            if (order.len > 0) alloc.free(order);
-        }
+        self.agent.deinit(alloc);
     }
 };
 
@@ -1487,7 +1480,7 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
         deps.stdout_is_tty(deps.stdout_ctx),
         options.no_color,
     );
-    const result = runPromptInternal(alloc, options.prompt, options.permission_override, effective_cfg, .{
+    const result = runPromptInternal(alloc, options.prompt, options.agent.permission, effective_cfg, .{
         .output_mode = output_mode,
         .prompt_permissions = options.prompt_permissions,
         .images = if (options.images.items.len > 0) options.images.items else &.{},
@@ -1496,13 +1489,13 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
         .resume_target = options.resume_target,
         .color_enabled = !options.no_color,
         .continue_recovery = options.continue_recovery,
-        .provider_override = options.provider_override,
-        .model_override = options.model_override,
-        .effort_override = options.effort_override,
-        .fast_override = options.fast_override,
-        .ultrafast_override = options.ultrafast_override,
-        .provider_order_override = options.provider_order_override,
-        .provider_strict_override = options.provider_strict_override,
+        .provider_override = options.agent.provider,
+        .model_override = options.agent.model,
+        .effort_override = options.agent.effort,
+        .fast_override = options.agent.fast,
+        .ultrafast_override = options.agent.ultrafast,
+        .provider_order_override = options.agent.provider_order,
+        .provider_strict_override = options.agent.provider_strict,
         .settings_overrides = options.settings_overrides.items,
         .deps = deps,
     }) catch |err| {
@@ -1587,10 +1580,17 @@ fn preflightAskImages(
     return true;
 }
 
-pub fn runPrompt(alloc: Allocator, prompt: []const u8, auto_permission: bool, cfg: Config, context_registry: context_contract.Registry, tool_set: tool_set_contract.ToolSet) !u8 {
-    const result = try runPromptInternal(alloc, prompt, if (auto_permission) .auto else null, cfg, .{
+pub fn runPrompt(alloc: Allocator, prompt: []const u8, agent: agent_run_flags.Overrides, cfg: Config, context_registry: context_contract.Registry, tool_set: tool_set_contract.ToolSet) !u8 {
+    const result = try runPromptInternal(alloc, prompt, agent.permission, cfg, .{
         .output_mode = .raw,
         .images = &.{},
+        .provider_override = agent.provider,
+        .model_override = agent.model,
+        .effort_override = agent.effort,
+        .fast_override = agent.fast,
+        .ultrafast_override = agent.ultrafast,
+        .provider_order_override = agent.provider_order,
+        .provider_strict_override = agent.provider_strict,
         .deps = .{
             .context_registry = context_registry,
             .tool_set = tool_set,
@@ -1602,10 +1602,17 @@ pub fn runPrompt(alloc: Allocator, prompt: []const u8, auto_permission: bool, cf
     return result.exit_code;
 }
 
-pub fn runPromptCapture(alloc: Allocator, prompt: []const u8, auto_permission: bool, cfg: Config, context_registry: context_contract.Registry, tool_set: tool_set_contract.ToolSet) !PromptRunResult {
-    return runPromptInternal(alloc, prompt, if (auto_permission) .auto else null, cfg, .{
+pub fn runPromptCapture(alloc: Allocator, prompt: []const u8, agent: agent_run_flags.Overrides, cfg: Config, context_registry: context_contract.Registry, tool_set: tool_set_contract.ToolSet) !PromptRunResult {
+    return runPromptInternal(alloc, prompt, agent.permission, cfg, .{
         .output_mode = .json,
         .images = &.{},
+        .provider_override = agent.provider,
+        .model_override = agent.model,
+        .effort_override = agent.effort,
+        .fast_override = agent.fast,
+        .ultrafast_override = agent.ultrafast,
+        .provider_order_override = agent.provider_order,
+        .provider_strict_override = agent.provider_strict,
         .deps = .{
             .context_registry = context_registry,
             .tool_set = tool_set,
@@ -4082,18 +4089,6 @@ fn resolveAskSubagentAuthority(
 
 /// Parses one `--provider-order` value for `fx ask`, replacing any earlier
 /// occurrence. The returned slice is owned by `alloc`.
-fn parseAskProviderOrder(alloc: Allocator, raw: []const u8, previous: ?[][]const u8) ![][]const u8 {
-    const parsed: [][]const u8 = switch (config_runtime.parseProviderOrderList(alloc, raw)) {
-        .ok => |maybe| maybe orelse return error.InvalidAskArgs,
-        .invalid => return error.InvalidAskArgs,
-    };
-    if (previous) |old| {
-        for (old) |slug| alloc.free(@constCast(slug));
-        if (old.len > 0) alloc.free(old);
-    }
-    return parsed;
-}
-
 /// What was wrong with an `fx ask` command line, for its error message.
 const AskUsageProblem = union(enum) {
     none,
@@ -4163,36 +4158,16 @@ fn parseAskOptions(alloc: Allocator, args: []const [:0]const u8, stdin: StdinSou
             .option => |option| option,
         };
         const value = match.value orelse "";
-        switch (ask_flag_ids[match.index].?) {
-            .permission_mode => opts.permission_override = PermissionMode.parse(value) orelse
-                return invalidAskValue(problem, match, value),
-            .ask => opts.permission_override = .ask,
-            .auto => opts.permission_override = .auto,
-            .full_access, .yolo => opts.permission_override = .yolo,
-            .provider => opts.provider_override = model_provider.parse(value) orelse
-                return invalidAskValue(problem, match, value),
-            .model => {
-                const model = std.mem.trim(u8, value, " \t\r\n");
-                if (model.len == 0) return invalidAskValue(problem, match, value);
-                const owned_model = try alloc.dupe(u8, model);
-                if (opts.model_override) |old| alloc.free(old);
-                opts.model_override = owned_model;
-            },
-            .effort => opts.effort_override = types.ReasoningEffort.parse(value) orelse
-                return invalidAskValue(problem, match, value),
-            .fast => {
-                opts.fast_override = true;
-                opts.ultrafast_override = false;
-            },
-            .no_fast => opts.fast_override = false,
-            .ultrafast => {
-                opts.ultrafast_override = true;
-                opts.fast_override = false;
-            },
-            .no_ultrafast => opts.ultrafast_override = false,
-            .provider_order => opts.provider_order_override = try parseAskProviderOrder(alloc, value, opts.provider_order_override),
-            .provider_strict => opts.provider_strict_override = true,
-            .no_provider_strict => opts.provider_strict_override = false,
+        const id = ask_flag_ids[match.index].?;
+        if (agent_run_flags.fromId(id)) |flag| {
+            opts.agent.apply(alloc, flag, value) catch |err| switch (err) {
+                error.InvalidAgentRunValue => return invalidAskValue(problem, match, value),
+                else => |other| return other,
+            };
+            continue;
+        }
+        switch (id) {
+            .permission_mode, .ask, .auto, .full_access, .yolo, .provider, .model, .effort, .fast, .no_fast, .ultrafast, .no_ultrafast, .provider_order, .provider_strict, .no_provider_strict => unreachable,
             .image => try opts.image_paths.append(alloc, try alloc.dupe(u8, value)),
             .system => {
                 const owned_prompt = try alloc.dupe(u8, value);
@@ -4252,6 +4227,7 @@ fn writeAskUsageProblem(alloc: Allocator, deps: RunDeps, problem: AskUsageProble
         .flag => |failure| {
             try out.writer.writeAll("fx ask: ");
             try failure.write(&out.writer);
+            try flag_placement.writeLaunchFlagHint(&out.writer, "ask", failure);
         },
         .invalid_value => |bad| try out.writer.print("fx ask: invalid value for {s}: {s}", .{ bad.flag, bad.value }),
         .config => |bad| {
@@ -5742,7 +5718,7 @@ test "parse options preserves active ask flags and operands" {
     }, .tty);
     defer options.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(@as(?PermissionMode, .auto), options.permission_override);
+    try std.testing.expectEqual(@as(?PermissionMode, .auto), options.agent.permission);
     try std.testing.expect(options.json_output);
     try std.testing.expect(options.prompt_permissions);
     try std.testing.expect(options.quiet);
@@ -5762,7 +5738,7 @@ test "parse options accepts permission modes and the last one wins" {
     for (aliases) |alias| {
         var options = try parseOptionsWithStdin(alloc, &.{ alias, "hello" }, .tty);
         defer options.deinit(alloc);
-        try std.testing.expectEqual(@as(?PermissionMode, .yolo), options.permission_override);
+        try std.testing.expectEqual(@as(?PermissionMode, .yolo), options.agent.permission);
         try std.testing.expectEqualStrings("hello", options.prompt);
     }
 
@@ -5776,7 +5752,7 @@ test "parse options accepts permission modes and the last one wins" {
     for (cases) |case| {
         var options = try parseOptionsWithStdin(alloc, case.args, .tty);
         defer options.deinit(alloc);
-        try std.testing.expectEqual(@as(?PermissionMode, case.mode), options.permission_override);
+        try std.testing.expectEqual(@as(?PermissionMode, case.mode), options.agent.permission);
     }
     try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{ "--permission-mode", "sometimes", "hello" }, .tty));
 }
@@ -5785,7 +5761,7 @@ test "parse options preserves full access aliases after the delimiter as prompt 
     const alloc = std.testing.allocator;
     var literal = try parseOptionsWithStdin(alloc, &.{ "--", "--full-access", "--yolo", "--auto" }, .tty);
     defer literal.deinit(alloc);
-    try std.testing.expectEqual(@as(?PermissionMode, null), literal.permission_override);
+    try std.testing.expectEqual(@as(?PermissionMode, null), literal.agent.permission);
     try std.testing.expectEqualStrings("--full-access --yolo --auto", literal.prompt);
 
     const cases = [_]struct {
@@ -5799,7 +5775,7 @@ test "parse options preserves full access aliases after the delimiter as prompt 
     for (cases) |case| {
         var options = try parseOptionsWithStdin(alloc, &.{ case.flag, "--", "--full-access", "--yolo", "--auto" }, .tty);
         defer options.deinit(alloc);
-        try std.testing.expectEqual(@as(?PermissionMode, case.mode), options.permission_override);
+        try std.testing.expectEqual(@as(?PermissionMode, case.mode), options.agent.permission);
         try std.testing.expectEqualStrings("--full-access --yolo --auto", options.prompt);
     }
 }
@@ -5816,24 +5792,24 @@ test "parse options preserves model effort and fast overrides" {
     }, .tty);
     defer options.deinit(alloc);
 
-    try std.testing.expectEqualStrings("provider/override-model", options.model_override.?);
-    try std.testing.expect(options.effort_override.?.eql(types.ReasoningEffort.literal("high")));
-    try std.testing.expectEqual(@as(?bool, true), options.fast_override);
+    try std.testing.expectEqualStrings("provider/override-model", options.agent.model.?);
+    try std.testing.expect(options.agent.effort.?.eql(types.ReasoningEffort.literal("high")));
+    try std.testing.expectEqual(@as(?bool, true), options.agent.fast);
     try std.testing.expectEqualStrings("hello", options.prompt);
 
     var off = try parseOptionsWithStdin(alloc, &.{ "--no-fast", "hello" }, .tty);
     defer off.deinit(alloc);
-    try std.testing.expectEqual(@as(?bool, false), off.fast_override);
+    try std.testing.expectEqual(@as(?bool, false), off.agent.fast);
 
     var defaulted = try parseOptionsWithStdin(alloc, &.{"hello"}, .tty);
     defer defaulted.deinit(alloc);
-    try std.testing.expectEqual(@as(?[]u8, null), defaulted.model_override);
-    try std.testing.expectEqual(@as(?types.ReasoningEffort, null), defaulted.effort_override);
-    try std.testing.expectEqual(@as(?bool, null), defaulted.fast_override);
+    try std.testing.expectEqual(@as(?[]u8, null), defaulted.agent.model);
+    try std.testing.expectEqual(@as(?types.ReasoningEffort, null), defaulted.agent.effort);
+    try std.testing.expectEqual(@as(?bool, null), defaulted.agent.fast);
 
     var last_model = try parseOptionsWithStdin(alloc, &.{ "--model", "first/model", "--model", "second/model", "hello" }, .tty);
     defer last_model.deinit(alloc);
-    try std.testing.expectEqualStrings("second/model", last_model.model_override.?);
+    try std.testing.expectEqualStrings("second/model", last_model.agent.model.?);
 }
 
 test "parse options accepts a per-run provider and the last one wins" {
@@ -5841,16 +5817,16 @@ test "parse options accepts a per-run provider and the last one wins" {
 
     var spaced = try parseOptionsWithStdin(alloc, &.{ "--provider", "codex", "hello" }, .tty);
     defer spaced.deinit(alloc);
-    try std.testing.expect(spaced.provider_override.?.eql(.codex));
+    try std.testing.expect(spaced.agent.provider.?.eql(.codex));
     try std.testing.expectEqualStrings("hello", spaced.prompt);
 
     var last = try parseOptionsWithStdin(alloc, &.{ "--provider", "codex", "--provider=grok", "hello" }, .tty);
     defer last.deinit(alloc);
-    try std.testing.expect(last.provider_override.?.eql(.grok));
+    try std.testing.expect(last.agent.provider.?.eql(.grok));
 
     var defaulted = try parseOptionsWithStdin(alloc, &.{"hello"}, .tty);
     defer defaulted.deinit(alloc);
-    try std.testing.expectEqual(@as(?model_provider.ProviderId, null), defaulted.provider_override);
+    try std.testing.expectEqual(@as(?model_provider.ProviderId, null), defaulted.agent.provider);
 
     try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{"--provider"}, .tty));
     try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{ "--provider", "not a provider!", "hello" }, .tty));
@@ -5862,29 +5838,29 @@ test "parse options accepts provider routing flags and rejects malformed values"
 
     var options = try parseOptionsWithStdin(alloc, &.{ "--provider-order", "azure,anthropic", "--provider-strict", "hello" }, .tty);
     defer options.deinit(alloc);
-    const order = options.provider_order_override.?;
+    const order = options.agent.provider_order.?;
     try std.testing.expectEqual(@as(usize, 2), order.len);
     try std.testing.expectEqualStrings("azure", order[0]);
     try std.testing.expectEqualStrings("anthropic", order[1]);
-    try std.testing.expectEqual(@as(?bool, true), options.provider_strict_override);
+    try std.testing.expectEqual(@as(?bool, true), options.agent.provider_strict);
     try std.testing.expectEqualStrings("hello", options.prompt);
 
     var equals_form = try parseOptionsWithStdin(alloc, &.{ "--provider-order=bedrock", "--no-provider-strict", "hello" }, .tty);
     defer equals_form.deinit(alloc);
-    try std.testing.expectEqualStrings("bedrock", equals_form.provider_order_override.?[0]);
-    try std.testing.expectEqual(@as(?bool, false), equals_form.provider_strict_override);
+    try std.testing.expectEqualStrings("bedrock", equals_form.agent.provider_order.?[0]);
+    try std.testing.expectEqual(@as(?bool, false), equals_form.agent.provider_strict);
 
     var defaulted = try parseOptionsWithStdin(alloc, &.{"hello"}, .tty);
     defer defaulted.deinit(alloc);
-    try std.testing.expectEqual(@as(?[][]const u8, null), defaulted.provider_order_override);
-    try std.testing.expectEqual(@as(?bool, null), defaulted.provider_strict_override);
+    try std.testing.expectEqual(@as(?[][]const u8, null), defaulted.agent.provider_order);
+    try std.testing.expectEqual(@as(?bool, null), defaulted.agent.provider_strict);
 
     try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{"--provider-order"}, .tty));
     try std.testing.expectError(error.InvalidAskArgs, parseOptionsWithStdin(alloc, &.{ "--provider-order=Bad Slug", "hello" }, .tty));
 
     var last_strict = try parseOptionsWithStdin(alloc, &.{ "--provider-strict", "--no-provider-strict", "hello" }, .tty);
     defer last_strict.deinit(alloc);
-    try std.testing.expectEqual(@as(?bool, false), last_strict.provider_strict_override);
+    try std.testing.expectEqual(@as(?bool, false), last_strict.agent.provider_strict);
 }
 
 test "parse options rejects invalid model and effort values and keeps the last fast flag" {
@@ -5897,16 +5873,16 @@ test "parse options rejects invalid model and effort values and keeps the last f
 
     var fast_off = try parseOptionsWithStdin(alloc, &.{ "--fast", "--no-fast", "hello" }, .tty);
     defer fast_off.deinit(alloc);
-    try std.testing.expectEqual(@as(?bool, false), fast_off.fast_override);
+    try std.testing.expectEqual(@as(?bool, false), fast_off.agent.fast);
     var fast_on = try parseOptionsWithStdin(alloc, &.{ "--no-fast", "--fast", "--model=a/b", "hello" }, .tty);
     defer fast_on.deinit(alloc);
-    try std.testing.expectEqual(@as(?bool, true), fast_on.fast_override);
-    try std.testing.expectEqualStrings("a/b", fast_on.model_override.?);
+    try std.testing.expectEqual(@as(?bool, true), fast_on.agent.fast);
+    try std.testing.expectEqualStrings("a/b", fast_on.agent.model.?);
 
     var literal = try parseOptionsWithStdin(alloc, &.{ "--", "--model", "--fast" }, .tty);
     defer literal.deinit(alloc);
-    try std.testing.expectEqual(@as(?[]u8, null), literal.model_override);
-    try std.testing.expectEqual(@as(?bool, null), literal.fast_override);
+    try std.testing.expectEqual(@as(?[]u8, null), literal.agent.model);
+    try std.testing.expectEqual(@as(?bool, null), literal.agent.fast);
     try std.testing.expectEqualStrings("--model --fast", literal.prompt);
 }
 

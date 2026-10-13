@@ -9,7 +9,7 @@ fx follows git and Unix conventions for how people and scripts control it. Each 
 
 ## Current versus target
 
-Several pieces the rules rely on aren't built yet: `FX_HOME`, `fx completion`, `experimental.*` settings, and the agent-run flags on `fx acp`. Design new work toward them, but never tell a user to run something that doesn't exist yet. Check `./zig-out/bin/fx help` and `./zig-out/bin/fx <command> --help` when unsure. When a target piece is missing, use the nearest current pattern and say what's missing.
+Several pieces the rules rely on aren't built yet: `FX_HOME`, `fx completion`, and `experimental.*` settings. Design new work toward them, but never tell a user to run something that doesn't exist yet. Check `./zig-out/bin/fx help` and `./zig-out/bin/fx <command> --help` when unsure. When a target piece is missing, use the nearest current pattern and say what's missing.
 
 ## Decision order
 
@@ -36,7 +36,7 @@ These are the rules agents most often get wrong. [references/rules.md](reference
 
 **Flag syntax.** `--x value` and `--x=value` both work. Booleans pair `--x` with `--no-x`. When a flag repeats or conflicts, the last one wins, so wrappers and aliases can override earlier flags. An enum is one flag that takes the value. No value goes inside a flag name.
 
-**Flag placement.** Agent-run flags (`--model`, `--provider`, `--effort`, `--fast`, `--ultrafast`, `--provider-order`, `--provider-strict`, `--permission-mode`) go after the subcommand, and every command that runs the agent accepts the whole set. Plain `fx` takes them directly. Only launch-wide flags such as `--add-dir` go before a subcommand, as in `git -C dir log`.
+**Flag placement.** Agent-run flags (`--model`, `--provider`, `--effort`, `--fast`, `--ultrafast`, `--provider-order`, `--provider-strict`, `--permission-mode`) go after the subcommand, and every command that runs the agent accepts the whole set, parsed by `src/core/cli/agent_run_flags.zig`. `fx acp` leaves out the two provider-order flags, because ACP sessions don't apply gateway provider routing. Plain `fx` takes them directly. Only launch-wide flags such as `--add-dir` go before a subcommand, as in `git -C dir log`.
 
 **Env vars are for context, not preferences.** A setting gets a named env override only when CI or wrapper scripts need it for a whole process tree, and the override uses the setting's name: `collapse_tool_calls` becomes `FX_COLLAPSE_TOOL_CALLS`, never a shorter invented name. Other settings use the planned generic override. Diagnostics use `FX_TRACE*` and `FX_RECORD*`, tests use `FX_TEST_*`, and fx's home will be `FX_HOME`. Respect `NO_COLOR` and `TERM=dumb`.
 

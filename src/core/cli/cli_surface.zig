@@ -9,6 +9,8 @@ const acp_runner = @import("acp_runner.zig");
 const cli_ask = @import("cli_ask.zig");
 const cli_replay = @import("cli_replay.zig");
 const cli_flags = @import("cli_flags.zig");
+const agent_run_flags = @import("agent_run_flags.zig");
+const flag_placement = @import("flag_placement.zig");
 const cli_config = @import("cli_config.zig");
 const settings_messages = @import("settings_messages.zig");
 const settings_entries = @import("../config/settings_entries.zig");
@@ -363,20 +365,53 @@ const SessionRecoveryOptions = struct {
 };
 
 const AcpOptions = struct {
-    model: ?[]const u8 = null,
-    ultrafast_override: ?bool = null,
+    agent: agent_run_flags.Overrides = .{},
     log_file: ?[]const u8 = null,
+
+    fn deinit(self: *AcpOptions, alloc: Allocator) void {
+        self.agent.deinit(alloc);
+    }
 };
 
 const WorkflowOptions = struct {
-    auto_permission: bool,
-    create: bool,
-    context: []u8,
+    agent: agent_run_flags.Overrides = .{},
+    create: bool = false,
+    context: []u8 = &.{},
 
-    fn deinit(self: WorkflowOptions, alloc: Allocator) void {
+    fn deinit(self: *WorkflowOptions, alloc: Allocator) void {
+        self.agent.deinit(alloc);
         alloc.free(self.context);
     }
 };
+
+/// An agent-run flag given a value it can't take, such as `--effort lots`.
+const BadAgentValue = struct { flag: []const u8, value: []const u8 };
+
+/// Applies one agent-run flag `match` from `docs`, noting a value the flag
+/// can't take in `bad`.
+fn applyAgentFlag(
+    alloc: Allocator,
+    agent: *agent_run_flags.Overrides,
+    flag: agent_run_flags.Flag,
+    docs: []const command_specs.OptionDoc,
+    match: cli_flags.Match,
+    bad: *?BadAgentValue,
+) !void {
+    const value = match.value orelse "";
+    agent.apply(alloc, flag, value) catch |err| switch (err) {
+        error.InvalidAgentRunValue => {
+            bad.* = .{ .flag = cli_flags.flagName(docs[match.index]), .value = value };
+            return err;
+        },
+        else => |other| return other,
+    };
+}
+
+fn writeBadAgentValue(alloc: Allocator, deps: RunDeps, command: []const u8, bad: BadAgentValue) !void {
+    const message = try alloc.print("fx {s}: invalid value for {s}: {s}\n", .{ command, bad.flag, bad.value });
+    defer alloc.free(message);
+    try writeStderr(deps, message);
+}
 
 const WriteFn = *const fn (?*anyopaque, []const u8) anyerror!void;
 const LoadStartupStateFn = *const fn (Allocator, oauth_transport.Provider, host.SecretStore, []const u8, usize) anyerror!app_lifecycle.StartupState;
@@ -1310,7 +1345,7 @@ fn runNonInteractiveWithDeps(
         else => false,
     };
     if (global_args.modifiers.hasModelOverrides() and !acp_ultrafast_override) {
-        try writeModelModifierUsage(deps);
+        try writeModelModifierUsage(alloc, deps, parsed_command, global_args.modifiers);
         return usage_failure;
     }
 
@@ -1344,11 +1379,20 @@ fn runNonInteractiveWithDeps(
             return if (exit_code == 0) .handled_success else .{ .handled_exit = exit_code };
         },
         .acp => |rest| {
-            const acp_opts = parseAcpArgs(rest) catch {
-                try writeFlagFailure(alloc, deps, .acp, rest);
-                try writeStderr(deps, "usage: fx acp [--model <id>] [--ultrafast|--no-ultrafast] [--log-file <path>]\n");
-                return usage_failure;
+            var bad: ?BadAgentValue = null;
+            var acp_opts = parseAcpArgs(alloc, rest, &bad) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => {
+                    if (bad) |value| {
+                        try writeBadAgentValue(alloc, deps, "acp", value);
+                    } else {
+                        try writeFlagFailure(alloc, deps, .acp, rest);
+                    }
+                    try writeStderr(deps, "usage: fx " ++ builtin_commands.acp_usage ++ "\n");
+                    return usage_failure;
+                },
             };
+            defer acp_opts.deinit(alloc);
             try cfg.acp_runner.run(alloc, .{
                 .auth_mode = cfg.auth_mode,
                 .default_model = cfg.default_model,
@@ -1374,8 +1418,12 @@ fn runNonInteractiveWithDeps(
                 .context_limit_overrides = global_args.modifiers.context_limit_overrides,
                 .additional_directories = global_args.modifiers.additional_directories,
                 .saved_directories_suppressed = global_args.modifiers.saved_directories_suppressed,
-                .model_override = acp_opts.model,
-                .ultrafast_override = acp_opts.ultrafast_override orelse global_args.modifiers.ultrafast_override,
+                .model_override = acp_opts.agent.model,
+                .effort_override = if (acp_opts.agent.effort) |*effort| effort.label() else null,
+                .fast_override = acp_opts.agent.fast,
+                .ultrafast_override = acp_opts.agent.ultrafast orelse global_args.modifiers.ultrafast_override,
+                .provider_override = acp_opts.agent.provider,
+                .permission_override = acp_opts.agent.permission,
                 .log_file = acp_opts.log_file,
             });
             return .handled_success;
@@ -2251,13 +2299,18 @@ fn runGithubWorkflow(
     deps: RunDeps,
     workflow: github_workflows.Workflow,
 ) !RunResult {
-    const opts = parseWorkflowArgs(alloc, args) catch |err| switch (err) {
-        error.InvalidWorkflowArgs => {
+    var bad: ?BadAgentValue = null;
+    var opts = parseWorkflowArgs(alloc, args, &bad) catch |err| switch (err) {
+        error.InvalidWorkflowArgs, error.InvalidAgentRunValue => {
             const kind: TopLevelKind = switch (workflow) {
                 .pull_request => .pr,
                 .issue => .issue,
             };
-            try writeFlagFailure(alloc, deps, kind, args);
+            if (bad) |value| {
+                try writeBadAgentValue(alloc, deps, @tagName(kind), value);
+            } else {
+                try writeFlagFailure(alloc, deps, kind, args);
+            }
             try writeTopLevelUsage(cfg.command_catalog, deps, kind);
             return usage_failure;
         },
@@ -2279,11 +2332,11 @@ fn runGithubWorkflow(
 
     const workflow_cfg = workflowConfigWithLaunchModifiers(cfg, launch_modifiers);
     if (!opts.create) {
-        const exit_code = try cli_ask.runPrompt(alloc, prompt, opts.auto_permission, workflow_cfg, cfg.context_registry, cfg.tool_set);
+        const exit_code = try cli_ask.runPrompt(alloc, prompt, opts.agent, workflow_cfg, cfg.context_registry, cfg.tool_set);
         return if (exit_code == 0) .handled_success else .handled_failure;
     }
 
-    const run_result = try cli_ask.runPromptCapture(alloc, prompt, opts.auto_permission, workflow_cfg, cfg.context_registry, cfg.tool_set);
+    const run_result = try cli_ask.runPromptCapture(alloc, prompt, opts.agent, workflow_cfg, cfg.context_registry, cfg.tool_set);
     defer run_result.deinit(alloc);
     if (run_result.exit_code != 0) return .handled_failure;
 
@@ -3296,6 +3349,10 @@ fn writeFlagFailure(alloc: Allocator, deps: RunDeps, kind: TopLevelKind, args: a
     defer writer.deinit();
     try writer.writer.print("fx {s}: ", .{@tagName(kind)});
     try failure.write(&writer.writer);
+    switch (kind) {
+        .acp, .pr, .issue => try flag_placement.writeLaunchFlagHint(&writer.writer, @tagName(kind), failure),
+        else => {},
+    }
     try writer.writer.writeAll("\n");
     try writeStderr(deps, writer.written());
 }
@@ -4107,11 +4164,37 @@ fn writeWorkspaceModifierUsage(deps: RunDeps) !void {
     );
 }
 
-fn writeModelModifierUsage(deps: RunDeps) !void {
-    try writeStderr(
-        deps,
-        "fx: --provider, --model, --effort, --fast, --ultrafast, --provider-order, --provider-strict, and --permission-mode apply to interactive sessions; for one-shot runs pass them after `fx ask`\n",
-    );
+/// For an agent-run flag before a command, says where it goes, as in
+/// `fx: put agent-run flags after the command, as in fx ask --model <id>`.
+fn writeModelModifierUsage(alloc: Allocator, deps: RunDeps, command: Command, modifiers: LaunchModifiers) !void {
+    const example = firstAgentRunFlag(modifiers);
+    const routing = modifiers.provider_order_override != null or modifiers.provider_strict_override != null;
+    const target: ?[]const u8 = switch (command) {
+        .ask => "ask",
+        .pr => "pr",
+        .issue => "issue",
+        // ACP sessions don't apply gateway provider routing.
+        .acp => if (routing) null else "acp",
+        else => null,
+    };
+    const message = if (target) |name|
+        try alloc.print("fx: put agent-run flags after the command, as in fx {s} {s}\n", .{ name, example })
+    else
+        try alloc.print("fx: agent-run flags such as {s} apply to a session and to fx ask, fx pr, fx issue, and fx acp\n", .{example[0 .. std.mem.findScalar(u8, example, ' ') orelse example.len]});
+    defer alloc.free(message);
+    try writeStderr(deps, message);
+}
+
+/// The documented spelling of the first agent-run flag set before a command.
+fn firstAgentRunFlag(modifiers: LaunchModifiers) []const u8 {
+    if (modifiers.permission_override != null) return "--permission-mode <mode>";
+    if (modifiers.provider_override != null) return "--provider <name>";
+    if (modifiers.model_override != null) return "--model <id>";
+    if (modifiers.effort_override != null) return "--effort <level>";
+    if (modifiers.fast_override) |fast| return if (fast) "--fast" else "--no-fast";
+    if (modifiers.ultrafast_override) |ultrafast| return if (ultrafast) "--ultrafast" else "--no-ultrafast";
+    if (modifiers.provider_order_override != null) return "--provider-order <a,b,...>";
+    return if (modifiers.provider_strict_override == true) "--provider-strict" else "--no-provider-strict";
 }
 
 fn globalLaunchErrorMessage(err: anyerror) ?[]const u8 {
@@ -4126,38 +4209,69 @@ fn globalLaunchErrorMessage(err: anyerror) ?[]const u8 {
     };
 }
 
-const AcpFlag = enum { model, ultrafast, no_ultrafast, log_file };
+const AcpFlag = enum { permission_mode, ask, auto, full_access, yolo, provider, model, effort, fast, no_fast, ultrafast, no_ultrafast, log_file };
 const acp_flag_ids = cli_flags.idTable(AcpFlag, &builtin_commands.acp_options);
 
-fn parseAcpArgs(args: []const [:0]const u8) !AcpOptions {
+fn parseAcpArgs(alloc: Allocator, args: []const [:0]const u8, bad: *?BadAgentValue) !AcpOptions {
     var opts = AcpOptions{};
+    errdefer opts.deinit(alloc);
     var parser: cli_flags.Parser = .init(&builtin_commands.acp_options, args);
     while (parser.next() catch return error.InvalidAcpArgs) |item| switch (item) {
         .positional => return error.InvalidAcpArgs,
-        .option => |match| switch (acp_flag_ids[match.index].?) {
-            .model => opts.model = match.value.?,
-            .ultrafast => opts.ultrafast_override = true,
-            .no_ultrafast => opts.ultrafast_override = false,
-            .log_file => opts.log_file = match.value.?,
+        .option => |match| {
+            const id = acp_flag_ids[match.index].?;
+            if (agent_run_flags.fromId(id)) |flag| {
+                try applyAgentFlag(alloc, &opts.agent, flag, &builtin_commands.acp_options, match, bad);
+                continue;
+            }
+            switch (id) {
+                .log_file => opts.log_file = match.value.?,
+                else => unreachable,
+            }
         },
     };
     return opts;
 }
 
-test "ACP arguments accept an explicit ultrafast override" {
-    const enabled = try parseAcpArgs(&.{
-        @constCast("--model"),
-        @constCast("provider/astra"),
-        @constCast("--ultrafast"),
-    });
-    try std.testing.expectEqualStrings("provider/astra", enabled.model.?);
-    try std.testing.expectEqual(@as(?bool, true), enabled.ultrafast_override);
+test "ACP arguments take the agent-run flags and a log file" {
+    const alloc = std.testing.allocator;
+    var bad: ?BadAgentValue = null;
+    var enabled = try parseAcpArgs(alloc, &.{ "--model", "provider/astra", "--ultrafast" }, &bad);
+    defer enabled.deinit(alloc);
+    try std.testing.expectEqualStrings("provider/astra", enabled.agent.model.?);
+    try std.testing.expectEqual(@as(?bool, true), enabled.agent.ultrafast);
 
-    const disabled = try parseAcpArgs(&.{@constCast("--no-ultrafast")});
-    try std.testing.expectEqual(@as(?bool, false), disabled.ultrafast_override);
-    const last = try parseAcpArgs(&.{ "--ultrafast", "--no-ultrafast", "--model=a", "--model", "b" });
-    try std.testing.expectEqual(@as(?bool, false), last.ultrafast_override);
-    try std.testing.expectEqualStrings("b", last.model.?);
+    var last = try parseAcpArgs(alloc, &.{ "--ultrafast", "--no-ultrafast", "--model=a", "--model", "b", "--effort", "high", "--fast", "--ask", "--provider", "codex", "--log-file", "/tmp/acp.log" }, &bad);
+    defer last.deinit(alloc);
+    try std.testing.expectEqual(@as(?bool, false), last.agent.ultrafast);
+    try std.testing.expectEqualStrings("b", last.agent.model.?);
+    try std.testing.expectEqualStrings("high", last.agent.effort.?.label());
+    try std.testing.expect(last.agent.fast.?);
+    try std.testing.expectEqual(types.PermissionMode.ask, last.agent.permission.?);
+    try std.testing.expectEqualStrings("codex", last.agent.provider.?.label());
+    try std.testing.expectEqualStrings("/tmp/acp.log", last.log_file.?);
+
+    try std.testing.expectError(error.InvalidAgentRunValue, parseAcpArgs(alloc, &.{ "--effort", "high effort" }, &bad));
+    try std.testing.expectEqualStrings("--effort", bad.?.flag);
+    try std.testing.expectEqualStrings("high effort", bad.?.value);
+    // ACP sessions don't apply gateway provider routing, so the flag isn't offered.
+    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(alloc, &.{ "--provider-order", "a" }, &bad));
+}
+
+test "pr and issue take the agent-run flags before their context" {
+    const alloc = std.testing.allocator;
+    var bad: ?BadAgentValue = null;
+    var opts = try parseWorkflowArgs(alloc, &.{ "--auto", "--model", "m", "--effort=low", "--provider-order", "a,b", "--create", "fix", "the", "--model", "x" }, &bad);
+    defer opts.deinit(alloc);
+    try std.testing.expectEqual(types.PermissionMode.auto, opts.agent.permission.?);
+    try std.testing.expectEqualStrings("m", opts.agent.model.?);
+    try std.testing.expectEqual(@as(usize, 2), opts.agent.provider_order.?.len);
+    try std.testing.expect(opts.create);
+    // Flags after the context are part of it.
+    try std.testing.expectEqualStrings("fix the --model x", opts.context);
+
+    try std.testing.expectError(error.InvalidAgentRunValue, parseWorkflowArgs(alloc, &.{ "--permission-mode", "sometimes" }, &bad));
+    try std.testing.expectEqualStrings("--permission-mode", bad.?.flag);
 }
 
 /// Prints the settings `fx config list` or `fx config get` asks for. `get` of a
@@ -4555,26 +4669,29 @@ fn removedResumeHint(err: anyerror) ?[]const u8 {
     };
 }
 
-const WorkflowFlag = enum { auto, create };
+const WorkflowFlag = enum { permission_mode, ask, auto, full_access, yolo, provider, model, effort, fast, no_fast, ultrafast, no_ultrafast, provider_order, provider_strict, no_provider_strict, create };
 // `fx issue` documents the same flags as `fx pr`.
 const workflow_flag_ids = cli_flags.idTable(WorkflowFlag, &builtin_commands.pr_options);
 
 /// Reads `--auto` and `--create`, then joins the rest into the context.
-fn parseWorkflowArgs(alloc: Allocator, args: []const [:0]const u8) !WorkflowOptions {
-    var auto_permission = false;
-    var create = false;
+fn parseWorkflowArgs(alloc: Allocator, args: []const [:0]const u8, bad: *?BadAgentValue) !WorkflowOptions {
+    var opts: WorkflowOptions = .{};
+    errdefer opts.agent.deinit(alloc);
     var parser: cli_flags.Parser = .initPrefix(&builtin_commands.pr_options, args);
     // Prefix mode stops at positionals, so every item is an option.
-    while (parser.next() catch return error.InvalidWorkflowArgs) |item| switch (workflow_flag_ids[item.option.index].?) {
-        .auto => auto_permission = true,
-        .create => create = true,
-    };
-
-    return .{
-        .auto_permission = auto_permission,
-        .create = create,
-        .context = try joinArgs(alloc, args[parser.index..]),
-    };
+    while (parser.next() catch return error.InvalidWorkflowArgs) |item| {
+        const id = workflow_flag_ids[item.option.index].?;
+        if (agent_run_flags.fromId(id)) |flag| {
+            try applyAgentFlag(alloc, &opts.agent, flag, &builtin_commands.pr_options, item.option, bad);
+            continue;
+        }
+        switch (id) {
+            .create => opts.create = true,
+            else => unreachable,
+        }
+    }
+    opts.context = try joinArgs(alloc, args[parser.index..]);
+    return opts;
 }
 
 fn joinArgs(alloc: Allocator, args: []const [:0]const u8) ![]u8 {
@@ -4958,22 +5075,17 @@ test "additional directory flags fail closed when malformed" {
 }
 
 test "parse acp args extracts known flags and rejects invalid arguments" {
-    const opts = try parseAcpArgs(&.{
-        @constCast("--model"),
-        @constCast("openai/gpt-4o"),
-        @constCast("--log-file"),
-        @constCast("/tmp/fx.log"),
-    });
-    try std.testing.expectEqualStrings("openai/gpt-4o", opts.model.?);
+    const alloc = std.testing.allocator;
+    var bad: ?BadAgentValue = null;
+    var opts = try parseAcpArgs(alloc, &.{ "--model", "openai/gpt-4o", "--log-file", "/tmp/fx.log" }, &bad);
+    defer opts.deinit(alloc);
+    try std.testing.expectEqualStrings("openai/gpt-4o", opts.agent.model.?);
     try std.testing.expectEqualStrings("/tmp/fx.log", opts.log_file.?);
 
-    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(&.{@constCast("--unknown")}));
-    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(&.{@constCast("--model")}));
-    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(&.{@constCast("--log-file")}));
-    try std.testing.expectError(
-        error.InvalidAcpArgs,
-        parseAcpArgs(&.{ @constCast("--model"), @constCast("first"), @constCast("stray") }),
-    );
+    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(alloc, &.{"--unknown"}, &bad));
+    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(alloc, &.{"--model"}, &bad));
+    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(alloc, &.{"--log-file"}, &bad));
+    try std.testing.expectError(error.InvalidAcpArgs, parseAcpArgs(alloc, &.{ "--model", "first", "stray" }, &bad));
 }
 
 test "ACP command routes parsed options and launch config through the injected runner" {
@@ -5554,28 +5666,20 @@ test "workflow drafts come only from the completed final response" {
 }
 
 test "parse workflow args consumes leading flags and joins remaining context exactly" {
-    var opts = try parseWorkflowArgs(std.testing.allocator, &.{
-        @constCast("--auto"),
-        @constCast("--create"),
-        @constCast("ready"),
-        @constCast("for"),
-        @constCast("review"),
-    });
+    var bad: ?BadAgentValue = null;
+    var opts = try parseWorkflowArgs(std.testing.allocator, &.{ "--auto", "--create", "ready", "for", "review" }, &bad);
     defer opts.deinit(std.testing.allocator);
-    try std.testing.expect(opts.auto_permission);
+    try std.testing.expectEqual(types.PermissionMode.auto, opts.agent.permission.?);
     try std.testing.expect(opts.create);
     try std.testing.expectEqualStrings("ready for review", opts.context);
 
-    var later_flag = try parseWorkflowArgs(std.testing.allocator, &.{
-        @constCast("context"),
-        @constCast("--auto"),
-    });
+    var later_flag = try parseWorkflowArgs(std.testing.allocator, &.{ "context", "--auto" }, &bad);
     defer later_flag.deinit(std.testing.allocator);
-    try std.testing.expect(!later_flag.auto_permission);
+    try std.testing.expect(later_flag.agent.permission == null);
     try std.testing.expect(!later_flag.create);
     try std.testing.expectEqualStrings("context --auto", later_flag.context);
 
-    var empty = try parseWorkflowArgs(std.testing.allocator, &.{});
+    var empty = try parseWorkflowArgs(std.testing.allocator, &.{}, &bad);
     defer empty.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("", empty.context);
 }
