@@ -40,7 +40,7 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 | Concept | Name |
 |---|---|
 | Settings command | `fx config list\|get\|set\|unset`; `--global`, `--workspace` (list and get), `--show-origin` |
-| Generic per-run override | Working name `--config key=value` (planned; spelling not settled) |
+| Generic per-run override | `fx ask --config key=value`, with the keys `fx config set` takes |
 | Sound | `sound.turn_end`, `sound.attention_required`, `sound.max` (today `notifications.*`, still read); `/sound on\|off\|max` and `FX_SOUND` are presets for the group |
 | Status line | `status_line.*` (today `statusLine`, still read) |
 | Experiments | `experimental.<name>`, for example `experimental.sessions_v2` |

@@ -431,8 +431,24 @@ pub fn loadStartupStateForRun(
     provider_override: ?model_provider.ProviderId,
     model_override: ?[]const u8,
 ) !StartupState {
+    return loadStartupStateForRunWithOverrides(alloc, transport, secret_store, default_model, default_agent_step_limit, auth_mode, provider_override, model_override, &.{});
+}
+
+/// `loadStartupStateForRun` with one run's `--config` values applied as the top
+/// settings layer (`fx ask --config key=value`).
+pub fn loadStartupStateForRunWithOverrides(
+    alloc: Allocator,
+    transport: oauth_transport.Provider,
+    secret_store: host.SecretStore,
+    default_model: []const u8,
+    default_agent_step_limit: usize,
+    auth_mode: credentials.AuthMode,
+    provider_override: ?model_provider.ProviderId,
+    model_override: ?[]const u8,
+    settings_overrides: []const config_runtime.SettingOverride,
+) !StartupState {
     const workspace_root = try io_mod.realpathAlloc(alloc, ".");
-    return loadStartupStateFromOwnedWorkspace(alloc, transport, secret_store, workspace_root, default_model, default_agent_step_limit, auth_mode, null, .refresh_if_needed, provider_override, model_override);
+    return loadStartupStateWithKeychainRead(alloc, transport, secret_store, workspace_root, default_model, default_agent_step_limit, auth_mode, null, .refresh_if_needed, provider_override, model_override, .blocking, settings_overrides);
 }
 
 pub fn loadStartupStateWithoutCredentials(alloc: Allocator, default_model: []const u8, default_agent_step_limit: usize) !StartupState {
@@ -514,7 +530,7 @@ pub fn loadInteractiveStartupState(
     model_override: ?[]const u8,
 ) !StartupState {
     const workspace_root = try io_mod.realpathAlloc(alloc, ".");
-    return loadStartupStateWithKeychainRead(alloc, oauth_transport.unavailable_provider, secret_store, workspace_root, default_model, default_agent_step_limit, auth_mode, null, .stored, provider_override, model_override, .deferred);
+    return loadStartupStateWithKeychainRead(alloc, oauth_transport.unavailable_provider, secret_store, workspace_root, default_model, default_agent_step_limit, auth_mode, null, .stored, provider_override, model_override, .deferred, &.{});
 }
 
 pub fn loadStartupStatus(
@@ -651,7 +667,7 @@ fn loadStartupStateFromOwnedWorkspace(
     provider_override: ?model_provider.ProviderId,
     model_override: ?[]const u8,
 ) !StartupState {
-    return loadStartupStateWithKeychainRead(alloc, transport, secret_store, owned_workspace_root, default_model, default_agent_step_limit, auth_mode, profile_home, credential_mode, provider_override, model_override, .blocking);
+    return loadStartupStateWithKeychainRead(alloc, transport, secret_store, owned_workspace_root, default_model, default_agent_step_limit, auth_mode, profile_home, credential_mode, provider_override, model_override, .blocking, &.{});
 }
 
 fn loadStartupStateWithKeychainRead(
@@ -667,6 +683,7 @@ fn loadStartupStateWithKeychainRead(
     provider_override: ?model_provider.ProviderId,
     model_override: ?[]const u8,
     keychain_read: KeychainRead,
+    settings_overrides: []const config_runtime.SettingOverride,
 ) !StartupState {
     var state = StartupState{
         .agent_step_limit = default_agent_step_limit,
@@ -681,6 +698,7 @@ fn loadStartupStateWithKeychainRead(
     else
         try config_runtime.loadMergedSettingsDetailed(alloc, state.workspace_root);
     defer detailed.deinit(alloc);
+    try config_runtime.applySettingOverrides(alloc, &detailed.settings, settings_overrides);
     const settings = &detailed.settings;
     // A malformed process override must never silently fall through to a
     // potentially paid profile preference, regardless of credential mode.
@@ -2897,7 +2915,7 @@ test "interactive launch leaves a Keychain credential unresolved for the caller"
     var keychain_store = host.unavailable_secret_store;
     keychain_store.is_disabled_fn = keychainEnabledForTest;
     for ([_]KeychainRead{ .blocking, .deferred }) |keychain_read| {
-        var state = try loadStartupStateWithKeychainRead(alloc, oauth_transport.unavailable_provider, keychain_store, try alloc.dupe(u8, workspace_root), "default/model", 25, .local, null, .stored, null, null, keychain_read);
+        var state = try loadStartupStateWithKeychainRead(alloc, oauth_transport.unavailable_provider, keychain_store, try alloc.dupe(u8, workspace_root), "default/model", 25, .local, null, .stored, null, null, keychain_read, &.{});
         defer state.deinit(alloc);
         try std.testing.expect(state.credential == null);
         if (keychain_read == .deferred and builtin.target.os.tag == .macos) {

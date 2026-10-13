@@ -400,7 +400,7 @@ describe("cli: help", () => {
 Run one noninteractive request
 
 Usage:
-  fx ask [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--timeout <seconds>] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>] [--continue-recovery] [--] <prompt>
+  fx ask [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--timeout <seconds>] [--config <key=value>] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>] [--continue-recovery] [--] <prompt>
 
 Options:
   --permission-mode <mode>    Set the permission mode for this request: ask, auto, or full-access
@@ -424,6 +424,7 @@ Options:
   --quiet                     Suppress assistant output
   --prompt-permissions        Prompt for Y/N permission approval when stdin is a TTY
   --timeout <seconds>         Time limit for each shell command the agent runs
+  --config <key=value>        Override a setting for this request, with the keys fx config set takes; repeatable
   --no-save                   Do not save the session; incompatible with --resume
   --sessions-v2               Use the experimental v2 session store, also set by FX_SESSIONS_V2=1; its sessions resume only with it
   --no-color                  Render TTY output without colors or hyperlinks
@@ -5293,7 +5294,7 @@ describe("cli: error handling", () => {
             "fx ask: --no-save cannot be used with --resume",
           );
           expect(rejected.stderr).toContain(
-            "usage: fx ask [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--timeout <seconds>] [--no-save]",
+            "usage: fx ask [--permission-mode <mode>|--ask|--auto|--full-access] [--provider <name>] [--model <id>] [--effort <level>] [--fast|--no-fast] [--ultrafast|--no-ultrafast] [--provider-order <a,b,...>] [--provider-strict|--no-provider-strict] [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--timeout <seconds>] [--config <key=value>] [--no-save]",
           );
         }
         expect(gateway.requests).toHaveLength(0);

@@ -251,14 +251,52 @@ fn ownerHint(key: []const u8) []const u8 {
 }
 
 /// `can't change permission_mode with fx config; use /permissions ...` or
-/// `invalid value for fast_mode: maybe (use true or false)`. Caller owns the
-/// result.
-pub fn formatWriteProblem(alloc: Allocator, options: Options, problem: WriteProblem) ![]u8 {
-    const key = options.key.?;
+/// `invalid value for fast_mode: maybe (use true or false)`, where `via` names
+/// the surface, such as `fx config` or `--config`. Caller owns the result.
+pub fn formatWriteProblem(alloc: Allocator, key: []const u8, value: ?[]const u8, problem: WriteProblem, via: []const u8) ![]u8 {
     return switch (problem) {
         .none => alloc.dupe(u8, key),
-        .refused => |hint| alloc.print("can't change {s} with fx config; {s}", .{ key, hint }),
-        .invalid_value => |expected| alloc.print("invalid value for {s}: {s} (use {s})", .{ key, options.value orelse "", expected }),
+        .refused => |hint| alloc.print("can't change {s} with {s}; {s}", .{ key, via, hint }),
+        .invalid_value => |expected| alloc.print("invalid value for {s}: {s} (use {s})", .{ key, value orelse "", expected }),
+    };
+}
+
+pub const OverrideProblem = union(enum) {
+    none,
+    /// The argument isn't `key=value`.
+    malformed,
+    unknown: settings_keys.UnknownPart,
+    write: struct { key: []const u8, value: []const u8, problem: WriteProblem },
+};
+
+/// Parses one `--config key=value` for `fx ask`, with the keys, values, and
+/// checks of `fx config set`. On failure, `problem` says why. Slices borrow
+/// from `text`.
+pub fn parseOverride(text: []const u8, problem: *OverrideProblem) error{InvalidConfigOverride}!config_runtime.SettingOverride {
+    const at = std.mem.findScalar(u8, text, '=') orelse return overrideProblem(problem, .malformed);
+    const key = text[0..at];
+    const value = text[at + 1 ..];
+    if (key.len == 0) return overrideProblem(problem, .malformed);
+    if (settings_keys.unknownPart(key)) |part| return overrideProblem(problem, .{ .unknown = part });
+    var write_problem: WriteProblem = .none;
+    const planned = change(.{ .action = .set, .key = key, .value = value }, &write_problem) catch
+        return overrideProblem(problem, .{ .write = .{ .key = key, .value = value, .problem = write_problem } });
+    return .{ .key = key, .value = planned.value.? };
+}
+
+fn overrideProblem(problem: *OverrideProblem, why: OverrideProblem) error{InvalidConfigOverride} {
+    problem.* = why;
+    return error.InvalidConfigOverride;
+}
+
+/// The message for a rejected `--config` value, such as `--config needs
+/// key=value` or `unknown setting fast_mdoe (did you mean fast_mode?)`.
+/// Caller owns the result.
+pub fn formatOverrideProblem(alloc: Allocator, problem: OverrideProblem) ![]u8 {
+    return switch (problem) {
+        .none, .malformed => alloc.dupe(u8, "--config needs key=value, such as --config fast_mode=on"),
+        .unknown => |part| settings_messages.formatUnknownPath(alloc, part),
+        .write => |bad| formatWriteProblem(alloc, bad.key, bad.value, bad.problem, "--config"),
     };
 }
 
@@ -437,7 +475,32 @@ test "config set explains a bad value or a key it doesn't change" {
         const options = try parseForTest(case.args);
         var problem: WriteProblem = .none;
         try std.testing.expectError(case.err, change(options, &problem));
-        const message = try formatWriteProblem(alloc, options, problem);
+        const message = try formatWriteProblem(alloc, options.key.?, options.value, problem, "fx config");
+        defer alloc.free(message);
+        try std.testing.expectEqualStrings(case.message, message);
+    }
+}
+
+test "--config takes key=value with the keys and checks of config set" {
+    const alloc = std.testing.allocator;
+    var problem: OverrideProblem = .none;
+    const fast = try parseOverride("fast_mode=on", &problem);
+    try std.testing.expectEqualStrings("fast_mode", fast.key);
+    try std.testing.expect(fast.value.bool);
+    const status = try parseOverride("statusLine.context=false", &problem);
+    try std.testing.expectEqualStrings("statusLine.context", status.key);
+
+    const cases = [_]struct { text: []const u8, message: []const u8 }{
+        .{ .text = "fast_mode", .message = "--config needs key=value, such as --config fast_mode=on" },
+        .{ .text = "=on", .message = "--config needs key=value, such as --config fast_mode=on" },
+        .{ .text = "fast_mdoe=on", .message = "unknown setting fast_mdoe (did you mean fast_mode?)" },
+        .{ .text = "fast_mode=maybe", .message = "invalid value for fast_mode: maybe (use true or false)" },
+        .{ .text = "permission_mode=full-access", .message = "can't change permission_mode with --config; use /permissions in a session, or --permission-mode for one run" },
+    };
+    for (cases) |case| {
+        problem = .none;
+        try std.testing.expectError(error.InvalidConfigOverride, parseOverride(case.text, &problem));
+        const message = try formatOverrideProblem(alloc, problem);
         defer alloc.free(message);
         try std.testing.expectEqualStrings(case.message, message);
     }

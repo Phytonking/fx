@@ -1391,6 +1391,39 @@ fn readOptionalFile(alloc: Allocator, path: []const u8) !?[]u8 {
     return try io_mod.readFileToEnd(alloc, &file, max_settings_bytes + 1);
 }
 
+/// One `--config key=value` for a single run, with the value already checked
+/// and in settings-file form. The key is dotted, such as `statusLine.context`.
+pub const SettingOverride = struct {
+    key: []const u8,
+    value: std.json.Value,
+};
+
+/// Applies one run's `--config` values as the top settings layer, above every
+/// settings file. Flags and FX_* variables are resolved later, so they still
+/// win, as they do over the files. A later override for a key replaces an
+/// earlier one. Nothing is saved.
+pub fn applySettingOverrides(alloc: Allocator, settings: *Settings, overrides: []const SettingOverride) !void {
+    if (overrides.len == 0) return;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var root: std.json.ObjectMap = .empty;
+    for (overrides) |override| {
+        const dot = std.mem.findScalar(u8, override.key, '.') orelse {
+            try root.put(scratch, override.key, override.value);
+            continue;
+        };
+        const parent = try root.getOrPut(scratch, override.key[0..dot]);
+        if (!parent.found_existing or parent.value_ptr.* != .object) parent.value_ptr.* = .{ .object = .empty };
+        try parent.value_ptr.object.put(scratch, override.key[dot + 1 ..], override.value);
+    }
+
+    var incoming = try parseSettingsValueForLayer(alloc, .{ .object = root }, .profile, false, true);
+    defer incoming.deinit(alloc);
+    try mergeSettings(settings, &incoming, alloc);
+}
+
 /// Reads and parses one settings file for inspection, such as `fx doctor`'s
 /// unknown-key check, with the same size limit as loading. Null when the file
 /// is absent. Caller deinits the result, which owns all of its strings.
@@ -2934,6 +2967,29 @@ test "review_model parses, merges, and yields to FX_REVIEW_MODEL" {
     var result = try loadMergedSettingsDetailedFromHome(std.testing.allocator, home_root, workspace_root);
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("process/review", result.settings.review_model.?);
+}
+
+test "setting overrides sit above the files, nest dotted keys, and keep the last value" {
+    const alloc = std.testing.allocator;
+    var settings = try parseSettingsJson(alloc, "{\"fast_mode\":false,\"effort\":\"low\",\"theme\":\"dark\",\"statusLine\":{\"session\":true}}");
+    defer settings.deinit(alloc);
+
+    try applySettingOverrides(alloc, &settings, &.{
+        .{ .key = "fast_mode", .value = .{ .bool = true } },
+        .{ .key = "effort", .value = .{ .string = "medium" } },
+        .{ .key = "effort", .value = .{ .string = "high" } },
+        .{ .key = "statusLine.context", .value = .{ .bool = true } },
+        .{ .key = "statusLine.workspace", .value = .{ .bool = true } },
+        .{ .key = "theme", .value = .{ .string = "light" } },
+    });
+    try std.testing.expect(settings.fast_mode.?);
+    try std.testing.expectEqualStrings("high", settings.effort.?.label());
+    try std.testing.expect(settings.statusline_context.? and settings.statusline_workspace.?);
+    try std.testing.expect(settings.statusline_session.?);
+    try std.testing.expectEqualStrings("light", settings.theme.?);
+
+    try applySettingOverrides(alloc, &settings, &.{});
+    try std.testing.expect(settings.fast_mode.?);
 }
 
 test "obsolete web_fetch worker model setting is ignored" {

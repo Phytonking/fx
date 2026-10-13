@@ -4216,7 +4216,7 @@ const workspace_write_message = "preferences apply to every workspace, so set an
 fn runConfigWrite(alloc: Allocator, deps: RunDeps, opts: cli_config.Options) !RunResult {
     var problem: cli_config.WriteProblem = .none;
     const planned = cli_config.change(opts, &problem) catch |err| {
-        const message = try cli_config.formatWriteProblem(alloc, opts, problem);
+        const message = try cli_config.formatWriteProblem(alloc, opts.key.?, opts.value, problem, "fx config");
         defer alloc.free(message);
         if (opts.format == .json) {
             try writeJsonCommandFailure(alloc, deps, "config", err, message);

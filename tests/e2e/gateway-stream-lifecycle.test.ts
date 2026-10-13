@@ -1385,6 +1385,59 @@ describe("gateway stream lifecycle", () => {
     }
   }, 30_000);
 
+  test("ask --config overrides the settings files and yields to dedicated flags", async () => {
+    const root = createFixtureRoot("ask-config-overrides");
+    const tracePath = join(root.root, "trace.log");
+    const settingsPath = join(root.home, ".fx", "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ effort: "low", fast_mode: false }) + "\n");
+    const settingsBefore = readFileSync(settingsPath, "utf8");
+    const gateway = startDynamicFakeGateway(
+      () => fakeGatewayFinalText("CONFIG_OVERRIDES_COMPLETE"),
+      {
+        models: [{
+          id: MODEL,
+          type: "language",
+          tags: ["tool-use", "reasoning"],
+          fast_options: [{ type: "toggle" }],
+          reasoning_options: [{ type: "effort", values: ["low", "high"] }],
+        }],
+      },
+    );
+    const env = {
+      ...fixtureEnv(root, gateway, tracePath),
+      FX_MODEL: undefined,
+      FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+    };
+    const ask = (flags: string[]) =>
+      runFx(["ask", "--json", "--auto", "--no-save", "--model", MODEL, ...flags, "Use the settings overrides."], {
+        cwd: root.workspace,
+        env,
+        timeoutMs: 30_000,
+      });
+
+    try {
+      const overridden = await ask(["--config", "effort=low", "--config", "effort=high", "--config", "fast_mode=on"]);
+      expect(overridden.code).toBe(0);
+      expect(parseAskJson(overridden.stdout).output).toContain("CONFIG_OVERRIDES_COMPLETE");
+      expect(overridden.stderr).toBe("");
+      expect(JSON.parse(gateway.requests[0]!.body)).toMatchObject({
+        reasoning: "high",
+        providerOptions: { gateway: { speed: "fast" } },
+      });
+
+      const flagWins = await ask(["--config", "fast_mode=on", "--no-fast"]);
+      expect(flagWins.code).toBe(0);
+      const second = JSON.parse(gateway.requests[1]!.body);
+      expect(second).toMatchObject({ reasoning: "low" });
+      expect(second).not.toHaveProperty("providerOptions.gateway.speed");
+
+      expect(readFileSync(settingsPath, "utf8")).toBe(settingsBefore);
+    } finally {
+      gateway.stop();
+      rmSync(root.root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test("ask --model without --fast keeps fast mode off", async () => {
     const root = createFixtureRoot("ask-model-override-no-fast");
     const tracePath = join(root.root, "trace.log");

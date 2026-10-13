@@ -9,7 +9,7 @@ fx follows git and Unix conventions for how people and scripts control it. Each 
 
 ## Current versus target
 
-Several pieces the rules rely on aren't built yet: the generic `--config key=value` override, `FX_HOME`, `fx completion`, `experimental.*` settings, and the agent-run flags on `fx acp`. Design new work toward them, but never tell a user to run something that doesn't exist yet. Check `./zig-out/bin/fx help` and `./zig-out/bin/fx <command> --help` when unsure. When a target piece is missing, use the nearest current pattern and say what's missing.
+Several pieces the rules rely on aren't built yet: `FX_HOME`, `fx completion`, `experimental.*` settings, and the agent-run flags on `fx acp`. Design new work toward them, but never tell a user to run something that doesn't exist yet. Check `./zig-out/bin/fx help` and `./zig-out/bin/fx <command> --help` when unsure. When a target piece is missing, use the nearest current pattern and say what's missing.
 
 ## Decision order
 
@@ -85,7 +85,7 @@ Ask before inventing a rule for something these rules don't cover: keyboard shor
 - Run `./zig-out/bin/fx <command> --help` and the command itself after changing a flag.
 - `.fx.json` filtering is structural: only `parseProjectSafeFields` reads project files. Every key also goes in the settings list, `src/core/config/settings_keys.zig`, marked `.profile` or `.project_safe`. That list drives the "ignored in project" warning and `fx doctor`'s unknown-key report, and the CI shape check fails if a parser reads a key it lacks.
 - Every `FX_*` name in `src/` must be registered, with a job and a stability, in `scripts/cli_shape_registry.json`, or CI fails. Known violations are listed there as exceptions, each with the change that removes it. A new exception needs a maintainer's approval; never add one to make a new control pass.
-- `-c` already means continue, so git's `-c key=value` can't be copied. Use the generic override's working name, `--config key=value`.
+- `-c` already means continue, so git's `-c key=value` can't be copied. The one-run override is `fx ask --config key=value`.
 - Full access is saved as `yolo` today. Read both `yolo` and `full-access`; write `full-access` in new code.
 - `fx setup` pastes an API key while `/setup` opens the provider picker. "Setup" is being folded into `fx login`; don't build on either meaning.
 - Resume already has seven kept spellings. Use `--resume last` or `--resume <id>`; never add another form such as `--resume-latest`.

@@ -37,6 +37,7 @@ const shell_snapshot = @import("../terminal/shell_snapshot.zig");
 const session_title_generation = @import("../session/session_title_generation.zig");
 const compactor = @import("../compactor/compactor.zig");
 const config_runtime = @import("../config/config_runtime.zig");
+const cli_config = @import("cli_config.zig");
 const model_capabilities = @import("../config/model_capabilities.zig");
 const model_provider = @import("../config/model_provider.zig");
 const builtin_commands = @import("../../builtins/commands.zig");
@@ -375,8 +376,12 @@ const AskOptions = struct {
     continue_recovery: bool = false,
     /// `fx ask --sessions-v2`: keep this run's session in the v2 store.
     sessions_v2: bool = false,
+    /// `--config key=value` values in order; a later one for a key wins. They
+    /// borrow from the arguments.
+    settings_overrides: std.ArrayList(config_runtime.SettingOverride) = .empty,
 
     fn deinit(self: *AskOptions, alloc: Allocator) void {
+        self.settings_overrides.deinit(alloc);
         alloc.free(self.prompt);
         for (self.image_paths.items) |p| alloc.free(p);
         self.image_paths.deinit(alloc);
@@ -439,8 +444,8 @@ const NotifyAttentionFn = *const fn (?*anyopaque) void;
 const PermissionApprovalPromptFn = *const fn (?*anyopaque, ?*anyopaque, WriteFn, []const u8, ?*anyopaque, NotifyAttentionFn) anyerror!PermissionApprovalPromptResult;
 const IsTtyFn = *const fn (?*anyopaque) bool;
 /// The final `?[]const u8` is the run's --model, which stands in for a provider without a saved model.
-const LoadStartupStateFn = *const fn (Allocator, oauth_transport.Provider, host.SecretStore, []const u8, usize, ?model_provider.ProviderId, ?[]const u8) anyerror!app_lifecycle.StartupState;
-const LoadStartupStateWithAuthModeFn = *const fn (Allocator, oauth_transport.Provider, host.SecretStore, []const u8, usize, credentials.AuthMode, ?model_provider.ProviderId, ?[]const u8) anyerror!app_lifecycle.StartupState;
+const LoadStartupStateFn = *const fn (Allocator, oauth_transport.Provider, host.SecretStore, []const u8, usize, ?model_provider.ProviderId, ?[]const u8, []const config_runtime.SettingOverride) anyerror!app_lifecycle.StartupState;
+const LoadStartupStateWithAuthModeFn = *const fn (Allocator, oauth_transport.Provider, host.SecretStore, []const u8, usize, credentials.AuthMode, ?model_provider.ProviderId, ?[]const u8, []const config_runtime.SettingOverride) anyerror!app_lifecycle.StartupState;
 const InitializeSessionStoresFn = *const fn (*AskContext) anyerror!void;
 const LoadSkillsFn = *const fn (
     Allocator,
@@ -463,7 +468,7 @@ const RunDeps = struct {
     stdout_is_tty: IsTtyFn = realStdoutIsTty,
     stderr_is_tty: IsTtyFn = realStderrIsTty,
     load_startup_state: LoadStartupStateFn = loadStartupStateDefault,
-    load_startup_state_with_auth_mode: LoadStartupStateWithAuthModeFn = app_lifecycle.loadStartupStateForRun,
+    load_startup_state_with_auth_mode: LoadStartupStateWithAuthModeFn = app_lifecycle.loadStartupStateForRunWithOverrides,
     initialize_session_stores: InitializeSessionStoresFn = initializeSessionStoresDefault,
     load_skills: LoadSkillsFn = app_runtime_setup.loadSkills,
     context_registry: context_contract.Registry,
@@ -505,6 +510,8 @@ const RunOptions = struct {
     continue_recovery: bool = false,
     provider_override: ?model_provider.ProviderId = null,
     model_override: ?[]const u8 = null,
+    /// `--config key=value` values, applied as the top settings layer.
+    settings_overrides: []const config_runtime.SettingOverride = &.{},
     effort_override: ?types.ReasoningEffort = null,
     fast_override: ?bool = null,
     ultrafast_override: ?bool = null,
@@ -1496,6 +1503,7 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
         .ultrafast_override = options.ultrafast_override,
         .provider_order_override = options.provider_order_override,
         .provider_strict_override = options.provider_strict_override,
+        .settings_overrides = options.settings_overrides.items,
         .deps = deps,
     }) catch |err| {
         if (interrupt_scope.requested()) return headless_interrupt.exitCode();
@@ -1643,6 +1651,7 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
             cfg.auth_mode,
             options.provider_override,
             options.model_override,
+            options.settings_overrides,
         )
     else
         try options.deps.load_startup_state(
@@ -1653,6 +1662,7 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
             cfg.default_agent_step_limit,
             options.provider_override,
             options.model_override,
+            options.settings_overrides,
         );
     defer startup.deinit(alloc);
     applyAskThemeChoice(startup.theme);
@@ -4089,9 +4099,11 @@ const AskUsageProblem = union(enum) {
     none,
     flag: cli_flags.Failure,
     invalid_value: struct { flag: []const u8, value: []const u8 },
+    config: cli_config.OverrideProblem,
 };
 
 const AskFlag = enum {
+    config,
     permission_mode,
     ask,
     auto,
@@ -4203,6 +4215,14 @@ fn parseAskOptions(alloc: Allocator, args: []const [:0]const u8, stdin: StdinSou
             // The parser rejects removed spellings before they get here.
             .resume_id => unreachable,
             .continue_recovery => opts.continue_recovery = true,
+            .config => {
+                var override_problem: cli_config.OverrideProblem = .none;
+                const override = cli_config.parseOverride(value, &override_problem) catch {
+                    problem.* = .{ .config = override_problem };
+                    return error.InvalidAskArgs;
+                };
+                try opts.settings_overrides.append(alloc, override);
+            },
         }
     }
 
@@ -4234,6 +4254,11 @@ fn writeAskUsageProblem(alloc: Allocator, deps: RunDeps, problem: AskUsageProble
             try failure.write(&out.writer);
         },
         .invalid_value => |bad| try out.writer.print("fx ask: invalid value for {s}: {s}", .{ bad.flag, bad.value }),
+        .config => |bad| {
+            const message = try cli_config.formatOverrideProblem(alloc, bad);
+            defer alloc.free(message);
+            try out.writer.print("fx ask: {s}", .{message});
+        },
     }
     try out.writer.writeByte('\n');
     try deps.write_stderr(deps.stderr_ctx, out.written());
@@ -4531,8 +4556,9 @@ fn loadStartupStateDefault(
     default_agent_step_limit: usize,
     provider_override: ?model_provider.ProviderId,
     model_override: ?[]const u8,
+    settings_overrides: []const config_runtime.SettingOverride,
 ) !app_lifecycle.StartupState {
-    return app_lifecycle.loadStartupStateForRun(
+    return app_lifecycle.loadStartupStateForRunWithOverrides(
         alloc,
         transport,
         secret_store,
@@ -4541,6 +4567,7 @@ fn loadStartupStateDefault(
         .local,
         provider_override,
         model_override,
+        settings_overrides,
     );
 }
 
@@ -4744,7 +4771,7 @@ fn testConfig() Config {
     };
 }
 
-fn testMissingKeyStartup(alloc: Allocator, _: oauth_transport.Provider, _: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8) !app_lifecycle.StartupState {
+fn testMissingKeyStartup(alloc: Allocator, _: oauth_transport.Provider, _: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8, _: []const config_runtime.SettingOverride) !app_lifecycle.StartupState {
     var state = app_lifecycle.StartupState{ .agent_step_limit = default_agent_step_limit };
     errdefer state.deinit(alloc);
     state.workspace_root = try alloc.dupe(u8, "/tmp/fx-test");
@@ -4753,7 +4780,7 @@ fn testMissingKeyStartup(alloc: Allocator, _: oauth_transport.Provider, _: host.
     return state;
 }
 
-fn testPresentKeyStartup(alloc: Allocator, _: oauth_transport.Provider, _: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8) !app_lifecycle.StartupState {
+fn testPresentKeyStartup(alloc: Allocator, _: oauth_transport.Provider, _: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8, _: []const config_runtime.SettingOverride) !app_lifecycle.StartupState {
     var state = app_lifecycle.StartupState{ .agent_step_limit = default_agent_step_limit };
     errdefer state.deinit(alloc);
     state.workspace_root = try alloc.dupe(u8, "/tmp/fx-test");
@@ -4766,14 +4793,14 @@ fn testPresentKeyStartup(alloc: Allocator, _: oauth_transport.Provider, _: host.
     return state;
 }
 
-fn testMissingKeyAcknowledgedStartup(alloc: Allocator, transport: oauth_transport.Provider, secret_store: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8) !app_lifecycle.StartupState {
-    var state = try testMissingKeyStartup(alloc, transport, secret_store, default_model, default_agent_step_limit, null, null);
+fn testMissingKeyAcknowledgedStartup(alloc: Allocator, transport: oauth_transport.Provider, secret_store: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8, _: []const config_runtime.SettingOverride) !app_lifecycle.StartupState {
+    var state = try testMissingKeyStartup(alloc, transport, secret_store, default_model, default_agent_step_limit, null, null, &.{});
     state.yolo_acknowledged = true;
     return state;
 }
 
-fn testMissingKeyDiagnosticStartup(alloc: Allocator, transport: oauth_transport.Provider, secret_store: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8) !app_lifecycle.StartupState {
-    var state = try testMissingKeyStartup(alloc, transport, secret_store, default_model, default_agent_step_limit, null, null);
+fn testMissingKeyDiagnosticStartup(alloc: Allocator, transport: oauth_transport.Provider, secret_store: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8, _: []const config_runtime.SettingOverride) !app_lifecycle.StartupState {
+    var state = try testMissingKeyStartup(alloc, transport, secret_store, default_model, default_agent_step_limit, null, null, &.{});
     errdefer state.deinit(alloc);
     state.config_diagnostics = try alloc.alloc(config_runtime.ConfigDiagnostic, 1);
     state.config_diagnostics[0] = .{
@@ -4783,8 +4810,8 @@ fn testMissingKeyDiagnosticStartup(alloc: Allocator, transport: oauth_transport.
     return state;
 }
 
-fn testPresentKeySavedStartup(alloc: Allocator, transport: oauth_transport.Provider, secret_store: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8) !app_lifecycle.StartupState {
-    var state = try testPresentKeyStartup(alloc, transport, secret_store, default_model, default_agent_step_limit, null, null);
+fn testPresentKeySavedStartup(alloc: Allocator, transport: oauth_transport.Provider, secret_store: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8, _: []const config_runtime.SettingOverride) !app_lifecycle.StartupState {
+    var state = try testPresentKeyStartup(alloc, transport, secret_store, default_model, default_agent_step_limit, null, null, &.{});
     errdefer state.deinit(alloc);
     state.configured_model = try alloc.dupe(u8, default_model);
     return state;
@@ -5007,9 +5034,9 @@ var test_initialize_session_store_calls: usize = 0;
 var test_image_preflight_startup_calls: usize = 0;
 var test_image_preflight_process_calls: usize = 0;
 
-fn testCountImagePreflightStartup(alloc: Allocator, transport: oauth_transport.Provider, secret_store: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8) !app_lifecycle.StartupState {
+fn testCountImagePreflightStartup(alloc: Allocator, transport: oauth_transport.Provider, secret_store: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8, _: []const config_runtime.SettingOverride) !app_lifecycle.StartupState {
     test_image_preflight_startup_calls += 1;
-    return testPresentKeyStartup(alloc, transport, secret_store, default_model, default_agent_step_limit, null, null);
+    return testPresentKeyStartup(alloc, transport, secret_store, default_model, default_agent_step_limit, null, null, &.{});
 }
 
 fn testCountImagePreflightProcess(agent: *agent_runtime.Agent, deps: *const agent_runtime.AgentRuntimeDeps, semantic_presentation: ?agent_runtime.SemanticPresentationSink, lifecycle: agent_runtime.LifecycleContext, cfg: agent_runtime.Config, job: worker_runtime.QueuedPrompt) !void {
@@ -5113,8 +5140,8 @@ fn testLoadTruncatedSkillsWithDiagnostic(
     };
 }
 
-fn testPresentKeyTruncatedSkillCatalogStartup(alloc: Allocator, transport: oauth_transport.Provider, secret_store: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8) !app_lifecycle.StartupState {
-    var state = try testPresentKeyNoContextStartup(alloc, transport, secret_store, default_model, default_agent_step_limit, null, null);
+fn testPresentKeyTruncatedSkillCatalogStartup(alloc: Allocator, transport: oauth_transport.Provider, secret_store: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8, _: []const config_runtime.SettingOverride) !app_lifecycle.StartupState {
+    var state = try testPresentKeyNoContextStartup(alloc, transport, secret_store, default_model, default_agent_step_limit, null, null, &.{});
     state.context_limits.skill_catalog_bytes = .{
         .value = .{ .bytes = 0 },
         .source = .command_line,
@@ -5287,8 +5314,8 @@ const test_cli_context_registry = context_contract.Registry{ .default_provider =
     .append_transient_fn = TestContextRegistryFixture.appendTransient,
 } };
 
-fn testPresentKeyNoContextStartup(alloc: Allocator, transport: oauth_transport.Provider, secret_store: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8) !app_lifecycle.StartupState {
-    var state = try testPresentKeyStartup(alloc, transport, secret_store, default_model, default_agent_step_limit, null, null);
+fn testPresentKeyNoContextStartup(alloc: Allocator, transport: oauth_transport.Provider, secret_store: host.SecretStore, default_model: []const u8, default_agent_step_limit: usize, _: ?model_provider.ProviderId, _: ?[]const u8, _: []const config_runtime.SettingOverride) !app_lifecycle.StartupState {
+    var state = try testPresentKeyStartup(alloc, transport, secret_store, default_model, default_agent_step_limit, null, null, &.{});
     state.context_enabled = false;
     return state;
 }
@@ -6538,6 +6565,7 @@ fn testLoadStartupStateWithCancellation(
     default_agent_step_limit: usize,
     _: ?model_provider.ProviderId,
     _: ?[]const u8,
+    _: []const config_runtime.SettingOverride,
 ) !app_lifecycle.StartupState {
     const state = try testPresentKeyStartup(
         alloc,
@@ -6547,6 +6575,7 @@ fn testLoadStartupStateWithCancellation(
         default_agent_step_limit,
         null,
         null,
+        &.{},
     );
     if (test_startup_cancellation_stage == .after_startup_state) {
         requestTestHeadlessInterrupt();

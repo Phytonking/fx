@@ -115,7 +115,7 @@ Each env var has one job and that job's namespace:
 | Test hooks | `FX_TEST_*` | Today five prefixes are in use; new hooks use `FX_TEST_` |
 | Unix standards | As defined | `NO_COLOR`, `TERM`, `HOME` |
 
-- A setting gets a named env override only when CI jobs or wrapper scripts need it for a whole process tree. Every other setting is reachable through one generic per-run override in the spirit of `git -c key=value`. The override isn't built yet and its spelling isn't settled; `--config key=value` is the working name.
+- A setting gets a named env override only when CI jobs or wrapper scripts need it for a whole process tree. For one `fx ask` request, `--config key=value` overrides any key `fx config set` takes, with the same checks. Like `git -c`, it's the top settings layer: it beats every settings file, while dedicated flags such as `--fast` and `FX_*` variables still beat it. It repeats, the last value for a key wins, and it never saves. Interactive sessions don't take it, because they re-read settings during the session; they change settings with `/settings` and slash commands.
 - An override uses the setting's name: `collapse_tool_calls` becomes `FX_COLLAPSE_TOOL_CALLS`, never an invented short name.
 - No unprefixed names except Unix standards and third-party integrations' own variables, which are listed under `external_env` in `scripts/cli_shape_registry.json`.
 - Every `FX_*` name in `src/` is registered in `scripts/cli_shape_registry.json` with its job and stability; the ones documented on fx.sh are `stable`. CI's `python3 -m scripts.check_cli_shape` fails on an unregistered or stale name.
