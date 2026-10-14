@@ -520,9 +520,9 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
         });
         await session.waitForText("Run /help", TIMEOUT);
         await session.sendText('/allowlist add command "local-a *"');
-        await session.waitForText("(scope=local)", TIMEOUT);
-        await session.sendText('/allowlist user add command "user *"');
-        await session.waitForText("(scope=user)", TIMEOUT);
+        await session.waitForText("(scope=workspace)", TIMEOUT);
+        await session.sendText('/allowlist global add command "user *"');
+        await session.waitForText("(scope=global)", TIMEOUT);
         await session.sendText("/quit");
         await session.waitForSessionEnd(TIMEOUT);
         session = null;
@@ -542,14 +542,14 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
           stderrPath: stderrBPath,
         });
         await session.waitForText("Run /help", TIMEOUT);
-        await session.sendText("/allowlist view local");
+        await session.sendText("/allowlist view workspace");
         await session.waitForText(
-          "* allowlist: local persistent allow rules: (none)",
+          "* allowlist: workspace persistent allow rules: (none)",
           TIMEOUT,
         );
-        await session.sendText("/allowlist view user");
+        await session.sendText("/allowlist view global");
         await session.waitForText("user *", TIMEOUT);
-        await session.sendText('/allowlist user remove command "padded *"');
+        await session.sendText('/allowlist global remove command "padded *"');
         await session.waitForText("* allowlist: removed command", TIMEOUT);
         await session.sendText("/clear");
         await session.waitForPane(
@@ -561,10 +561,10 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
         expect(inherited).toContain("* allowlist: effective persistent allow rules:");
 
         await session.sendText('/allowlist add command "local-b *"');
-        await session.waitForText("(scope=local)", TIMEOUT);
-        await session.sendText("/allowlist view user");
+        await session.waitForText("(scope=workspace)", TIMEOUT);
+        await session.sendText("/allowlist view global");
         const shadowed = await session.waitForText(
-          "user rules are shadowed by local settings",
+          "global rules are shadowed by workspace settings",
           TIMEOUT,
         );
         expect(shadowed).toContain("user *");
@@ -577,6 +577,7 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
         const localEffective = await session.waitForText("local-b *", TIMEOUT);
         expect(localEffective).not.toContain("user *");
 
+        // The older `user` scope word still works.
         await session.sendText('/allowlist user remove command "user *"');
         await session.waitForText("* allowlist: removed command", TIMEOUT);
         await session.sendText("/quit");

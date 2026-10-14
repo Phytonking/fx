@@ -96,8 +96,8 @@ pub fn parse(arena: Allocator, surface: Surface, args: []const []const u8) Alloc
         }
         const allowed = switch (verb) {
             .list, .show => surface == .cli and std.mem.eql(u8, a, "--json"),
-            .add => std.mem.eql(u8, a, "--project") or std.mem.eql(u8, a, "--env") or std.mem.eql(u8, a, "--header"),
-            .remove => std.mem.eql(u8, a, "--project") or std.mem.eql(u8, a, "--profile"),
+            .add => std.mem.eql(u8, a, "--project") or isGlobalFlag(a) or std.mem.eql(u8, a, "--env") or std.mem.eql(u8, a, "--header"),
+            .remove => std.mem.eql(u8, a, "--project") or isGlobalFlag(a),
             .login => std.mem.eql(u8, a, "--no-browser"),
             .approve => std.mem.eql(u8, a, "--all"),
             .logout, .reject => false,
@@ -116,7 +116,7 @@ pub fn parse(arena: Allocator, surface: Surface, args: []const []const u8) Alloc
         }
         if (std.mem.eql(u8, a, "--json")) json = true;
         if (std.mem.eql(u8, a, "--project")) project = true;
-        if (std.mem.eql(u8, a, "--profile")) profile = true;
+        if (isGlobalFlag(a)) profile = true;
         if (std.mem.eql(u8, a, "--all")) all = true;
         if (std.mem.eql(u8, a, "--no-browser")) no_browser = true;
     }
@@ -133,6 +133,7 @@ pub fn parse(arena: Allocator, surface: Surface, args: []const []const u8) Alloc
             const name = n[0];
             if (!command_provider.isValidServerName(name))
                 return usage(arena, verb, "'{s}' can't be a server name: use letters, digits, '-' and '_'.", .{name});
+            if (project and profile) return usage(arena, verb, "Use --project or --global, not both.", .{});
             const file: config_file.File = if (project) .project else .profile;
             if (dash < rest.len) {
                 if (n.len > 1) return usage(arena, verb, "{s} add takes a URL or a command after --, not both.", .{p});
@@ -162,7 +163,7 @@ pub fn parse(arena: Allocator, surface: Surface, args: []const []const u8) Alloc
     return .{ .command = switch (verb) {
         .show => .{ .show = .{ .name = name, .json = json } },
         .remove => blk: {
-            if (project and profile) return usage(arena, verb, "Use --project or --profile, not both.", .{});
+            if (project and profile) return usage(arena, verb, "Use --project or --global, not both.", .{});
             break :blk .{ .remove = .{ .name = name, .file = if (project) .project else if (profile) .profile else null } };
         },
         .login => .{ .login = .{ .name = name, .browser = !no_browser } },
@@ -175,6 +176,12 @@ pub fn parse(arena: Allocator, surface: Surface, args: []const []const u8) Alloc
 
 fn isHelp(a: []const u8) bool {
     return std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help");
+}
+
+/// `--global` picks ~/.fx/mcp.json, fx's word for the profile layer.
+/// The older `--profile` still works.
+fn isGlobalFlag(a: []const u8) bool {
+    return std.mem.eql(u8, a, "--global") or std.mem.eql(u8, a, "--profile");
 }
 
 fn moved(arena: Allocator, comptime fmt: []const u8, args: anytype) Allocator.Error!Parsed {
@@ -215,13 +222,14 @@ pub fn writeUsage(w: *Writer, surface: Surface, verb: ?Verb) Writer.Error!void {
         .list => try w.print("usage: {s} list{s}\n", .{ p, json }),
         .show => try w.print("usage: {s} show NAME{s}\n", .{ p, json }),
         .add => try w.print(
-            \\usage: {s} add [--project] [--header K=V]... NAME URL
-            \\       {s} add [--project] [--env K=V]... NAME -- COMMAND [ARGS...]
-            \\       {s} add [--project] slack
-            \\  --project  write ./.mcp.json instead of ~/.fx/mcp.json
+            \\usage: {s} add [--global | --project] [--header K=V]... NAME URL
+            \\       {s} add [--global | --project] [--env K=V]... NAME -- COMMAND [ARGS...]
+            \\       {s} add [--global | --project] slack
+            \\  --global   write ~/.fx/mcp.json, the default
+            \\  --project  write ./.mcp.json
             \\
         , .{ p, p, p }),
-        .remove => try w.print("usage: {s} remove [--project | --profile] NAME\n", .{p}),
+        .remove => try w.print("usage: {s} remove [--global | --project] NAME\n", .{p}),
         .login => try w.print("usage: {s} login [--no-browser] NAME\n  --no-browser  print the address instead of opening it\n", .{p}),
         .logout => try w.print("usage: {s} logout NAME\n", .{p}),
         .approve => try w.print("usage: {s} approve NAME | --all\n", .{p}),
@@ -583,7 +591,7 @@ fn remove(c: Context, arena: Allocator, name: []const u8, only: ?config_file.Fil
     const in_profile = (only == null or only == .profile) and try defines(c, arena, .profile, p.profile, name);
     const in_project = (only == null or only == .project) and try defines(c, arena, .project, p.project, name);
     if (in_profile and in_project) {
-        try c.err.print("{s} is in both ~/.fx/mcp.json and .mcp.json. Add --profile or --project.\n", .{try safe(arena, name)});
+        try c.err.print("{s} is in both ~/.fx/mcp.json and .mcp.json. Add --global or --project.\n", .{try safe(arena, name)});
         return 2;
     }
     if (!in_profile and !in_project) {
@@ -842,6 +850,10 @@ test "parse reads every verb, with flags before --" {
     try testing.expectEqualStrings("1=2", stdio.entry.stdio.env[0].value);
 
     try testing.expectEqual(@as(?config_file.File, .project), (try parseCli(a, &.{ "remove", "--project", "x" })).command.remove.file);
+    // `--global` names the profile file; the older `--profile` still works.
+    try testing.expectEqual(@as(?config_file.File, .profile), (try parseCli(a, &.{ "remove", "--global", "x" })).command.remove.file);
+    try testing.expectEqual(@as(?config_file.File, .profile), (try parseCli(a, &.{ "remove", "--profile", "x" })).command.remove.file);
+    try testing.expectEqual(config_file.File.profile, (try parseCli(a, &.{ "add", "--global", "web", "https://w/mcp" })).command.add.file);
     try testing.expectEqual(@as(?config_file.File, null), (try parseCli(a, &.{ "remove", "x" })).command.remove.file);
     try testing.expect(!(try parseCli(a, &.{ "login", "--no-browser", "x" })).command.login.browser);
     try testing.expectEqualStrings("x", (try parseCli(a, &.{ "logout", "x" })).command.logout);
@@ -867,7 +879,8 @@ test "parse turns mistakes into usage, and old verbs into pointers" {
         .{ .args = &.{ "add", "--env", "A=1", "web", "https://w" }, .message = "--env is for stdio servers; use --header for HTTP." },
         .{ .args = &.{ "add", "--header", "A=1", "web", "--", "node" }, .message = "--header is for HTTP servers; use --env for a command." },
         .{ .args = &.{ "add", "--env", "noequals", "web", "--", "node" }, .message = "--env needs KEY=VALUE." },
-        .{ .args = &.{ "remove", "--project", "--profile", "x" }, .message = "Use --project or --profile, not both." },
+        .{ .args = &.{ "remove", "--project", "--profile", "x" }, .message = "Use --project or --global, not both." },
+        .{ .args = &.{ "add", "--global", "--project", "web", "https://w/mcp" }, .message = "Use --project or --global, not both." },
         .{ .args = &.{ "approve", "--all", "x" }, .message = "fx mcp approve takes a NAME or --all, not both." },
         .{ .args = &.{ "logout", "--json", "x" }, .message = "fx mcp logout has no --json flag." },
         .{ .args = &.{ "show", "x", "--", "y" }, .message = "fx mcp show takes no command after --." },

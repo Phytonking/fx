@@ -412,10 +412,8 @@ pub fn Commands(comptime App: type) type {
 
             var permission_scope: config_runtime.PermissionScope = .local;
             var action = first;
-            if (std.ascii.eqlIgnoreCase(first.word, "user") or
-                std.ascii.eqlIgnoreCase(first.word, "local"))
-            {
-                permission_scope = if (std.ascii.eqlIgnoreCase(first.word, "user")) .user else .local;
+            if (allowlistScope(first.word)) |scope| {
+                permission_scope = scope;
                 action = splitFirstWord(first.rest) orelse {
                     try writeAllowlistUsage(app);
                     return;
@@ -512,7 +510,7 @@ pub fn Commands(comptime App: type) type {
             try app.writeDomainNotice(.{
                 .topic = "",
                 .tone = .@"error",
-                .body = "usage: /allowlist [view [effective|local|user]|[local|user] add|remove|reset ...]",
+                .body = "usage: /allowlist [view [effective|workspace|global]|[workspace|global] add|remove|reset ...]",
             }, true);
         }
 
@@ -541,14 +539,14 @@ pub fn Commands(comptime App: type) type {
             ) catch |err| {
                 const notice_rule_write_fail = try app.alloc.print(
                     "failed to add rule to settings (scope={s}, error={s})",
-                    .{ @tagName(permission_scope), @errorName(err) },
+                    .{ allowlistScopeWord(permission_scope), @errorName(err) },
                 );
                 defer app.alloc.free(notice_rule_write_fail);
                 try app.writeDomainNotice(.{ .topic = "allowlist", .tone = .@"error", .body = notice_rule_write_fail }, true);
                 debug_trace.logf(
                     "config",
                     "allowlist add failed scope={s} err={s}",
-                    .{ @tagName(permission_scope), @errorName(err) },
+                    .{ allowlistScopeWord(permission_scope), @errorName(err) },
                 );
                 return;
             };
@@ -581,14 +579,14 @@ pub fn Commands(comptime App: type) type {
             ) catch |err| {
                 const notice = try app.alloc.print(
                     "failed to remove rule from settings (scope={s}, error={s})",
-                    .{ @tagName(permission_scope), @errorName(err) },
+                    .{ allowlistScopeWord(permission_scope), @errorName(err) },
                 );
                 defer app.alloc.free(notice);
                 try app.writeDomainNotice(.{ .topic = "allowlist", .tone = .@"error", .body = notice }, true);
                 debug_trace.logf(
                     "config",
                     "allowlist remove failed scope={s} err={s}",
-                    .{ @tagName(permission_scope), @errorName(err) },
+                    .{ allowlistScopeWord(permission_scope), @errorName(err) },
                 );
                 return;
             };
@@ -625,14 +623,14 @@ pub fn Commands(comptime App: type) type {
             ) catch |err| {
                 const notice_reset_fail = try app.alloc.print(
                     "failed to reset rules in settings (scope={s}, error={s})",
-                    .{ @tagName(permission_scope), @errorName(err) },
+                    .{ allowlistScopeWord(permission_scope), @errorName(err) },
                 );
                 defer app.alloc.free(notice_reset_fail);
                 try app.writeDomainNotice(.{ .topic = "allowlist", .tone = .@"error", .body = notice_reset_fail }, true);
                 debug_trace.logf(
                     "config",
                     "allowlist reset failed scope={s} err={s}",
-                    .{ @tagName(permission_scope), @errorName(err) },
+                    .{ allowlistScopeWord(permission_scope), @errorName(err) },
                 );
                 return;
             };
@@ -649,7 +647,7 @@ pub fn Commands(comptime App: type) type {
                         allowlistResetScopeLabel(reset_scope),
                         removed,
                         if (removed == 1) "" else "s",
-                        @tagName(permission_scope),
+                        allowlistScopeWord(permission_scope),
                         @errorName(err),
                     },
                 );
@@ -665,7 +663,7 @@ pub fn Commands(comptime App: type) type {
                         allowlistResetScopeLabel(reset_scope),
                         removed,
                         if (removed == 1) "" else "s",
-                        @tagName(permission_scope),
+                        allowlistScopeWord(permission_scope),
                         @errorName(err),
                     },
                 );
@@ -682,8 +680,8 @@ pub fn Commands(comptime App: type) type {
                     allowlistResetScopeLabel(reset_scope),
                     removed,
                     if (removed == 1) "" else "s",
-                    @tagName(permission_scope),
-                    if (shadow.len > 0) "; user rules shadowed by " else "",
+                    allowlistScopeWord(permission_scope),
+                    if (shadow.len > 0) "; global rules shadowed by " else "",
                     shadow,
                 },
             );
@@ -986,7 +984,7 @@ pub fn Commands(comptime App: type) type {
 
             const shadow = permissionShadowLabel(detailed.permission_sources, permission_scope);
             const detail = if (shadow.len > 0)
-                try app.alloc.print("user rules shadowed by {s}", .{shadow})
+                try app.alloc.print("global rules shadowed by {s}", .{shadow})
             else
                 try app.alloc.dupe(u8, "");
             defer app.alloc.free(detail);
@@ -1026,17 +1024,17 @@ pub fn Commands(comptime App: type) type {
             defer out.deinit();
 
             if (hasAllowlistRules(rules)) {
-                try out.writer.print("{s} persistent allow rules:\n", .{@tagName(view)});
+                try out.writer.print("{s} persistent allow rules:\n", .{allowlistViewWord(view)});
                 try writeAllowlistRuleGroups(&out.writer, rules);
             } else {
-                try out.writer.print("{s} persistent allow rules: (none)\n", .{@tagName(view)});
+                try out.writer.print("{s} persistent allow rules: (none)\n", .{allowlistViewWord(view)});
             }
             const shadow = permissionShadowLabel(detailed.permission_sources, .user);
             if ((view == .effective or view == .user) and
                 detailed.permission_sources.user.rules.len > 0 and
                 shadow.len > 0)
             {
-                try out.writer.print("user rules are shadowed by {s}\n", .{shadow});
+                try out.writer.print("global rules are shadowed by {s}\n", .{shadow});
             }
             const web_fetch_warning_count = permissions.webFetchRuleWarningCount(rules);
             if (web_fetch_warning_count > 0) {
@@ -1454,9 +1452,35 @@ const AllowlistView = enum {
 fn parseAllowlistView(raw: []const u8) ?AllowlistView {
     const trimmed = std.mem.trim(u8, raw, " \t");
     if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "effective")) return .effective;
-    if (std.ascii.eqlIgnoreCase(trimmed, "local")) return .local;
-    if (std.ascii.eqlIgnoreCase(trimmed, "user")) return .user;
+    const scope = allowlistScope(trimmed) orelse return null;
+    return switch (scope) {
+        .local => .local,
+        .user => .user,
+    };
+}
+
+/// The scope words `/allowlist` shows: `global` for the profile's
+/// top level, `workspace` for this folder's entry in the profile.
+fn allowlistScopeWord(scope: config_runtime.PermissionScope) []const u8 {
+    return switch (scope) {
+        .user => "global",
+        .local => "workspace",
+    };
+}
+
+/// `global` and `workspace`, and the older `user` and `local`, which still work.
+fn allowlistScope(word: []const u8) ?config_runtime.PermissionScope {
+    if (std.ascii.eqlIgnoreCase(word, "global") or std.ascii.eqlIgnoreCase(word, "user")) return .user;
+    if (std.ascii.eqlIgnoreCase(word, "workspace") or std.ascii.eqlIgnoreCase(word, "local")) return .local;
     return null;
+}
+
+fn allowlistViewWord(view: AllowlistView) []const u8 {
+    return switch (view) {
+        .effective => "effective",
+        .local => "workspace",
+        .user => "global",
+    };
 }
 
 fn permissionShadowLabel(
@@ -1464,7 +1488,7 @@ fn permissionShadowLabel(
     permission_scope: config_runtime.PermissionScope,
 ) []const u8 {
     if (permission_scope != .user or views.user.rules.len == 0) return "";
-    if (views.user_shadowed_by_local) return "local settings";
+    if (views.user_shadowed_by_local) return "workspace settings";
     return "";
 }
 
@@ -1618,7 +1642,7 @@ fn formatAllowlistChange(
         .tool => try out.writer.print("tool {s}: \"{s}\"", .{ target.category, target.pattern }),
         .web_fetch_domain => try out.writer.print("web-fetch-domain: \"{s}\"", .{target.pattern}),
     }
-    try out.writer.print(" (scope={s})", .{@tagName(permission_scope)});
+    try out.writer.print(" (scope={s})", .{allowlistScopeWord(permission_scope)});
     if (detail.len > 0) try out.writer.print("; {s}", .{detail});
     return out.toOwnedSlice();
 }
@@ -2552,6 +2576,37 @@ test "session_commands handleAllowlist adds lists and removes workspace rules" {
     try expectTranscriptContains(&app, "* allowlist: effective persistent allow rules: (none)");
 }
 
+test "allowlist scopes are global and workspace, and the older user and local still work" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io_mod.getIo(), "home");
+    try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
+    const home_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "home");
+    defer std.testing.allocator.free(home_root);
+    const workspace_root = try io_mod.dirRealpathAlloc(std.testing.allocator, tmp.dir, "workspace");
+    defer std.testing.allocator.free(workspace_root);
+
+    const home = try SessionCommandTestHome.install(std.testing.allocator, home_root);
+    defer home.deinit();
+    var app = try FakeApp.init(std.testing.allocator, workspace_root, "anthropic/claude-opus-4.6");
+    defer app.deinit();
+
+    // `global` is the profile's top level, `workspace` this folder's entry.
+    try Commands(FakeApp).handleAllowlist(&app, "global add command \"global *\"");
+    try expectTranscriptContains(&app, "command: \"global *\" (scope=global)");
+    try Commands(FakeApp).handleAllowlist(&app, "workspace add command \"workspace *\"");
+    try expectTranscriptContains(&app, "command: \"workspace *\" (scope=workspace)");
+    try Commands(FakeApp).handleAllowlist(&app, "view global");
+    try expectTranscriptContains(&app, "* allowlist: global persistent allow rules:");
+    try expectTranscriptContains(&app, "global *");
+    try Commands(FakeApp).handleAllowlist(&app, "view workspace");
+    try expectTranscriptContains(&app, "* allowlist: workspace persistent allow rules:");
+    try expectTranscriptContains(&app, "workspace *");
+    try Commands(FakeApp).handleAllowlist(&app, "nowhere add command \"x *\"");
+    try expectTranscriptContains(&app, "usage: /allowlist [view [effective|workspace|global]|[workspace|global] add|remove|reset ...]");
+}
+
 test "session_commands allowlist scopes expose and mutate hidden user rules independently" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2569,22 +2624,22 @@ test "session_commands allowlist scopes expose and mutate hidden user rules inde
     defer app.deinit();
 
     try Commands(FakeApp).handleAllowlist(&app, "user add command \"user *\"");
-    try expectTranscriptContains(&app, "(scope=user)");
+    try expectTranscriptContains(&app, "(scope=global)");
     try std.testing.expect(std.mem.find(u8, app.text(), "shadowed") == null);
 
     app.clearTranscript();
     try Commands(FakeApp).handleAllowlist(&app, "add command \"local *\"");
-    try expectTranscriptContains(&app, "(scope=local)");
+    try expectTranscriptContains(&app, "(scope=workspace)");
 
     app.clearTranscript();
     try Commands(FakeApp).handleAllowlist(&app, "view user");
-    try expectTranscriptContains(&app, "* allowlist: user persistent allow rules:");
+    try expectTranscriptContains(&app, "* allowlist: global persistent allow rules:");
     try expectTranscriptContains(&app, "user *");
-    try expectTranscriptContains(&app, "user rules are shadowed by local settings");
+    try expectTranscriptContains(&app, "global rules are shadowed by workspace settings");
 
     app.clearTranscript();
     try Commands(FakeApp).handleAllowlist(&app, "view local");
-    try expectTranscriptContains(&app, "* allowlist: local persistent allow rules:");
+    try expectTranscriptContains(&app, "* allowlist: workspace persistent allow rules:");
     try expectTranscriptContains(&app, "local *");
     try std.testing.expect(std.mem.find(u8, app.text(), "user *") == null);
 
@@ -2596,7 +2651,7 @@ test "session_commands allowlist scopes expose and mutate hidden user rules inde
 
     app.clearTranscript();
     try Commands(FakeApp).handleAllowlist(&app, "user remove command \"user *\"");
-    try expectTranscriptContains(&app, "(scope=user)");
+    try expectTranscriptContains(&app, "(scope=global)");
     try std.testing.expect(std.mem.find(u8, app.text(), "shadowed") == null);
 
     var after_remove = try config_runtime.loadMergedSettingsDetailed(
@@ -2611,7 +2666,7 @@ test "session_commands allowlist scopes expose and mutate hidden user rules inde
     try Commands(FakeApp).handleAllowlist(&app, "user add command \"user-again *\"");
     app.clearTranscript();
     try Commands(FakeApp).handleAllowlist(&app, "user reset all");
-    try expectTranscriptContains(&app, "reset all: removed 1 rule (scope=user)");
+    try expectTranscriptContains(&app, "reset all: removed 1 rule (scope=global)");
     try std.testing.expect(std.mem.find(u8, app.text(), "shadowed") == null);
 
     var after_reset = try config_runtime.loadMergedSettingsDetailed(
@@ -3191,7 +3246,7 @@ test "session_commands allowlist failures retain explicit scope and error" {
 
     try expectTranscriptContains(
         &app,
-        "✗ allowlist: failed to add rule to settings (scope=user, error=HomeNotSet)",
+        "✗ allowlist: failed to add rule to settings (scope=global, error=HomeNotSet)",
     );
     try std.testing.expectEqual(types.NoticeTone.@"error", app.last_tone.?);
 }
@@ -3219,7 +3274,7 @@ test "session_commands allowlist durable save survives post-commit resolver diag
     );
 
     try expectTranscriptContains(&app, "! allowlist: added command");
-    try expectTranscriptContains(&app, "(scope=user)");
+    try expectTranscriptContains(&app, "(scope=global)");
     try expectTranscriptContains(
         &app,
         "saved but effective source unknown and runtime reload failed (DurablePathUnsafe)",
