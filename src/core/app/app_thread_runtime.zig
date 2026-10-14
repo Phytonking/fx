@@ -16,7 +16,7 @@ const thread_feed = @import("../threads/thread_feed.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const usage = "usage: /thread new NAME TASK | list | watch NAME [LINES] | send NAME MESSAGE | stop NAME | rename OLD NEW | delete NAME";
+pub const usage = "usage: /thread new NAME TASK | list | switch NAME | watch NAME [LINES] | send NAME MESSAGE | stop NAME | rename OLD NEW | delete NAME";
 const default_watch_lines: usize = 40;
 
 pub const Action = union(enum) {
@@ -25,6 +25,7 @@ pub const Action = union(enum) {
     watch: struct { name: []const u8, lines: usize },
     send: struct { name: []const u8, message: []const u8 },
     stop: []const u8,
+    @"switch": []const u8,
     rename: struct { old: []const u8, new: []const u8 },
     delete: []const u8,
 };
@@ -60,10 +61,12 @@ pub fn parse(rest: []const u8) ParseError!Action {
         if (lines == 0 or lines > thread_feed.default_max_lines) return error.InvalidThreadCommand;
         return .{ .watch = .{ .name = name, .lines = lines } };
     }
-    if (std.mem.eql(u8, verb, "stop") or std.mem.eql(u8, verb, "delete")) {
+    if (std.mem.eql(u8, verb, "stop") or std.mem.eql(u8, verb, "delete") or std.mem.eql(u8, verb, "switch")) {
         const name, const extra = splitWord(tail);
         if (name.len == 0 or extra.len != 0) return error.InvalidThreadCommand;
-        return if (verb[0] == 's') .{ .stop = name } else .{ .delete = name };
+        if (std.mem.eql(u8, verb, "stop")) return .{ .stop = name };
+        if (std.mem.eql(u8, verb, "delete")) return .{ .delete = name };
+        return .{ .@"switch" = name };
     }
     if (std.mem.eql(u8, verb, "rename")) {
         const old, const new_tail = splitWord(tail);
@@ -101,39 +104,113 @@ pub fn Runtime(comptime App: type) type {
                 try notice(app, .@"error", "thread", "No home directory for thread state.");
                 return;
             };
-            var registry = thread_registry.load(app.alloc, home, root_id) catch |err| {
+            // Inside a thread, the registry is the one of the session it stems from.
+            var registry = (thread_registry.loadForThreadSession(app.alloc, home, root_id) catch null) orelse
+                thread_registry.load(app.alloc, home, root_id) catch |err| {
                 try noticeFmt(app, .@"error", "thread", "Thread list unreadable: {s}", .{@errorName(err)});
                 return;
             };
             defer registry.deinit(app.alloc);
+            const current_thread: ?[]const u8 = if (registry.findBySession(root_id)) |t| t.name else null;
 
             switch (action) {
-                .list => try list(app, host, &registry),
+                .list => try list(app, host, &registry, current_thread),
+                .@"switch" => |name| try switchTo(app, host, &registry, current_thread, name),
+                .rename => |a| try rename(app, &registry, home, a.old, a.new),
+                else => {},
+            }
+            switch (action) {
+                .list, .@"switch", .rename => return,
+                else => {},
+            }
+            if (current_thread) |name| {
+                try noticeFmt(app, .@"error", "thread", "You are in thread {s}. Run /thread switch main first.", .{name});
+                return;
+            }
+            switch (action) {
                 .new => |a| try create(app, host, &registry, root_id, home, a.name, a.task),
                 .send => |a| try send(app, host, &registry, root_id, a.name, a.message),
                 .watch => |a| try watch(app, host, &registry, a.name, a.lines),
                 .stop => |name| try stop(app, host, &registry, name),
-                .rename => |a| try rename(app, &registry, home, a.old, a.new),
                 .delete => |name| try remove(app, host, &registry, home, name),
+                .list, .@"switch", .rename => unreachable,
             }
         }
 
-        fn list(app: *App, host: *subagent_tool_host.Runtime, registry: *const thread_registry.Registry) !void {
-            if (registry.threads.items.len == 0) {
+        fn switchTo(
+            app: *App,
+            host: *subagent_tool_host.Runtime,
+            registry: *const thread_registry.Registry,
+            current_thread: ?[]const u8,
+            name: []const u8,
+        ) !void {
+            if (current_thread) |current| {
+                if (std.mem.eql(u8, current, name)) {
+                    try noticeFmt(app, .neutral, "thread", "You are already in {s}.", .{name});
+                    return;
+                }
+            } else if (std.mem.eql(u8, name, thread_registry.root_thread_name)) {
+                try notice(app, .neutral, "thread", "You are already in main.");
+                return;
+            }
+            const target: []const u8 = if (std.mem.eql(u8, name, thread_registry.root_thread_name))
+                registry.root_id
+            else blk: {
+                const t = registry.find(name) orelse return missing(app, name);
+                if (t.session_id.len == 0) {
+                    try noticeFmt(app, .@"error", "thread", "Thread {s} has not started yet.", .{name});
+                    return;
+                }
+                break :blk t.session_id;
+            };
+            if (current_thread == null and host.managed.hasRunningWork()) {
+                try notice(app, .@"error", "thread", "Threads are still running and would stop. Stop them with /thread stop NAME or wait, then switch.");
+                return;
+            }
+            if (app.stream.active or !app.worker.tryHoldTurnStart()) {
+                try notice(app, .@"error", "thread", "A turn is running in this session. Wait for it to finish, then switch.");
+                return;
+            }
+            app.worker.releaseTurnStartHold();
+            SessionRuntime.switchForegroundSession(app, target) catch |err| {
+                const body: []const u8 = switch (err) {
+                    error.UnsupportedSessionFormat => "Switching needs the default session format.",
+                    error.SessionBusy => "That session is open elsewhere or still running.",
+                    else => "Could not open that session.",
+                };
+                try noticeFmt(app, .@"error", "thread", "{s} ({s})", .{ body, @errorName(err) });
+                return;
+            };
+            try noticeFmt(app, .success, "thread", "Switched to {s}.", .{name});
+        }
+
+        fn list(
+            app: *App,
+            host: *subagent_tool_host.Runtime,
+            registry: *const thread_registry.Registry,
+            current_thread: ?[]const u8,
+        ) !void {
+            if (registry.threads.items.len == 0 and current_thread == null) {
                 try notice(app, .neutral, "thread", "No threads yet. Start one with /thread new NAME TASK.");
                 return;
             }
             var out: std.Io.Writer.Allocating = .init(app.alloc);
             defer out.deinit();
             const now = io_mod.milliTimestamp();
+            try out.writer.print("{s} main\n", .{if (current_thread == null) ">" else " "});
             for (registry.threads.items) |t| {
-                const status = try host.threadStatus(app.alloc, t.agent);
-                defer if (status) |s| s.deinit(app.alloc);
-                try out.writer.print("{s}  {s}", .{ t.name, if (status) |s| phaseLabel(s.phase) else "not started" });
-                if (status) |s| if (host.feedFor(s.child_id)) |feed| {
-                    const last = feed.lastActivityMs();
-                    if (last > 0) try out.writer.print("  active {d}s ago", .{@divTrunc(@max(now - last, 0), 1000)});
-                };
+                const here = if (current_thread) |c| std.mem.eql(u8, c, t.name) else false;
+                try out.writer.print("{s} {s}", .{ if (here) ">" else " ", t.name });
+                // Only the root's host runs threads, so state is live there alone.
+                if (current_thread == null) {
+                    const status = try host.threadStatus(app.alloc, t.agent);
+                    defer if (status) |s| s.deinit(app.alloc);
+                    try out.writer.print("  {s}", .{if (status) |s| phaseLabel(s.phase) else "not started"});
+                    if (status) |s| if (host.feedFor(s.child_id)) |feed| {
+                        const last = feed.lastActivityMs();
+                        if (last > 0) try out.writer.print("  active {d}s ago", .{@divTrunc(@max(now - last, 0), 1000)});
+                    };
+                }
                 try out.writer.writeByte('\n');
             }
             try notice(app, .neutral, "threads", std.mem.trimEnd(u8, out.written(), "\n"));
@@ -163,8 +240,9 @@ pub fn Runtime(comptime App: type) type {
             const outcome = try host.sendThread(app.alloc, agent, task, executeOptions(app, root_id, invocationId(&id_buf, "new")));
             defer outcome.deinit(app.alloc);
             switch (outcome) {
-                .started => {
+                .started => |child_id| {
                     try registry.add(app.alloc, name, agent, now);
+                    try registry.setSession(app.alloc, name, child_id);
                     thread_registry.save(app.alloc, home, registry) catch |err| {
                         try noticeFmt(app, .warning, "thread", "Started {s}, but the thread list was not saved ({s}).", .{ name, @errorName(err) });
                         return;
@@ -352,6 +430,7 @@ test "thread command parses each verb" {
     try std.testing.expectEqualStrings("a", (try parse("stop a")).stop);
     try std.testing.expectEqualStrings("b", (try parse("rename a b")).rename.new);
     try std.testing.expectEqualStrings("a", (try parse("delete a")).delete);
+    try std.testing.expectEqualStrings("a", (try parse("switch a")).@"switch");
 }
 
 test "thread command rejects malformed input" {

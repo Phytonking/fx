@@ -31,6 +31,8 @@ pub const Thread = struct {
     /// The persistent child's unique agent name. Never reused, so a deleted
     /// thread's name can come back without inheriting its history.
     agent: []u8,
+    /// The thread's saved session. Empty until the thread has started.
+    session_id: []u8,
     created_at_ms: i64,
 };
 
@@ -47,6 +49,7 @@ pub const Registry = struct {
         for (self.threads.items) |t| {
             alloc.free(t.name);
             alloc.free(t.agent);
+            alloc.free(t.session_id);
         }
         self.threads.deinit(alloc);
         alloc.free(self.root_id);
@@ -67,7 +70,24 @@ pub const Registry = struct {
         errdefer alloc.free(owned_name);
         const owned_agent = try alloc.dupe(u8, agent);
         errdefer alloc.free(owned_agent);
-        try self.threads.append(alloc, .{ .name = owned_name, .agent = owned_agent, .created_at_ms = now_ms });
+        const owned_session = try alloc.dupe(u8, "");
+        errdefer alloc.free(owned_session);
+        try self.threads.append(alloc, .{ .name = owned_name, .agent = owned_agent, .session_id = owned_session, .created_at_ms = now_ms });
+    }
+
+    pub fn setSession(self: *Registry, alloc: Allocator, name: []const u8, session_id: []const u8) !void {
+        const index = self.indexOf(name) orelse return error.ThreadNotFound;
+        const owned = try alloc.dupe(u8, session_id);
+        alloc.free(self.threads.items[index].session_id);
+        self.threads.items[index].session_id = owned;
+    }
+
+    pub fn findBySession(self: *const Registry, session_id: []const u8) ?*const Thread {
+        if (session_id.len == 0) return null;
+        for (self.threads.items) |*t| {
+            if (std.mem.eql(u8, t.session_id, session_id)) return t;
+        }
+        return null;
     }
 
     pub fn rename(self: *Registry, alloc: Allocator, old_name: []const u8, new_name: []const u8) !void {
@@ -87,6 +107,7 @@ pub const Registry = struct {
         const t = self.threads.orderedRemove(index);
         alloc.free(t.name);
         alloc.free(t.agent);
+        alloc.free(t.session_id);
     }
 
     fn indexOf(self: *const Registry, name: []const u8) ?usize {
@@ -163,6 +184,9 @@ pub fn load(alloc: Allocator, home: []const u8, root_id: []const u8) !Registry {
             else => return error.InvalidRegistry,
         };
         registry.add(alloc, name, agent, created) catch return error.InvalidRegistry;
+        if (stringField(o, "session_id")) |session_id| {
+            if (session_id.len > 0) registry.setSession(alloc, name, session_id) catch return error.InvalidRegistry;
+        }
     }
     return registry;
 }
@@ -172,11 +196,11 @@ pub fn save(alloc: Allocator, home: []const u8, registry: *const Registry) !void
     defer alloc.free(path);
     if (std.Io.Dir.path.dirname(path)) |dir| try io_mod.makeDirRecursive(dir);
 
-    const Row = struct { name: []const u8, agent: []const u8, created_at_ms: i64 };
+    const Row = struct { name: []const u8, agent: []const u8, session_id: []const u8, created_at_ms: i64 };
     const rows = try alloc.alloc(Row, registry.threads.items.len);
     defer alloc.free(rows);
     for (registry.threads.items, rows) |t, *row| {
-        row.* = .{ .name = t.name, .agent = t.agent, .created_at_ms = t.created_at_ms };
+        row.* = .{ .name = t.name, .agent = t.agent, .session_id = t.session_id, .created_at_ms = t.created_at_ms };
     }
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
@@ -186,6 +210,27 @@ pub fn save(alloc: Allocator, home: []const u8, registry: *const Registry) !void
         .threads = rows,
     }, .{}, &out.writer);
     try io_mod.writeFileAtomic(alloc, path, out.written());
+}
+
+/// The registry that lists `session_id` as one of its threads, or null.
+/// Caller owns the result.
+pub fn loadForThreadSession(alloc: Allocator, home: []const u8, session_id: []const u8) !?Registry {
+    const dir_path = try std.Io.Dir.path.join(alloc, &.{ home, profile_paths.root_dir_name, profile_paths.threads_dir_name });
+    defer alloc.free(dir_path);
+    var dir = std.Io.Dir.openDirAbsolute(io_mod.getIo(), dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer dir.close(io_mod.getIo());
+    var it = dir.iterate();
+    while (try it.next(io_mod.getIo())) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".json")) continue;
+        const root_id = entry.name[0 .. entry.name.len - ".json".len];
+        var registry = load(alloc, home, root_id) catch continue;
+        if (registry.findBySession(session_id) != null) return registry;
+        registry.deinit(alloc);
+    }
+    return null;
 }
 
 fn stringField(o: std.json.ObjectMap, key: []const u8) ?[]const u8 {
@@ -241,6 +286,13 @@ test "registry round trips through disk" {
     defer loaded.deinit(alloc);
     try std.testing.expectEqual(@as(i64, 10), loaded.find("alpha").?.created_at_ms);
     try std.testing.expectEqualStrings("th-1-alpha", loaded.find("alpha").?.agent);
+
+    try loaded.setSession(alloc, "alpha", "sess-9");
+    try save(alloc, home, &loaded);
+    var from_thread = (try loadForThreadSession(alloc, home, "sess-9")).?;
+    defer from_thread.deinit(alloc);
+    try std.testing.expectEqualStrings("root1", from_thread.root_id);
+    try std.testing.expect(try loadForThreadSession(alloc, home, "other") == null);
 }
 
 test "agent names are valid subagent names" {

@@ -132,3 +132,71 @@ test.skipIf(SKIP_TMUX)("/thread rejects bad names, duplicates, and unknown threa
     gateway.stop();
   }
 }, 90_000);
+
+test.skipIf(SKIP_TMUX)("/thread switch moves into an idle thread, talks there, and returns to main", async () => {
+  const fixture = createFixture("switch");
+  const gateway = startGateway();
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("/thread new alpha write hello");
+    await tui.waitForText("Started thread alpha", 20000);
+
+    // Switching is refused while the thread works, so wait until it is idle.
+    let idle = false;
+    for (let attempt = 0; attempt < 30 && !idle; attempt++) {
+      await tui.sendText("/thread list");
+      try {
+        await tui.waitForText("alpha  idle", 1500);
+        idle = true;
+      } catch {
+        // Still running.
+      }
+    }
+    expect(idle).toBe(true);
+
+    await tui.sendText("/thread switch alpha");
+    await tui.waitForText("Switched to alpha", 20000);
+    // The thread's own history comes back with it.
+    await tui.waitForText("THREAD_ANSWER_OK", 10000);
+
+    await tui.sendText("/thread list");
+    await tui.waitForText("> alpha", 10000);
+
+    // New work and sibling control wait until we are back in main.
+    await tui.sendText("/thread new beta write hello");
+    await tui.waitForText("You are in thread alpha", 10000);
+
+    await tui.sendText("/thread switch main");
+    await tui.waitForText("Switched to main", 20000);
+    await tui.waitForText("MAIN_ANSWER_OK", 10000);
+    await tui.sendText("/thread list");
+    await tui.waitForText("> main", 10000);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 120_000);
+
+test.skipIf(SKIP_TMUX)("/thread switch is refused while a thread is still running", async () => {
+  const fixture = createFixture("switch-busy");
+  const gateway = startDynamicFakeGateway(
+    async raw => {
+      if (!String(raw).includes("write hello")) return fakeGatewayFinalText("MAIN_ANSWER_OK");
+      await Bun.sleep(8000);
+      return fakeGatewayFinalText("SLOW_THREAD_DONE");
+    },
+    { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] },
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("/thread new slow write hello");
+    await tui.waitForText("Started thread slow", 20000);
+    await tui.sendText("/thread switch slow");
+    await tui.waitForText("still running", 10000);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 90_000);
