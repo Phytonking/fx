@@ -63,10 +63,15 @@ const max_inline_piece_bytes: usize = 256 * 1024;
 /// Lines per page when replaying history.
 const replay_page_lines: usize = 256;
 
-/// Whether this process keeps its sessions in v2: the flag, or
-/// FX_SESSIONS_V2 set to `1` or `true`.
-pub fn enabled(flag: bool) bool {
-    if (flag) return true;
+/// Whether this process keeps its sessions in v2: `requested` (the
+/// `experimental.sessions_v2` setting or `--sessions-v2`), or FX_SESSIONS_V2.
+pub fn enabled(requested: bool) bool {
+    return requested or envRequested();
+}
+
+/// FX_SESSIONS_V2 set to `1` or `true`. It still works, with a warning, until
+/// the experiment ends; `experimental.sessions_v2` replaces it.
+pub fn envRequested() bool {
     const value = io_mod.getenv("FX_SESSIONS_V2") orelse return false;
     return std.mem.eql(u8, value, "1") or std.ascii.eqlIgnoreCase(value, "true");
 }

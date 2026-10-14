@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -76,11 +77,22 @@ function solCatalogModel() {
 }
 
 function writeProfileSettings(root: IsolatedRoot, settings: Record<string, unknown>) {
+  const path = join(root.home, ".fx", "settings.json");
+  // Keep the session backend a test chose with useSessionsV2.
+  const experimental = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")).experimental : undefined;
   writeFileSync(
-    join(root.home, ".fx", "settings.json"),
-    `${JSON.stringify({ session_titles: false, ...settings })}\n`,
+    path,
+    `${JSON.stringify({ session_titles: false, ...(experimental ? { experimental } : {}), ...settings })}\n`,
     { mode: 0o600 },
   );
+}
+
+/// Keeps the root's sessions in v2 or v1 through `experimental.sessions_v2`,
+/// the way users choose the backend.
+function useSessionsV2(root: IsolatedRoot, on: boolean) {
+  const path = join(root.home, ".fx", "settings.json");
+  const current = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+  writeFileSync(path, `${JSON.stringify({ ...current, experimental: { sessions_v2: on } })}\n`, { mode: 0o600 });
 }
 
 function createIsolatedRoot(settings: Record<string, unknown> = {}): IsolatedRoot {
@@ -471,7 +483,7 @@ describe("ultrafast fake Gateway", () => {
 
   for (const backend of ["0", "1"]) {
     test(
-      `a saved session retains Ultrafast until an explicit CLI disable with FX_SESSIONS_V2=${backend}`,
+      `a saved session retains Ultrafast until an explicit CLI disable with sessions v2 ${backend === "1" ? "on" : "off"}`,
       async () => {
         const root = createIsolatedRoot({ ultrafast_mode: true, models: { gateway: ULTRA_MODEL } });
         const gateway = startFakeGateway(
@@ -483,7 +495,8 @@ describe("ultrafast fake Gateway", () => {
           { models: [ultrafastCatalogModel()] },
         );
         try {
-          const env = fakeGatewayEnv(root, gateway, { FX_MODEL: undefined, FX_SESSIONS_V2: backend });
+          useSessionsV2(root, backend === "1");
+          const env = fakeGatewayEnv(root, gateway, { FX_MODEL: undefined });
           const saved = await runFx(
             ["ask", "--auto", "--json", "Save the paid-tier preference."],
             { cwd: root.workspace, env, timeoutMs: TIMEOUT },
@@ -800,7 +813,7 @@ describe("ultrafast fake Gateway", () => {
 
   for (const backend of ["0", "1"]) {
     test(
-      `ACP saves Ultrafast enable and disable across load and resume with FX_SESSIONS_V2=${backend}`,
+      `ACP saves Ultrafast enable and disable across load and resume with sessions v2 ${backend === "1" ? "on" : "off"}`,
       async () => {
         const root = createIsolatedRoot({ ultrafast_mode: false, models: { gateway: ULTRA_MODEL } });
         const gateway = startFakeGateway(
@@ -811,7 +824,8 @@ describe("ultrafast fake Gateway", () => {
           ],
           { models: [ultrafastCatalogModel()] },
         );
-        const env = fakeGatewayEnv(root, gateway, { FX_MODEL: undefined, FX_SESSIONS_V2: backend });
+        useSessionsV2(root, backend === "1");
+        const env = fakeGatewayEnv(root, gateway, { FX_MODEL: undefined });
         let client = AcpClient.create(root.workspace, env);
         try {
           const sessionId = await startAcpSession(client);
@@ -937,7 +951,8 @@ describe("ultrafast fake Gateway", () => {
         return finishWithServiceTier(`ULTRA_PARENT_${round}`, round < 3 ? "ultrafast" : "standard");
       }, { models: [ultrafastCatalogModel()] });
       try {
-        const env = fakeGatewayEnv(root, gateway, { FX_MODEL: undefined, FX_SESSIONS_V2: "1" });
+        useSessionsV2(root, true);
+        const env = fakeGatewayEnv(root, gateway, { FX_MODEL: undefined });
         let sessionId: string | undefined;
         for (const round of [1, 2, 3]) {
           const result = await runFx(
@@ -1049,7 +1064,8 @@ describe("ultrafast fake Gateway", () => {
           { models: [ultrafastCatalogModel()] },
         );
         const stderrPath = join(root.root, "stderr.txt");
-        const env = fakeGatewayEnv(root, gateway, { FX_MODEL: undefined, FX_SESSIONS_V2: "1" });
+        useSessionsV2(root, true);
+        const env = fakeGatewayEnv(root, gateway, { FX_MODEL: undefined });
         let session: TmuxSession | null = null;
         try {
           session = await TmuxSession.create({ cwd: root.workspace, isolated: true, stderrPath, env });
@@ -1440,14 +1456,15 @@ describe("ACP speed options", () => {
 
   for (const backend of ["0", "1"]) {
     test(
-      `saves Fast across resume with FX_SESSIONS_V2=${backend}`,
+      `saves Fast across resume with sessions v2 ${backend === "1" ? "on" : "off"}`,
       async () => {
         const root = createIsolatedRoot({ models: { gateway: FAST_ONLY_MODEL } });
         const gateway = startFakeGateway(
           [fakeGatewayFinalText("saved fast"), fakeGatewayFinalText("resumed fast"), fakeGatewayFinalText("resumed standard")],
           { models: speedCatalog() },
         );
-        const env = fakeGatewayEnv(root, gateway, { FX_MODEL: undefined, FX_SESSIONS_V2: backend });
+        useSessionsV2(root, backend === "1");
+        const env = fakeGatewayEnv(root, gateway, { FX_MODEL: undefined });
         let client = AcpClient.create(root.workspace, env);
         try {
           const sessionId = await startAcpSession(client);

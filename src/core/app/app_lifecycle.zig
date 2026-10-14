@@ -175,6 +175,8 @@ pub const StartupState = struct {
     statusline_session: bool = false,
     statusline_workspace: bool = false,
     session_title_generation: bool = true,
+    /// `experimental.sessions_v2`: keep this process's sessions in v2.
+    sessions_v2_setting: bool = false,
     notification_turn_end: bool = false,
     notification_attention_required: bool = false,
     notification_max: bool = false,
@@ -836,6 +838,7 @@ fn loadStartupStateWithKeychainRead(
     state.statusline_session = settings.statusline_session orelse false;
     state.statusline_workspace = settings.statusline_workspace orelse false;
     state.session_title_generation = settings.session_titles orelse true;
+    state.sessions_v2_setting = settings.experimental_sessions_v2 orelse false;
     const sound_override = soundEnvOverride();
     const sound_on_override: ?bool = if (sound_override) |level| level != .off else null;
     const max_override: ?bool = if (sound_override) |level| level == .max else null;
@@ -1593,6 +1596,31 @@ pub fn loadSavedPermissionMode(alloc: Allocator, home_dir: ?[]const u8, workspac
     var settings = try config_runtime.loadStartupStatusSettingsFromPaths(alloc, paths);
     defer settings.deinit(alloc);
     return loadPermissionMode(settings.permission_mode);
+}
+
+/// Whether the profile turns on `experimental.sessions_v2`, for callers
+/// that choose a session store before startup state loads. A null
+/// `workspace_root` means the current directory. Settings fx can't read leave
+/// the experiment off, with a trace line.
+pub fn loadSessionsV2Setting(alloc: Allocator, home_dir: ?[]const u8, workspace_root: ?[]const u8) bool {
+    return readSessionsV2Setting(alloc, home_dir, workspace_root) catch |err| {
+        debug_trace.logf("config", "experimental.sessions_v2 unread, so it stays off: {s}", .{@errorName(err)});
+        return false;
+    };
+}
+
+fn readSessionsV2Setting(alloc: Allocator, home_dir: ?[]const u8, workspace_root: ?[]const u8) !bool {
+    const cwd = if (workspace_root == null) try io_mod.realpathAlloc(alloc, ".") else null;
+    defer if (cwd) |path| alloc.free(path);
+    const root = workspace_root orelse cwd.?;
+    var paths = if (home_dir) |home|
+        try config_runtime.discoverPathsFromHome(alloc, home, root)
+    else
+        try config_runtime.discoverPaths(alloc, root);
+    defer paths.deinit(alloc);
+    var settings = try config_runtime.loadMergedSettingsFromPaths(alloc, paths);
+    defer settings.deinit(alloc);
+    return settings.experimental_sessions_v2 orelse false;
 }
 
 test "loadSavedPermissionMode reads the mode saved after startup" {

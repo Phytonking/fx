@@ -1339,6 +1339,10 @@ fn runIfRequestedWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Con
         try writeStderr(deps, writer.written());
         return usage_failure;
     };
+    try writeSessionsV2Warnings(deps, switch (parsed_launch) {
+        .interactive => |launch| launch.modifiers.sessions_v2,
+        .noninteractive => |value| value.global_args.modifiers.sessions_v2,
+    });
     switch (parsed_launch) {
         .interactive => |launch| {
             try writeMcpProfileWarningIfPresent(alloc, cfg, deps);
@@ -1352,6 +1356,22 @@ fn runIfRequestedWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Con
     }
 }
 
+/// `--sessions-v2` and FX_SESSIONS_V2 still work until the experiment ends,
+/// each with one warning per run that names the setting.
+fn writeSessionsV2Warnings(deps: RunDeps, flag: bool) !void {
+    if (flag) try writeStderr(deps, cli_ask.sessions_v2_flag_warning);
+    if (session_adapter.envRequested()) {
+        try writeStderr(deps, "fx: FX_SESSIONS_V2 is deprecated; use fx config set experimental.sessions_v2 true\n");
+    }
+}
+
+/// v2 is on for this command: `--sessions-v2`, FX_SESSIONS_V2, or
+/// `experimental.sessions_v2`. Settings are read only when the flag
+/// and the env var leave it off.
+fn sessionsV2(alloc: Allocator, flag: bool) bool {
+    return session_adapter.enabled(flag) or app_lifecycle.loadSessionsV2Setting(alloc, null, null);
+}
+
 fn runNonInteractiveWithDeps(
     alloc: Allocator,
     parsed_launch: *NonInteractiveLaunch,
@@ -1361,7 +1381,8 @@ fn runNonInteractiveWithDeps(
     const global_args = &parsed_launch.global_args;
     const effective_args = parsed_launch.effective_args;
     const parsed_command = parsed_launch.command;
-    const sessions_v2 = session_adapter.enabled(global_args.modifiers.sessions_v2);
+    // Only commands that open a session store read `experimental.sessions_v2`.
+    const sessions_v2_flag = global_args.modifiers.sessions_v2;
 
     if (global_args.modifiers.hasWorkspaceModifiers() and
         !commandSupportsWorkspaceModifiers(parsed_command))
@@ -1865,7 +1886,7 @@ fn runNonInteractiveWithDeps(
                 cfg.default_model,
                 cfg.default_agent_step_limit,
                 mcp_inspection.profile_diagnostic,
-                sessions_v2,
+                sessionsV2(alloc, sessions_v2_flag),
             );
             defer snapshot.deinit(alloc);
 
@@ -1899,7 +1920,7 @@ fn runNonInteractiveWithDeps(
                     return usage_failure;
                 };
                 defer recovery.deinit(alloc);
-                if (sessions_v2) return runSessionRecoveryV2(alloc, deps, recovery);
+                if (sessionsV2(alloc, sessions_v2_flag)) return runSessionRecoveryV2(alloc, deps, recovery);
 
                 const workspace_root = try io_mod.realpathAlloc(alloc, ".");
                 defer alloc.free(workspace_root);
@@ -1941,7 +1962,7 @@ fn runNonInteractiveWithDeps(
                     return usage_failure;
                 };
                 defer migration.deinit(alloc);
-                if (sessions_v2) {
+                if (sessionsV2(alloc, sessions_v2_flag)) {
                     try writeLookupFailure(alloc, deps, "session", error.SessionMigrationUnavailable, migration.format);
                     return .handled_failure;
                 }
@@ -1982,7 +2003,7 @@ fn runNonInteractiveWithDeps(
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .session, "session", error.InvalidSessionDetailArgs, rest);
                 return usage_failure;
             };
-            if (sessions_v2) return runSessionDetailV2(alloc, deps, target, opts.format);
+            if (sessionsV2(alloc, sessions_v2_flag)) return runSessionDetailV2(alloc, deps, target, opts.format);
 
             const workspace_root = try io_mod.realpathAlloc(alloc, ".");
             defer alloc.free(workspace_root);
@@ -2031,7 +2052,7 @@ fn runNonInteractiveWithDeps(
                 try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .sessions, "sessions", err, rest);
                 return usage_failure;
             };
-            if (sessions_v2) return runSessionListV2(alloc, deps, opts);
+            if (sessionsV2(alloc, sessions_v2_flag)) return runSessionListV2(alloc, deps, opts);
 
             const workspace_root = try io_mod.realpathAlloc(alloc, ".");
             defer alloc.free(workspace_root);

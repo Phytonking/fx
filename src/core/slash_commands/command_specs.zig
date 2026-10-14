@@ -82,6 +82,9 @@ pub const OptionDoc = struct {
     /// Set for a removed spelling: help omits it, and the parser rejects it
     /// with this hint, such as "use --resume <id>".
     replacement: ?[]const u8 = null,
+    /// Help omits it, but the parser still reads it: a deprecated spelling
+    /// that keeps working with a warning, such as `--sessions-v2`.
+    hidden: bool = false,
 };
 
 pub const TopLevelSpec = struct {
@@ -370,12 +373,12 @@ pub fn renderTopLevelCommandHelp(alloc: Allocator, registry: TopLevelRegistry, k
     if (spec.options.len > 0) {
         var flag_width: usize = 0;
         for (spec.options) |opt| {
-            if (opt.replacement == null) flag_width = @max(flag_width, opt.flag.len);
+            if (opt.replacement == null and !opt.hidden) flag_width = @max(flag_width, opt.flag.len);
         }
 
         try out.writer.writeAll("\nOptions:\n");
         for (spec.options) |opt| {
-            if (opt.replacement != null) continue;
+            if (opt.replacement != null or opt.hidden) continue;
             try out.writer.writeAll("  ");
             try out.writer.writeAll(opt.flag);
             try writePadding(&out.writer, flag_width - opt.flag.len + 2);

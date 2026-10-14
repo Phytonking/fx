@@ -76,6 +76,9 @@ pub const Settings = struct {
     statusline_session: ?bool = null,
     statusline_workspace: ?bool = null,
     session_titles: ?bool = null,
+    /// `experimental.sessions_v2`: keep sessions in the v2 store. Experiments
+    /// are profile-only, so a project file never sets it.
+    experimental_sessions_v2: ?bool = null,
     notification_turn_end: ?bool = null,
     notification_attention_required: ?bool = null,
     notification_max: ?bool = null,
@@ -1774,6 +1777,19 @@ fn parseProfileOnlyFields(
         settings.session_titles = value.bool;
     }
 
+    // `experimental` was an unknown key before, which startup ignored, so a
+    // value that isn't an object is still ignored rather than an error.
+    if (root.object.get("experimental")) |group| {
+        if (group == .object) {
+            if (group.object.get("sessions_v2")) |value| {
+                if (value != .bool) return error.InvalidExperimentalSessionsV2Type;
+                settings.experimental_sessions_v2 = value.bool;
+            }
+        } else {
+            debug_trace.logf("config", "ignoring experimental={s}: experiments are an object of settings", .{@tagName(group)});
+        }
+    }
+
     if (root.object.get("auto_upgrade")) |auto_upgrade_value| {
         const value = auto_upgrade_value;
         if (value != .bool) return error.InvalidAutoUpgradeType;
@@ -2008,6 +2024,7 @@ fn mergeSettings(target: *Settings, incoming: *Settings, alloc: Allocator) !void
     if (incoming.slash_menu_categories) |value| target.slash_menu_categories = value;
     if (incoming.collapse_tool_calls) |value| target.collapse_tool_calls = value;
     if (incoming.session_titles) |value| target.session_titles = value;
+    if (incoming.experimental_sessions_v2) |value| target.experimental_sessions_v2 = value;
     if (incoming.auto_upgrade) |value| target.auto_upgrade = value;
     if (incoming.update_channel) |value| target.update_channel = value;
     if (incoming.theme) |value| {
@@ -3033,6 +3050,41 @@ test "setting overrides sit above the files, nest dotted keys, and keep the last
 
     try applySettingOverrides(alloc, &settings, &.{});
     try std.testing.expect(settings.fast_mode.?);
+}
+
+test "experimental.sessions_v2 is profile-only, overridable, and ignores a stray value" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try tmp.dir.createDirPath(io_mod.getIo(), "workspace");
+    const home_root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home");
+    defer alloc.free(home_root);
+    const workspace_root = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "workspace");
+    defer alloc.free(workspace_root);
+
+    // A committed project file can't turn an experiment on.
+    try writeFixtureFile(tmp.dir, "workspace/.fx.json", "{\"experimental\":{\"sessions_v2\":true}}");
+    var project_only = try loadMergedSettingsFromHome(alloc, home_root, workspace_root);
+    defer project_only.deinit(alloc);
+    try std.testing.expect(project_only.experimental_sessions_v2 == null);
+
+    try writeFixtureFile(tmp.dir, "home/.fx/settings.json", "{\"experimental\":{\"sessions_v2\":true}}");
+    var profile = try loadMergedSettingsFromHome(alloc, home_root, workspace_root);
+    defer profile.deinit(alloc);
+    try std.testing.expect(profile.experimental_sessions_v2.?);
+
+    // `fx ask --config` overrides it for one run.
+    try applySettingOverrides(alloc, &profile, &.{.{ .key = "experimental.sessions_v2", .value = .{ .bool = false } }});
+    try std.testing.expect(!profile.experimental_sessions_v2.?);
+
+    // `experimental` was an unknown key before, which startup ignored, so a
+    // stray value still loads.
+    var stray = try parseSettingsJson(alloc, "{\"experimental\":\"yes\",\"fast_mode\":true}");
+    defer stray.deinit(alloc);
+    try std.testing.expect(stray.experimental_sessions_v2 == null);
+    try std.testing.expect(stray.fast_mode.?);
+    try std.testing.expectError(error.InvalidExperimentalSessionsV2Type, parseSettingsJson(alloc, "{\"experimental\":{\"sessions_v2\":\"yes\"}}"));
 }
 
 test "obsolete web_fetch worker model setting is ignored" {

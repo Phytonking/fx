@@ -113,6 +113,7 @@ pub const UserSettingsPatch = struct {
     prompt_history_enabled: ?bool = null,
     statusline_item: ?StatuslineItemPatch = null,
     session_titles: ?bool = null,
+    experimental_sessions_v2: ?bool = null,
     notification_turn_end: ?bool = null,
     notification_attention_required: ?bool = null,
     notification_max: ?bool = null,
@@ -144,6 +145,7 @@ pub const UserSettingsPatch = struct {
             self.update_channel == null and
             self.startup_scrollback == null and
             self.prompt_history_enabled == null and
+            self.experimental_sessions_v2 == null and
             self.statusline_item == null and
             self.session_titles == null and
             self.notification_turn_end == null and
@@ -1225,6 +1227,11 @@ fn applyUserPatchToRoot(
         application.changed = try putBool(arena, &prompt_history.object, "enabled", enabled) or application.changed;
     }
 
+    if (patch.experimental_sessions_v2) |enabled| {
+        const experimental = try ensureGroup(arena, &root.object, "experimental", &application.changed);
+        application.changed = try putBool(arena, experimental, "sessions_v2", enabled) or application.changed;
+    }
+
     if (patch.statusline_item) |item_patch| {
         const statusline = try renamedGroup(arena, &root.object, "statusLine", "status_line", &application.changed);
         application.changed = try putBool(arena, statusline, @tagName(item_patch.item), item_patch.enabled) or application.changed;
@@ -1770,6 +1777,20 @@ fn putStringArray(
 /// spelling. Sets `changed` when the older key was there. The current name
 /// was an unknown key before the rename, so a value under it that isn't an
 /// object is one fx never used, and saving replaces it.
+/// The object at `name`, created when missing. A value that isn't an object
+/// was ignored by startup, so saving replaces it and logs what it dropped.
+fn ensureGroup(arena: Allocator, root: *std.json.ObjectMap, name: []const u8, changed: *bool) !*std.json.ObjectMap {
+    const existing = root.get(name);
+    if (existing == null or existing.? != .object) {
+        if (existing != null) {
+            debug_trace.logf("config", "replacing {s}={s} that fx ignored, to save the {s} settings", .{ name, @tagName(existing.?), name });
+            changed.* = true;
+        }
+        try root.put(arena, name, .{ .object = .empty });
+    }
+    return &root.getPtr(name).?.object;
+}
+
 fn renamedGroup(
     arena: Allocator,
     root: *std.json.ObjectMap,
@@ -1777,14 +1798,7 @@ fn renamedGroup(
     current: []const u8,
     changed: *bool,
 ) !*std.json.ObjectMap {
-    const existing = root.get(current);
-    if (existing == null or existing.? != .object) {
-        if (existing != null) {
-            debug_trace.logf("config", "replacing {s}={s} that fx ignored, to save the {s} settings", .{ current, @tagName(existing.?), current });
-            changed.* = true;
-        }
-        try root.put(arena, current, .{ .object = .empty });
-    }
+    _ = try ensureGroup(arena, root, current, changed);
     if (root.get(older)) |value| {
         if (value != .object) return error.InvalidSettingsFormat;
         const group = &root.getPtr(current).?.object;
@@ -2591,6 +2605,30 @@ test "durable validation rejects malformed workspace statusline" {
         error.InvalidSettingsFormat,
         store.applyUserPatch(alloc, .{ .startup_scrollback = false }),
     );
+}
+
+test "experimental patch writes its group and replaces a value startup ignored" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io_mod.getIo(), "home/.fx");
+    try writeStoreFixture(tmp.dir, "home/.fx/settings.json", "{\"experimental\":\"yes\",\"theme\":\"dark\"}\n");
+
+    const home = try io_mod.dirRealpathAlloc(alloc, tmp.dir, "home");
+    defer alloc.free(home);
+    var store = try Store.initFromHome(alloc, home, .writable);
+    defer store.deinit(alloc);
+
+    var outcome = try store.applyUserPatch(alloc, .{ .experimental_sessions_v2 = true });
+    defer outcome.deinit(alloc);
+    try std.testing.expect(outcome == .committed);
+
+    const bytes = try store.readPrimaryForTest(alloc);
+    defer alloc.free(bytes);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, bytes, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(true, parsed.value.object.get("experimental").?.object.get("sessions_v2").?.bool);
+    try std.testing.expectEqualStrings("dark", parsed.value.object.get("theme").?.string);
 }
 
 test "notification user patch preserves sibling fields and valid workspace overrides" {

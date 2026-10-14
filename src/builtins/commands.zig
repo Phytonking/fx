@@ -139,7 +139,8 @@ pub const ask_options = agentRunOptions("this request", true) ++ [_]command_spec
     .{ .flag = "--timeout <seconds>", .description = "Time limit for each shell command the agent runs" },
     .{ .flag = "--config <key=value>", .description = "Override a setting for this request, with the keys fx config set takes; repeatable" },
     .{ .flag = "--no-save", .description = "Do not save the session; incompatible with --resume" },
-    .{ .flag = "--sessions-v2", .description = "Use the experimental v2 session store, also set by FX_SESSIONS_V2=1; its sessions resume only with it" },
+    // `experimental.sessions_v2` replaces it; it warns until the experiment ends.
+    .{ .flag = "--sessions-v2", .description = "Use the experimental v2 session store", .hidden = true },
     .{ .flag = "--no-color", .description = "Render TTY output without colors or hyperlinks" },
     .{ .flag = "--resume <last|id>", .description = "Continue the last session or a session by id" },
     .{ .flag = "--resume-id <id>", .description = "Continue a session by exact id", .replacement = "use --resume <id>" },
@@ -158,7 +159,7 @@ pub const top_level_specs = [_]TopLevelSpec{
     .{
         .kind = .ask,
         .token = "ask",
-        .usage = "ask " ++ agent_run_usage ++ " [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--timeout <seconds>] [--config <key=value>] [--no-save] [--sessions-v2] [--no-color] [--resume <last|id>] [--continue-recovery] [--] <prompt>",
+        .usage = "ask " ++ agent_run_usage ++ " [--image PATH] [--system TEXT] [--json] [--quiet] [--prompt-permissions] [--timeout <seconds>] [--config <key=value>] [--no-save] [--no-color] [--resume <last|id>] [--continue-recovery] [--] <prompt>",
         .summary = "Run one noninteractive request",
         .options = &ask_options,
         .details = &.{
@@ -506,10 +507,6 @@ pub const top_level_flags = [_]TopLevelFlag{
         .description = "Pick a saved session, or resume the latest or an exact ID",
     },
     .{
-        .usage = "--sessions-v2",
-        .description = "Use the experimental v2 session store, also set by FX_SESSIONS_V2=1",
-    },
-    .{
         .usage = "-h, --help",
         .description = "Display this help and exit",
     },
@@ -764,6 +761,8 @@ test "every launch flag appears in fx --help" {
     outer: for (launch_options) |doc| {
         const name = cli_flags.flagName(doc);
         if (std.mem.eql(u8, name, "--yolo")) continue;
+        // Deprecated for `experimental.sessions_v2`: parsed, not shown.
+        if (std.mem.eql(u8, name, "--sessions-v2")) continue;
         for (top_level_flags) |flag| {
             var parts = std.mem.splitSequence(u8, flag.usage, ", ");
             while (parts.next()) |part| {

@@ -586,6 +586,13 @@ pub fn Runtime(comptime App: type) type {
                     startup.notification_max,
                 );
             }
+            if (comptime @hasField(App, "session_persistence")) {
+                // `experimental.sessions_v2` turns v2 on like `--sessions-v2`.
+                if (startup.sessions_v2_setting) {
+                    app.session_persistence.sessions_v2 = true;
+                    app.session_persistence.sessions_v2_setting = true;
+                }
+            }
             try deps.initialize_persistence(
                 app,
                 app.requested_resume != null,

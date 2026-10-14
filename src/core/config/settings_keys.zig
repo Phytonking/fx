@@ -51,6 +51,7 @@ pub const keys = [_]Key{
     .{ .name = "effort", .where = .profile },
     .{ .name = "enableAllProjectMcpServers", .where = .profile },
     .{ .name = "enabledMcpjsonServers", .where = .profile },
+    .{ .name = "experimental", .where = .profile, .children = &.{"sessions_v2"} },
     .{ .name = "fast_mode", .where = .profile },
     .{ .name = "fast_mode_model_bound", .where = .profile },
     .{ .name = "first_call_tool_choice", .where = .profile },

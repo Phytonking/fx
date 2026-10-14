@@ -926,7 +926,9 @@ pub fn runWithTransport(
     };
     defer state.deinit();
     // One backend per process; the wasm host stays on v1.
-    if (comptime !host_target.is_wasm) if (session_adapter.enabled(false)) {
+    if (comptime !host_target.is_wasm) if (session_adapter.enabled(!cfg.minimal_kernel and
+        app_lifecycle.loadSessionsV2Setting(alloc, cfg.home_override, null)))
+    {
         state.sessions_v2_requested = true;
         state.sessions_v2 = (if (cfg.home_override) |home|
             session_adapter.Store.open(alloc, home)

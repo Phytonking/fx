@@ -182,7 +182,8 @@ pub const Parser = struct {
         var best: ?[]const u8 = null;
         var best_distance: usize = 3;
         for (self.docs) |doc| {
-            if (doc.replacement != null) continue;
+            // Never suggest a removed or a deprecated spelling.
+            if (doc.replacement != null or doc.hidden) continue;
             const candidate = flagName(doc);
             if (std.mem.eql(u8, candidate, "--") or candidate[0] != '-') continue;
             const distance = editDistance(name, candidate) orelse continue;

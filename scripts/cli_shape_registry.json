@@ -235,7 +235,7 @@
     },
     "FX_SESSIONS_V2": {
       "job": "experimental",
-      "stability": "experimental"
+      "stability": "deprecated"
     },
     "FX_SKILL_SYMLINK_AUTHORITIES": {
       "job": "setting-override",

@@ -32,7 +32,7 @@ import {
   tmuxAvailable,
 } from "./tmux-helpers";
 
-// Sessions v2 behind FX_SESSIONS_V2 and --sessions-v2: every `fx ask` entry
+// Sessions v2 behind `experimental.sessions_v2`: every `fx ask` entry
 // and exit, the files it writes, and the faults a real disk and a real
 // crash produce: kills mid-stream and mid-tool, a torn tail, a flipped
 // byte, a second process, a read-only folder and a full disk.
@@ -50,7 +50,20 @@ function createFixture(prefix: string): Fixture {
   return { root, home: realpathSync(home), workspace: realpathSync(workspace) };
 }
 
+/// Turns `experimental.sessions_v2` on or off in the fixture's profile, the
+/// way a user turns the experiment on. `--sessions-v2` and
+/// FX_SESSIONS_V2 still work with a warning; one test covers them.
+function setSessionsV2(fixture: Fixture, on: boolean) {
+  const dir = join(fixture.home, ".fx");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "settings.json");
+  const settings = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+  settings.experimental = { ...settings.experimental, sessions_v2: on };
+  writeFileSync(path, JSON.stringify(settings));
+}
+
 function env(fixture: Fixture, gateway: { baseUrl: string; chatUrl: string }, v2 = true) {
+  setSessionsV2(fixture, v2);
   return {
     HOME: fixture.home,
     AI_GATEWAY_API_KEY: "sessions-v2-test-key",
@@ -60,7 +73,7 @@ function env(fixture: Fixture, gateway: { baseUrl: string; chatUrl: string }, v2
     FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
     FX_MODEL: FAKE_GATEWAY_MODEL,
     FX_AUTO_UPGRADE: "0",
-    FX_SESSIONS_V2: v2 ? "1" : undefined,
+    FX_SESSIONS_V2: undefined,
   };
 }
 
@@ -321,13 +334,15 @@ test("fx ask saves to v2, resumes by id and by last, and never writes v1", async
   }
 }, TIMEOUT * 3);
 
-test("the flag works before and after ask, and --no-save writes nothing", async () => {
+test("the deprecated flag and env var still turn v2 on with one warning, and --no-save writes nothing", async () => {
   const fixture = createFixture("fx-v2-flag-");
   const gateway = startFakeGateway([
     fakeGatewayFinalText("FLAG_BEFORE"),
     fakeGatewayFinalText("FLAG_AFTER"),
+    fakeGatewayFinalText("ENV_VAR"),
     fakeGatewayFinalText("NOT_SAVED"),
   ]);
+  const flagWarning = "fx: --sessions-v2 is deprecated; use fx config set experimental.sessions_v2 true\n";
   try {
     const before = await runFx(["--sessions-v2", "ask", "--json", "--auto", "Flag before ask."], {
       cwd: fixture.workspace,
@@ -335,23 +350,65 @@ test("the flag works before and after ask, and --no-save writes nothing", async 
       timeoutMs: TIMEOUT,
     });
     expect(before.code).toBe(0);
-    expect(before.stderr).toBe("");
+    expect(before.stderr).toBe(flagWarning);
     const before_id = JSON.parse(before.stdout).session_id;
     expect(existsSync(join(v2Root(fixture), before_id, "log.jsonl"))).toBe(true);
 
     const after = await ask(fixture, gateway, ["--sessions-v2", "Flag after ask."], false);
     expect(after.code).toBe(0);
-    expect(after.stderr).toBe("");
+    expect(after.stderr).toBe(flagWarning);
     const after_id = JSON.parse(after.stdout).session_id;
     expect(existsSync(join(v2Root(fixture), after_id, "log.jsonl"))).toBe(true);
+
+    const byEnv = await runFx(["ask", "--json", "--auto", "Env var."], {
+      cwd: fixture.workspace,
+      env: { ...env(fixture, gateway, false), FX_SESSIONS_V2: "1" },
+      timeoutMs: TIMEOUT,
+    });
+    expect(byEnv.code).toBe(0);
+    expect(byEnv.stderr).toBe("fx: FX_SESSIONS_V2 is deprecated; use fx config set experimental.sessions_v2 true\n");
+    const env_id = JSON.parse(byEnv.stdout).session_id;
+    expect(existsSync(join(v2Root(fixture), env_id, "log.jsonl"))).toBe(true);
     expectNoV1Sessions(fixture);
 
     const unsaved = await ask(fixture, gateway, ["--no-save", "Not saved."]);
     expect(unsaved.code).toBe(0);
     expect(JSON.parse(unsaved.stdout).session_id).toBe("");
     const folders = readdirSync(v2Root(fixture)).filter((name) => !name.startsWith(".") && !name.startsWith("index"));
-    expect(folders.sort()).toEqual([before_id, after_id].sort());
+    expect(folders.sort()).toEqual([before_id, after_id, env_id].sort());
   } finally {
+    gateway.stop();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+}, TIMEOUT * 3);
+
+test.skipIf(!tmuxAvailable())("with the setting on, the exit hint resumes with plain fx --resume", async () => {
+  const fixture = createFixture("fx-v2-exit-hint-");
+  const gateway = startFakeGateway([fakeGatewayFinalText("HINT_SAVED")]);
+  const stderrPath = join(fixture.root, "stderr.log");
+  writeFileSync(stderrPath, "");
+  let session: TmuxSession | undefined;
+  try {
+    session = await TmuxSession.create({
+      cmd: FX_BIN,
+      cwd: fixture.workspace,
+      env: { ...env(fixture, gateway), NO_COLOR: "1" },
+      stderrPath,
+      remainOnExit: true,
+    });
+    await session.waitForComposer(TIMEOUT);
+    await session.sendText("Save this for the exit hint.");
+    await session.waitForText("HINT_SAVED", TIMEOUT);
+    const id = onlySession(fixture);
+    await session.sendText("/quit");
+    await until(() => session!.paneStatus().dead === true, "the app to exit");
+    const scrollback = await session.captureFullScrollback();
+    // The setting reopens v2 sessions, so the hint needs no flag.
+    expect(scrollback).toContain(`Continue session with: fx --resume ${id}`);
+    expect(scrollback).not.toContain("--sessions-v2");
+    expect(readFileSync(stderrPath, "utf8")).toBe("");
+  } finally {
+    await session?.kill();
     gateway.stop();
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -1019,9 +1076,9 @@ async function startApp(fixture: Fixture, gateway: any, args: string[], waitForC
   const stderrPath = join(fixture.root, "stderr.log");
   writeFileSync(stderrPath, "");
   const session = await TmuxSession.create({
-    cmd: `${FX_BIN} --sessions-v2 ${args.join(" ")}`.trim(),
+    cmd: `${FX_BIN} ${args.join(" ")}`.trim(),
     cwd: fixture.workspace,
-    env: { ...env(fixture, gateway, false), NO_COLOR: "1", ...extraEnv },
+    env: { ...env(fixture, gateway), NO_COLOR: "1", ...extraEnv },
     stderrPath,
   });
   if (waitForComposer) await session.waitForComposer(TIMEOUT);
@@ -1245,9 +1302,9 @@ test.skipIf(!tmuxAvailable())("the picker shows a session open in another fx as 
     const contenderStderr = join(fixture.root, "contender-stderr.log");
     writeFileSync(contenderStderr, "");
     contender = await TmuxSession.create({
-      cmd: `${FX_BIN} --sessions-v2 -r`,
+      cmd: `${FX_BIN} -r`,
       cwd: fixture.workspace,
-      env: { ...env(fixture, gateway, false), NO_COLOR: "1" },
+      env: { ...env(fixture, gateway), NO_COLOR: "1" },
       stderrPath: contenderStderr,
     });
     await contender.waitForPane((pane) => pane.includes("Hold this session open.") && pane.includes("enter resume"), TIMEOUT);
@@ -2248,9 +2305,9 @@ test.skipIf(!tmuxAvailable())("fx session lists a compacted session's every turn
       const stderrPath = join(fixture.root, "stderr.log");
       writeFileSync(stderrPath, "");
       session = await TmuxSession.create({
-        cmd: v2 ? `${FX_BIN} --sessions-v2` : FX_BIN,
+        cmd: FX_BIN,
         cwd: fixture.workspace,
-        env: { ...env(fixture, gateway, false), NO_COLOR: "1" },
+        env: { ...env(fixture, gateway, v2), NO_COLOR: "1" },
         stderrPath,
       });
       await session.waitForComposer(TIMEOUT);
@@ -3035,9 +3092,9 @@ async function appExit(fixture: Fixture, gateway: any, args: string[]) {
   const stderrPath = join(fixture.root, `stderr-${Date.now()}.log`);
   writeFileSync(stderrPath, "");
   const session = await TmuxSession.create({
-    cmd: `${FX_BIN} --sessions-v2 ${args.join(" ")}`,
+    cmd: `${FX_BIN} ${args.join(" ")}`,
     cwd: fixture.workspace,
-    env: { ...env(fixture, gateway, false), NO_COLOR: "1" },
+    env: { ...env(fixture, gateway), NO_COLOR: "1" },
     stderrPath,
     remainOnExit: true,
   });
@@ -3224,7 +3281,7 @@ test.skipIf(!tmuxAvailable())("the app and ACP refuse a session whose blob went 
 /// pane's own shell quoting.
 function limitedAppScript(fixture: Fixture, id: string, blocks: number) {
   const script = join(fixture.root, `limited-fx-${blocks}.sh`);
-  writeFileSync(script, `#!/bin/sh\ntrap '' XFSZ\nulimit -f ${blocks}\nexec '${FX_BIN}' --sessions-v2 --resume ${id}\n`, { mode: 0o700 });
+  writeFileSync(script, `#!/bin/sh\ntrap '' XFSZ\nulimit -f ${blocks}\nexec '${FX_BIN}' --resume ${id}\n`, { mode: 0o700 });
   return script;
 }
 
@@ -3242,7 +3299,7 @@ test.skipIf(!tmuxAvailable())("an app whose disk fills keeps running, and the se
     full = await TmuxSession.create({
       cmd: limitedAppScript(fixture, id, blocks),
       cwd: fixture.workspace,
-      env: { ...env(fixture, gateway, false), NO_COLOR: "1" },
+      env: { ...env(fixture, gateway), NO_COLOR: "1" },
       stderrPath: join(fixture.root, `stderr-${blocks}.log`),
     });
     await full.waitForComposer(TIMEOUT);
@@ -3867,12 +3924,12 @@ async function gridEnter(entry: GridEntry, c: GridCase, gateway: any, token: str
       const args = entry === "app-id" ? `--resume ${c.id}` : entry === "app-last" ? "-c" : "";
       const stderrPath = join(c.harness, `stderr-${token}.log`);
       writeFileSync(stderrPath, "");
-      let cmd = `${FX_BIN} --sessions-v2 ${args}`;
+      let cmd = `${FX_BIN} ${args}`;
       if (limit !== undefined) {
         cmd = join(c.harness, `limited-${token}.sh`);
-        writeFileSync(cmd, `#!/bin/sh\ntrap '' XFSZ\nulimit -f ${limit}\nexec '${FX_BIN}' --sessions-v2 ${args}\n`, { mode: 0o700 });
+        writeFileSync(cmd, `#!/bin/sh\ntrap '' XFSZ\nulimit -f ${limit}\nexec '${FX_BIN}' ${args}\n`, { mode: 0o700 });
       }
-      const session = await TmuxSession.create({ cmd, cwd: c.fixture.workspace, env: { ...env(c.fixture, gateway, false), NO_COLOR: "1" }, stderrPath, remainOnExit: true });
+      const session = await TmuxSession.create({ cmd, cwd: c.fixture.workspace, env: { ...env(c.fixture, gateway), NO_COLOR: "1" }, stderrPath, remainOnExit: true });
       // The pane stays after fx exits, so its end is the pane dying.
       const exit = async (what: string) => {
         const deadline = Date.now() + TIMEOUT;

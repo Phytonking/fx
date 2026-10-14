@@ -141,8 +141,8 @@ Each env var has one job and that job's namespace:
 ## Experiments
 
 - Each experiment is a setting under `experimental`, such as `experimental.sessions_v2`, off by default.
-- Users change it like any setting: `fx config set experimental.<name> true` (planned), an Experimental section in `/settings`, the settings file, or the generic override.
-- No experiment gets its own flag or env var. `--sessions-v2` and `FX_SESSIONS_V2` keep working, with a warning, until that experiment ends.
+- Users change it like any setting: `fx config set experimental.<name> true`, `fx ask --config experimental.<name>=true` for one run, the settings file, or an Experimental section in `/settings` (planned). Add the key to `settings_keys.zig` as a child of `experimental`, to the `fx config` writable list, and to the profile-only parser.
+- No experiment gets its own flag or env var. `--sessions-v2` and `FX_SESSIONS_V2` keep working until that experiment ends, but each prints one warning per run that names `fx config set experimental.sessions_v2 true`, and the flag is hidden from help (`OptionDoc.hidden`).
 - Experiments are profile-only. A project's `.fx.json` can't turn one on.
 
 ## Stability and deprecation

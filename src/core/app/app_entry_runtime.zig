@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const app_lifecycle = @import("app_lifecycle.zig");
 const app_process_runtime = @import("app_process_runtime.zig");
 const app_session_runtime = @import("app_session_runtime.zig");
 const auto_upgrade = @import("../upgrade/auto_upgrade.zig");
@@ -294,7 +295,7 @@ fn runInteractiveWithDeps(comptime App: type, comptime cooperative: bool, app: *
             },
             else => {
                 // v2 names a storage fault (D29); v1 reports it as it always has.
-                if (session_adapter.enabled(launch.modifiers.sessions_v2)) {
+                if (session_adapter.enabled(launch.modifiers.sessions_v2 or app_lifecycle.loadSessionsV2Setting(alloc, null, null))) {
                     if (v2StorageFaultMessage(err)) |message| {
                         writeStderr(deps, message);
                         return .{ .exit = 1 };

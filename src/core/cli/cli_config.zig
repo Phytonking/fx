@@ -102,6 +102,7 @@ const Writable = enum {
     collapse_tool_calls,
     context,
     effort,
+    @"experimental.sessions_v2",
     fast_mode,
     max_agent_steps,
     max_tool_result_bytes,
@@ -195,6 +196,7 @@ pub fn change(options: Options, problem: *WriteProblem) error{ RefusedConfigSett
         .auto_upgrade => patch.auto_upgrade = enabled,
         .collapse_tool_calls => patch.collapse_tool_calls = enabled,
         .context => patch.context = enabled,
+        .@"experimental.sessions_v2" => patch.experimental_sessions_v2 = enabled,
         .fast_mode => patch.fast_mode = enabled,
         .@"prompt_history.enabled" => patch.prompt_history_enabled = enabled,
         .provider_strict => patch.provider_strict = enabled,
@@ -475,6 +477,9 @@ test "config set turns each value into the patch the save path writes" {
 
     const status = try changeForTest(&.{ "set", "statusLine.workspace", "true" }, &problem);
     try std.testing.expectEqual(settings_store.StatuslineItem.workspace, status.patch.statusline_item.?.item);
+
+    const experiment = try changeForTest(&.{ "set", "experimental.sessions_v2", "true" }, &problem);
+    try std.testing.expectEqual(true, experiment.patch.experimental_sessions_v2.?);
 
     const steps = try changeForTest(&.{ "set", "max_agent_steps", "0" }, &problem);
     try std.testing.expectEqual(@as(u32, 0), steps.patch.max_agent_steps.?);

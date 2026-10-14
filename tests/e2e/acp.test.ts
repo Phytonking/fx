@@ -213,12 +213,22 @@ function fakeGatewayEnv(
   };
 }
 
-// The session backends a test runs on. v2 sits behind FX_SESSIONS_V2 and
-// keeps a session in one folder, ~/.fx/sessions/v2/{id} (D48).
+// The session backends a test runs on. v2 sits behind
+// `experimental.sessions_v2` and keeps a session in one folder,
+// ~/.fx/sessions/v2/{id} (D48).
 const SESSION_BACKENDS = [
-  { suffix: "", env: { FX_SESSIONS_V2: undefined }, v2: false },
-  { suffix: " on sessions v2", env: { FX_SESSIONS_V2: "1" }, v2: true },
+  { suffix: "", v2: false },
+  { suffix: " on sessions v2", v2: true },
 ] as const;
+
+/// fakeGatewayEnv with the session backend chosen through
+/// `experimental.sessions_v2`, the way users choose it.
+function backendEnv(root: ReturnType<typeof createIsolatedRoot>, gateway: ReturnType<typeof startFakeGateway>, v2: boolean) {
+  const path = join(root.home, ".fx", "settings.json");
+  const settings = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+  writeFileSync(path, JSON.stringify({ ...settings, experimental: { sessions_v2: v2 } }));
+  return { ...fakeGatewayEnv(root, gateway), FX_SESSIONS_V2: undefined };
+}
 
 function acpContentText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -3468,7 +3478,7 @@ describe("acp: model-independent", () => {
         try {
           client = await AcpClient.create({
             cwd: root.workspace,
-            env: { ...fakeGatewayEnv(root, gateway), ...backend.env },
+            env: backendEnv(root, gateway, backend.v2),
           });
           const init = await client.request("initialize", {
             protocolVersion: 1,
@@ -3524,7 +3534,7 @@ describe("acp: model-independent", () => {
 
           client = await AcpClient.create({
             cwd: root.workspace,
-            env: { ...fakeGatewayEnv(root, gateway), ...backend.env },
+            env: backendEnv(root, gateway, backend.v2),
           });
           await client.request("initialize", { protocolVersion: 1 }, 10);
           const loaded = await client.request("session/load", {
@@ -3562,7 +3572,7 @@ describe("acp: model-independent", () => {
             );
             client = await AcpClient.create({
               cwd: root.workspace,
-              env: { ...fakeGatewayEnv(root, gateway), ...backend.env },
+              env: backendEnv(root, gateway, backend.v2),
             });
             await client.request("initialize", { protocolVersion: 1 }, 10);
             const other = await client.request("session/new", { cwd: root.workspace, mcpServers: [] }, 11) as any;
@@ -3607,7 +3617,7 @@ describe("acp: model-independent", () => {
         try {
           client = await AcpClient.create({
             cwd: root.workspace,
-            env: { ...fakeGatewayEnv(root, gateway), ...backend.env },
+            env: backendEnv(root, gateway, backend.v2),
           });
           await client.request("initialize", { protocolVersion: 1 }, 1);
           const relative = await client.request("session/new", { cwd: "relative/dir", mcpServers: [] }, 2) as any;
@@ -3988,7 +3998,7 @@ describe("acp: model-independent", () => {
           return { error: { code: -32601, message: "Method not found" } };
         };
         try {
-          const env = { ...fakeGatewayEnv(root, gateway), ...backend.env };
+          const env = backendEnv(root, gateway, backend.v2);
           client = await AcpClient.create({ cwd: root.workspace, env });
           client.setMcpMessageHandler(serveMini);
           await client.request("initialize", { protocolVersion: 1 }, 1);

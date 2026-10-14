@@ -355,6 +355,10 @@ test "prompt result failure writer preserves exact error type and identity" {
 /// Resume selector parsed from fx ask --resume.
 const ResumeTarget = session_store.ResumeTarget;
 
+/// `--sessions-v2` still works until the experiment ends, with this warning
+/// once per run.
+pub const sessions_v2_flag_warning = "fx: --sessions-v2 is deprecated; use fx config set experimental.sessions_v2 true\n";
+
 const AskOptions = struct {
     prompt: []u8,
     resume_target: ?ResumeTarget = null,
@@ -1472,6 +1476,10 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
     if (options.system_prompt_override) |sp| {
         effective_cfg.prompt_policy.system_prompt = sp;
     }
+    // `fx --sessions-v2 ask` already warned at launch.
+    if (options.sessions_v2 and !cfg.sessions_v2) {
+        try deps.write_stderr(deps.stderr_ctx, sessions_v2_flag_warning);
+    }
     effective_cfg.sessions_v2 = cfg.sessions_v2 or options.sessions_v2;
 
     const output_mode = selectOutputMode(
@@ -1772,6 +1780,8 @@ fn runPromptInternal(alloc: Allocator, prompt: []const u8, permission_override: 
     ctx.mode_id = mode_id;
     ctx.permission_rules = try takeCorePermissionRules(alloc, &startup);
     ctx.context_enabled = startup.context_enabled;
+    // `experimental.sessions_v2`, including a `--config` override, turns v2 on.
+    if (startup.sessions_v2_setting) ctx.cfg.sessions_v2 = true;
     if (options.output_mode.isTerminal()) {
         presenter = try ask_presentation.Runtime.init(alloc, .{
             .text = owned_prompt,
