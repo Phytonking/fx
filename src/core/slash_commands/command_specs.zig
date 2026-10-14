@@ -2130,7 +2130,7 @@ test "thread completions offer each verb and keep name verbs open" {
     try std.testing.expectEqual(@as(usize, 8), slashCompletionCount(testSlashRegistry(), "/thread "));
     try std.testing.expectEqualStrings("/thread switch", nthSlashCompletion(testSlashRegistry(), "/thread sw", 0).?);
     try std.testing.expectEqualStrings("switch", nthSlashCompletionLabel(testSlashRegistry(), "/thread sw", 0).?);
-    try std.testing.expectEqual(@as(usize, 2), slashCompletionCount(testSlashRegistry(), "/thread s"));
+    try std.testing.expectEqual(@as(usize, 3), slashCompletionCount(testSlashRegistry(), "/thread s"));
     try std.testing.expect(slashCompletionHasArgs(testSlashRegistry(), "/thread new"));
     try std.testing.expect(slashCompletionHasArgs(testSlashRegistry(), "/thread delete"));
     try std.testing.expect(!slashCompletionHasArgs(testSlashRegistry(), "/thread list"));
