@@ -352,6 +352,68 @@ test.skipIf(SKIP_TMUX)("thread_send asks for approval in ask mode and shows the 
   }
 }, 150_000);
 
+test.skipIf(SKIP_TMUX)("thread_send always-allow covers only the thread it was granted for", async () => {
+  const fixture = createFixture("tool-send-scope");
+  const rounds = [
+    { prompt: "send alpha first", name: "alpha", message: "msg one", done: "ROUND_ONE_DONE" },
+    { prompt: "send alpha second", name: "alpha", message: "msg two", done: "ROUND_TWO_DONE" },
+    { prompt: "send beta first", name: "beta", message: "msg three", done: "ROUND_THREE_DONE" },
+  ];
+  const gateway = startDynamicFakeGateway(
+    raw => {
+      const body = String(raw);
+      // The newest root prompt in the history decides the round.
+      let latest = -1;
+      let latestAt = -1;
+      rounds.forEach((round, index) => {
+        const at = body.lastIndexOf(round.prompt);
+        if (at > latestAt) {
+          latestAt = at;
+          latest = index;
+        }
+      });
+      if (latest < 0) {
+        return fakeGatewayFinalText(body.includes("write hello") ? "THREAD_ANSWER_OK" : "MAIN_ANSWER_OK");
+      }
+      const round = rounds[latest];
+      const resultAt = body.lastIndexOf(`Sent to thread ${round.name}`);
+      if (resultAt > latestAt) return fakeGatewayFinalText(round.done);
+      return fakeGatewayToolCall(`send-call-${latest}`, "thread_send", { name: round.name, message: round.message });
+    },
+    { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] },
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway, { FX_PERMISSION_MODE: "ask" });
+    await tui.sendText("/thread new alpha write hello");
+    await tui.waitForText("Started thread alpha", 20000);
+    await tui.sendText("/thread new beta write hello");
+    await tui.waitForText("Started thread beta", 20000);
+    await waitForThreadIdle(tui, "alpha");
+    await waitForThreadIdle(tui, "beta");
+
+    // Approve once for alpha with "don't ask again".
+    await tui.sendText("send alpha first");
+    await tui.waitForText("thread_send alpha: msg one", 20000);
+    await tui.sendKeys("2");
+    await tui.waitForText("ROUND_ONE_DONE", 30000);
+
+    // A second send to alpha runs without a prompt.
+    await tui.sendText("send alpha second");
+    await tui.waitForText("ROUND_TWO_DONE", 30000);
+
+    // A send to beta is a different target and asks again.
+    await tui.sendText("send beta first");
+    await tui.waitForText("thread_send beta: msg three", 20000);
+    expect(await tui.capturePane()).toContain("Yes, and don't ask again");
+    await tui.sendKeys("1");
+    await tui.waitForText("ROUND_THREE_DONE", 30000);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 240_000);
+
 test.skipIf(SKIP_TMUX)("thread_send refuses unknown threads without creating anything", async () => {
   const fixture = createFixture("tool-send-refuse");
   const { gateway, bodies } = startToolGateway(

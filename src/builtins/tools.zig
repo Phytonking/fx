@@ -671,9 +671,10 @@ pub const thread_read = ToolSpec{
 };
 
 // A message to a thread starts or steers another agent, which can then run
-// tools. No path, command, or URL names that effect, so the closest target
-// kind is `.none`, which keys approvals by tool name like `install_skill`
-// and host tools. Auto mode sends it to the narrow security review with the
+// tools. No path, command, or URL names that effect, so the kind is `.none`.
+// `permissionTargetForCall` special-cases this tool and keys approvals by the
+// thread name, like `skill` keys them by skill name, so a "don't ask again"
+// grant for one thread never covers another. Auto mode sends it to the narrow security review with the
 // full arguments, so the message text is what the reviewer and the approval
 // screen show.
 pub const thread_send = ToolSpec{
