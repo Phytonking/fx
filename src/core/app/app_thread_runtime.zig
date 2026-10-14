@@ -87,6 +87,27 @@ pub fn Runtime(comptime App: type) type {
     const SessionRuntime = app_session_runtime.Runtime(App);
 
     return struct {
+        /// True, after telling the user, when a thread of the current session is
+        /// running. Changing the session ends its host and with it every thread
+        /// turn, so `what` names the action being refused.
+        pub fn blocksSessionChange(app: *App, what: []const u8) !bool {
+            const host = SessionRuntime.subagentHost(app) orelse return false;
+            const root_id = SessionRuntime.activeSessionId(app) orelse return false;
+            const home = io_mod.homeDir() orelse return false;
+            var registry = thread_registry.load(app.alloc, home, root_id) catch return false;
+            defer registry.deinit(app.alloc);
+            const running = runningThread(host, &registry) orelse return false;
+            try noticeFmt(app, .@"error", "thread", "Thread {s} is still running. Stop it with /thread stop {s} before you {s}.", .{ running, running, what });
+            return true;
+        }
+
+        fn runningThread(host: *subagent_tool_host.Runtime, registry: *const thread_registry.Registry) ?[]const u8 {
+            for (registry.threads.items) |t| {
+                if (t.session_id.len != 0 and host.managed.hasRunningChild(t.session_id)) return t.name;
+            }
+            return null;
+        }
+
         pub fn handle(app: *App, rest: []const u8) !void {
             const action = parse(rest) catch {
                 try notice(app, .@"error", "", usage);
@@ -163,9 +184,11 @@ pub fn Runtime(comptime App: type) type {
                 }
                 break :blk t.session_id;
             };
-            if (current_thread == null and host.managed.hasRunningWork()) {
-                try notice(app, .@"error", "thread", "Threads are still running and would stop. Stop them with /thread stop NAME or wait, then switch.");
-                return;
+            if (current_thread == null) {
+                if (runningThread(host, registry)) |running| {
+                    try noticeFmt(app, .@"error", "thread", "Thread {s} is still running and would stop. Stop it with /thread stop {s} or wait, then switch.", .{ running, running });
+                    return;
+                }
             }
             if (app.stream.active or !app.worker.tryHoldTurnStart()) {
                 try notice(app, .@"error", "thread", "A turn is running in this session. Wait for it to finish, then switch.");

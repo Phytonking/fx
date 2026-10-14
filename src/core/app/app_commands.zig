@@ -700,11 +700,13 @@ pub fn Handlers(comptime App: type) type {
 
         fn commandResetSession(ctx: *anyopaque) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
+            if (try app_thread_runtime.Runtime(App).blocksSessionChange(app, "reset the session")) return;
             try app.resetSession();
         }
 
         fn commandNewSession(ctx: *anyopaque) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
+            if (try app_thread_runtime.Runtime(App).blocksSessionChange(app, "start a new session")) return;
             try app.newSession();
         }
 
@@ -718,6 +720,7 @@ pub fn Handlers(comptime App: type) type {
                 }, true);
                 return;
             }
+            if (try app_thread_runtime.Runtime(App).blocksSessionChange(app, "resume another session")) return;
             try app_session_runtime.Runtime(App).openSessionPicker(app);
         }
 

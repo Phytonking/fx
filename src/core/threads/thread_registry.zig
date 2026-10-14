@@ -134,6 +134,17 @@ pub fn agentNameFor(alloc: Allocator, name: []const u8, unique: u64) ![]u8 {
     return alloc.print("th-{x}-{s}", .{ unique, name });
 }
 
+/// The user-facing name inside a thread's agent name, or null when `agent`
+/// does not come from `agentNameFor`.
+pub fn nameFromAgent(agent: []const u8) ?[]const u8 {
+    const prefix = "th-";
+    if (!std.mem.startsWith(u8, agent, prefix)) return null;
+    const rest = agent[prefix.len..];
+    const dash = std.mem.findScalar(u8, rest, '-') orelse return null;
+    if (dash == 0 or dash + 1 >= rest.len) return null;
+    return rest[dash + 1 ..];
+}
+
 /// Caller owns the result.
 pub fn registryPath(alloc: Allocator, home: []const u8, root_id: []const u8) ![]u8 {
     const file_name = try alloc.print("{s}.json", .{root_id});
@@ -293,6 +304,13 @@ test "registry round trips through disk" {
     defer from_thread.deinit(alloc);
     try std.testing.expectEqualStrings("root1", from_thread.root_id);
     try std.testing.expect(try loadForThreadSession(alloc, home, "other") == null);
+}
+
+test "thread names come back out of agent names" {
+    try std.testing.expectEqualStrings("fix-auth", nameFromAgent("th-abc123-fix-auth").?);
+    try std.testing.expect(nameFromAgent("reviewer") == null);
+    try std.testing.expect(nameFromAgent("th-abc") == null);
+    try std.testing.expect(nameFromAgent("th--x") == null);
 }
 
 test "agent names are valid subagent names" {

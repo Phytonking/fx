@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { FX_BIN } from "../evals/eval-helpers";
 import {
   fakeGatewayFinalText,
+  fakeShellRun,
   startDynamicFakeGateway,
   TmuxSession,
   tmuxAvailable,
@@ -200,3 +201,88 @@ test.skipIf(SKIP_TMUX)("/thread switch is refused while a thread is still runnin
     gateway.stop();
   }
 }, 90_000);
+
+test.skipIf(SKIP_TMUX)("a thread that needs approval asks in the main session under its own name and continues after approval", async () => {
+  const fixture = createFixture("approval");
+  let threadRequests = 0;
+  const gateway = startDynamicFakeGateway(
+    raw => {
+      if (!String(raw).includes("write hello")) return fakeGatewayFinalText("MAIN_ANSWER_OK");
+      threadRequests += 1;
+      return threadRequests === 1
+        ? fakeShellRun("thread_shell_1", "echo from-thread")
+        : fakeGatewayFinalText("THREAD_DONE_AFTER_TOOL");
+    },
+    { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] },
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await TmuxSession.create({
+      cmd: JSON.stringify(FX_BIN),
+      cwd: fixture.workspace,
+      isolated: true,
+      remainOnExit: true,
+      env: { ...env(fixture, gateway), FX_PERMISSION_MODE: "ask", FX_MAX_AGENT_STEPS: "4" },
+    });
+    await tui.waitForStableComposer(15000);
+    await tui.sendText("hello");
+    await tui.waitForText("MAIN_ANSWER_OK", 20000);
+    await tui.waitForStableComposer(15000);
+
+    await tui.sendText("/thread new alpha write hello");
+    await tui.waitForText("Thread alpha needs permission", 20000);
+    await tui.waitForText("echo from-thread", 5000);
+
+    await tui.sendText("1");
+    let finished = false;
+    for (let attempt = 0; attempt < 30 && !finished; attempt++) {
+      await tui.sendText("/thread watch alpha");
+      try {
+        await tui.waitForText("THREAD_DONE_AFTER_TOOL", 1500);
+        finished = true;
+      } catch {
+        // Still working.
+      }
+    }
+    expect(finished).toBe(true);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 120_000);
+
+test.skipIf(SKIP_TMUX)("/new is refused while a thread is running and works once it is stopped", async () => {
+  const fixture = createFixture("new-guard");
+  const gateway = startDynamicFakeGateway(
+    async raw => {
+      if (!String(raw).includes("write hello")) return fakeGatewayFinalText("MAIN_ANSWER_OK");
+      await Bun.sleep(15000);
+      return fakeGatewayFinalText("SLOW_THREAD_DONE");
+    },
+    { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] },
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("/thread new slow write hello");
+    await tui.waitForText("Started thread slow", 20000);
+    await tui.sendText("/new");
+    await tui.waitForText("Stop it with /thread stop slow", 10000);
+
+    await tui.sendText("/thread stop slow");
+    await tui.waitForText("Stopping slow", 10000);
+    let stopped = false;
+    for (let attempt = 0; attempt < 30 && !stopped; attempt++) {
+      await tui.sendText("/new");
+      try {
+        await tui.waitForText("Stop it with /thread stop slow", 800);
+      } catch {
+        stopped = true;
+      }
+    }
+    expect(stopped).toBe(true);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 120_000);

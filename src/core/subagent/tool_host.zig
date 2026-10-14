@@ -24,6 +24,7 @@ const tool_set_contract = @import("../tooling/tool_set.zig");
 const tool_result_limits = @import("../tooling/tool_result_limits.zig");
 const types = @import("../shared/types.zig");
 const thread_feed = @import("../threads/thread_feed.zig");
+const thread_registry = @import("../threads/thread_registry.zig");
 
 const Allocator = std.mem.Allocator;
 /// Bounds how long a parent wait takes to observe cancellation or steering,
@@ -251,7 +252,39 @@ pub const Runtime = struct {
         self: *Runtime,
         alloc: Allocator,
     ) !?approval_registry.PendingRequest {
-        return self.approvals.firstPendingRequest(alloc, self.root_id);
+        var pending = (try self.approvals.firstPendingRequest(alloc, self.root_id)) orelse return null;
+        errdefer pending.deinit(alloc);
+        // A label is a nicety; an unreadable registry leaves the child id.
+        self.labelThreadOrigin(alloc, &pending) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {},
+        };
+        return pending;
+    }
+
+    /// Shows a thread's approval under its user-facing name. The UI reads the
+    /// `thread:` prefix.
+    fn labelThreadOrigin(
+        self: *Runtime,
+        alloc: Allocator,
+        pending: *approval_registry.PendingRequest,
+    ) !void {
+        var registry = try self.managed.state_store.load(alloc);
+        defer registry.deinit(alloc);
+        for (registry.children) |child| {
+            if (!std.mem.eql(u8, child.id, pending.child_id)) continue;
+            const name = thread_registry.nameFromAgent(child.agentName() orelse return) orelse return;
+            const label = try alloc.print("thread:{s}", .{name});
+            switch (pending.request.origin) {
+                .subagent => |old| alloc.free(@constCast(old)),
+                .active_session => {
+                    alloc.free(label);
+                    return;
+                },
+            }
+            pending.request.origin = .{ .subagent = label };
+            return;
+        }
     }
 
     pub fn resolveApproval(
