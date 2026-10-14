@@ -121,7 +121,7 @@ Each env var has one job and that job's namespace:
 - Every `FX_*` name in `src/` is registered in `scripts/cli_shape_registry.json` with its job and stability; the ones documented on fx.sh are `stable`. CI's `python3 -m scripts.check_cli_shape` fails on an unregistered or stale name.
 - An env var shapes context. It never changes what a command does.
 - Env vars documented on fx.sh are stable.
-- Respect `NO_COLOR` and `TERM=dumb` on every output path, including the interactive session. Today only top-level help does.
+- Respect `NO_COLOR` and `TERM=dumb` on every output path, through `src/core/shared/terminal_env.zig` (`NO_COLOR` counts only when non-empty). Help and `fx ask` drop color for either. The interactive session drops color for `NO_COLOR` by turning off `engine.colors_enabled` before startup, so cells never take a color while bold, dim, and reverse stay; it refuses `TERM=dumb` with a message that points to `fx ask`. New output that styles text should go through the terminal engine, or check `terminal_env.colorDisabled()` itself.
 
 ## Slash commands
 

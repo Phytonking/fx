@@ -435,7 +435,7 @@ Options:
   --timeout <seconds>         Time limit for each shell command the agent runs
   --config <key=value>        Override a setting for this request, with the keys fx config set takes; repeatable
   --no-save                   Do not save the session; incompatible with --resume
-  --no-color                  Render TTY output without colors or hyperlinks
+  --no-color                  Render TTY output without colors or hyperlinks; NO_COLOR or TERM=dumb also turns color off
   --resume <last|id>          Continue the last session or a session by id
   --continue-recovery         Resume the paused model response in the selected session
   --                          Treat every following argument as prompt text

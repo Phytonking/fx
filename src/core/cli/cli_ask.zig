@@ -37,6 +37,7 @@ const shell_snapshot = @import("../terminal/shell_snapshot.zig");
 const session_title_generation = @import("../session/session_title_generation.zig");
 const compactor = @import("../compactor/compactor.zig");
 const config_runtime = @import("../config/config_runtime.zig");
+const terminal_env = @import("../shared/terminal_env.zig");
 const cli_config = @import("cli_config.zig");
 const agent_run_flags = @import("agent_run_flags.zig");
 const flag_placement = @import("flag_placement.zig");
@@ -1482,11 +1483,13 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
     }
     effective_cfg.sessions_v2 = cfg.sessions_v2 or options.sessions_v2;
 
+    // NO_COLOR and TERM=dumb turn color off, like --no-color.
+    const no_color = options.no_color or terminal_env.colorDisabled();
     const output_mode = selectOutputMode(
         options.quiet,
         options.json_output,
         deps.stdout_is_tty(deps.stdout_ctx),
-        options.no_color,
+        no_color,
     );
     const result = runPromptInternal(alloc, options.prompt, options.agent.permission, effective_cfg, .{
         .output_mode = output_mode,
@@ -1495,7 +1498,7 @@ fn runWithDeps(alloc: Allocator, args: []const [:0]const u8, cfg: Config, deps: 
         .command_timeout_ms = options.timeout_ms,
         .save_session = !options.no_save,
         .resume_target = options.resume_target,
-        .color_enabled = !options.no_color,
+        .color_enabled = !no_color,
         .continue_recovery = options.continue_recovery,
         .provider_override = options.agent.provider,
         .model_override = options.agent.model,

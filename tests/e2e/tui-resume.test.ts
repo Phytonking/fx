@@ -4671,7 +4671,8 @@ test.skipIf(!tmuxAvailable())(
       contender = await TmuxSession.create({
         cmd: FX_BIN,
         cwd: workspaceRoot,
-        env: gatewayEnv(home, contenderGateway),
+        // The selected picker row is found by its color, so this session keeps it.
+        env: { ...gatewayEnv(home, contenderGateway), NO_COLOR: undefined },
         stderrPath: contenderStderrPath,
         width: 100,
         height: 30,
@@ -5426,7 +5427,8 @@ test.skipIf(!tmuxAvailable())(
       active = await TmuxSession.create({
         cmd: FX_BIN,
         cwd: realpathSync(markdownWorkspace),
-        env: { ...gatewayEnv(markdownHome, markdownGateway), FX_RECORD: markdownTapePath },
+        // The restored code block is checked for its syntax colors.
+        env: { ...gatewayEnv(markdownHome, markdownGateway), FX_RECORD: markdownTapePath, NO_COLOR: undefined },
         stderrPath: markdownStderrPath,
         width: 72,
         height: 32,
@@ -5470,7 +5472,11 @@ test.skipIf(!tmuxAvailable())(
       active = await TmuxSession.create({
         cmd: `${FX_BIN} --resume last`,
         cwd: realpathSync(markdownWorkspace),
-        env: { ...gatewayEnv(markdownHome, resumedMarkdownGateway), FX_RECORD: resumedMarkdownTapePath },
+        env: {
+          ...gatewayEnv(markdownHome, resumedMarkdownGateway),
+          FX_RECORD: resumedMarkdownTapePath,
+          NO_COLOR: undefined,
+        },
         stderrPath: markdownStderrPath,
         width: 42,
         height: 32,

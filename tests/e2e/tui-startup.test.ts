@@ -738,6 +738,60 @@ describe.skipIf(SKIP_TMUX)("tui: MCP startup", () => {
   );
 });
 
+describe.skipIf(SKIP_TMUX)("tui: standard terminal variables", () => {
+  const colorSgr = /\x1b\[(?:[0-9;]*;)?(?:3[0-9]|4[0-9]|9[0-7]|10[0-7])(?:;[0-9;]*)?m/;
+
+  test(
+    "NO_COLOR keeps the session and removes its colors",
+    async () => {
+      // The same screen with and without NO_COLOR, so the check can't pass vacuously.
+      const screens: string[] = [];
+      for (const noColor of [undefined, "1"]) {
+        const home = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-no-color-")));
+        session = await TmuxSession.create({
+          env: {
+            AI_GATEWAY_API_KEY: undefined,
+            VERCEL_OIDC_TOKEN: undefined,
+            HOME: home,
+            FX_AUTO_UPGRADE: "0",
+            FX_DISABLE_KEYCHAIN: "1",
+            FX_SKIP_ONBOARDING: "1",
+            NO_COLOR: noColor,
+          },
+        });
+        await session.waitForComposer(TIMEOUT);
+        await session.sendText("/help");
+        await session.waitForPane((pane) => pane.includes("/model"), TIMEOUT);
+        screens.push(await session.captureFullScrollbackEscapes());
+        await session.kill();
+        session = null;
+      }
+      expect(screens[0]).toMatch(colorSgr);
+      expect(screens[1]).not.toMatch(colorSgr);
+      expect(screens[1]).toContain("/model");
+    },
+    TIMEOUT * 2,
+  );
+
+  test(
+    "TERM=dumb refuses the interactive session and points to fx ask",
+    async () => {
+      // The session needs cursor movement, which a dumb terminal lacks.
+      const home = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-dumb-term-")));
+      session = await TmuxSession.create({
+        env: { HOME: home, FX_AUTO_UPGRADE: "0", FX_DISABLE_KEYCHAIN: "1", FX_SKIP_ONBOARDING: "1", TERM: "dumb" },
+        remainOnExit: true,
+      });
+      await session.waitForPane(() => session!.paneStatus().dead === true, TIMEOUT);
+      expect(session.paneStatus().status).toBe(1);
+      expect(await session.captureFullScrollback()).toContain(
+        "fx: TERM=dumb can't show the interactive session; use fx ask, or run fx in a terminal that supports cursor movement",
+      );
+    },
+    TIMEOUT,
+  );
+});
+
 describe.skipIf(SKIP_TMUX)("tui: credential onboarding", () => {
   test(
     "/setup opens the inline provider picker columns",

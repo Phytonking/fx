@@ -17,6 +17,8 @@ const host_target = @import("../hosts/target.zig");
 const io_mod = @import("../shared/io.zig");
 const prompt_policy = @import("../config/prompt_policy.zig");
 const session_adapter = @import("../session/session_adapter.zig");
+const terminal_env = @import("../shared/terminal_env.zig");
+const vt_emulator = @import("../terminal/engine.zig");
 const skill_contract = @import("../skills/skill_contract.zig");
 const command_specs = @import("../slash_commands/command_specs.zig");
 const context_contract = @import("../workspace/context_contract.zig");
@@ -231,10 +233,17 @@ fn unavailableCliDispatch(_: ?*anyopaque, _: Allocator, _: []const [:0]const u8,
 
 fn runInteractiveWithDeps(comptime App: type, comptime cooperative: bool, app: *App, alloc: Allocator, launch: *cli_surface.InteractiveLaunch, auth_mode: credentials.AuthMode, deps: RunDeps) !RunOutcome {
     const resume_requested = launch.requested_resume != null;
+    // NO_COLOR keeps the session and removes its colors. Set before
+    // the session starts any other thread.
+    if (terminal_env.noColor()) vt_emulator.colors_enabled = false;
     app.* = App.init(alloc, launch, auth_mode) catch |err| {
         switch (err) {
             error.NotATerminal => {
                 writeStderr(deps, "fx requires an interactive terminal (TTY).\n");
+                return .{ .exit = 1 };
+            },
+            error.DumbTerminal => {
+                writeStderr(deps, "fx: TERM=dumb can't show the interactive session; use fx ask, or run fx in a terminal that supports cursor movement\n");
                 return .{ .exit = 1 };
             },
             error.TerminalTooSmall => {

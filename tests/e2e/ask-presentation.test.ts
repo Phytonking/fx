@@ -602,6 +602,37 @@ describe("fx ask presentation", () => {
   );
 
   test.skipIf(!tmuxAvailable())(
+    "NO_COLOR and TERM=dumb render like --no-color",
+    async () => {
+      // Both standard variables turn fx ask's color off.
+      for (const env of [{ NO_COLOR: "1" }, { NO_COLOR: undefined, TERM: "dumb" }]) {
+        const root = createRoot();
+        const gateway = startFakeGateway([fakeGatewayFinalText(MARKDOWN)]);
+        gateways.push(gateway);
+
+        const session = await TmuxSession.create({
+          isolated: true,
+          cmd: terminalCommand(["ask", "--no-save", "Render the standard no-color fixture."]),
+          cwd: root.workspace,
+          env: { ...gatewayEnv(root.home, gateway), ...env },
+          width: 120,
+          height: 40,
+          remainOnExit: true,
+        });
+        sessions.push(session);
+
+        await session.waitForText("__FX_EXIT_0__", TIMEOUT);
+        const pane = await session.captureFullScrollback();
+        const escaped = await session.captureFullScrollbackEscapes();
+        expect(pane).toContain("Ask presentation");
+        expect(pane).toContain("const answer: u8 = 42;");
+        expect(escaped).not.toMatch(/\x1b\[[0-9;]*m/);
+      }
+    },
+    TIMEOUT * 2,
+  );
+
+  test.skipIf(!tmuxAvailable())(
     "light theme uses readable syntax colors in TTY code blocks with redirected stdin",
     async () => {
       const root = createRoot();

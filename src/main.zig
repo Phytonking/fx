@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
 const io_mod = @import("core/shared/io.zig");
+const terminal_env = @import("core/shared/terminal_env.zig");
 const env_settings = @import("core/config/env_settings.zig");
 
 pub const version = "0.0.14";
@@ -3677,8 +3678,8 @@ fn topLevelHelpColumns(raw_env: RawEnviron) usize {
 }
 
 fn topLevelHelpStyle(raw_env: RawEnviron) command_specs.HelpStyle {
-    const no_color = rawEnvHas(raw_env, "NO_COLOR");
-    const dumb_terminal = if (rawEnvValue(raw_env, "TERM")) |term| std.mem.eql(u8, term, "dumb") else false;
+    const no_color = terminal_env.noColorValue(rawEnvValue(raw_env, "NO_COLOR"));
+    const dumb_terminal = terminal_env.dumbTerminalValue(rawEnvValue(raw_env, "TERM"));
     return topLevelHelpStyleForValues(stdoutIsTerminal(), no_color, dumb_terminal);
 }
 

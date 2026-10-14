@@ -340,6 +340,7 @@
     "HERDR_SOCKET_PATH",
     "HOME",
     "LANG",
+    "NO_COLOR",
     "PATH",
     "SHELL",
     "SSH_CONNECTION",

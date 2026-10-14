@@ -3163,7 +3163,8 @@ describe.skipIf(SKIP)("tui: resize", () => {
           FX_TRACE_LOG: tracePath,
           FX_TRACE_SCOPES:
             "frame_schedule,frame_diff,frame_commit,scroll,resize,input",
-          NO_COLOR: "1",
+          // The selected slash row is found by its color, so this session keeps it.
+          NO_COLOR: undefined,
         },
         width: 120,
         height: 34,

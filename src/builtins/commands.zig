@@ -141,7 +141,7 @@ pub const ask_options = agentRunOptions("this request", true) ++ [_]command_spec
     .{ .flag = "--no-save", .description = "Do not save the session; incompatible with --resume" },
     // `experimental.sessions_v2` replaces it; it warns until the experiment ends.
     .{ .flag = "--sessions-v2", .description = "Use the experimental v2 session store", .hidden = true },
-    .{ .flag = "--no-color", .description = "Render TTY output without colors or hyperlinks" },
+    .{ .flag = "--no-color", .description = "Render TTY output without colors or hyperlinks; NO_COLOR or TERM=dumb also turns color off" },
     .{ .flag = "--resume <last|id>", .description = "Continue the last session or a session by id" },
     .{ .flag = "--resume-id <id>", .description = "Continue a session by exact id", .replacement = "use --resume <id>" },
     .{ .flag = "--continue-recovery", .description = "Resume the paused model response in the selected session" },
