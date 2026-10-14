@@ -6,6 +6,7 @@
 //! Chosen with FX_MCP_ENGINE=v2 until v1 is removed.
 
 const std = @import("std");
+const observation = @import("../agent/runtime/observation.zig");
 const mcp = @import("../../mcp/mcp.zig");
 const mcp_contract = @import("../mcp/mcp_contract.zig");
 const io_mod = @import("../shared/io.zig");
@@ -154,6 +155,7 @@ pub const Error = Allocator.Error || error{
 };
 
 const Request = struct {
+    observation: ?observation.McpCall = null,
     kind: Kind,
     /// Results are allocated with it; the caller doesn't use it while waiting.
     alloc: Allocator,
@@ -405,7 +407,11 @@ pub const Runtime = struct {
         cancel: ?*const std.atomic.Value(bool),
         asker: ?Asker,
     ) Error!CallResult {
-        var req: Request = .{ .kind = .{ .call = .{ .server = server, .tool = tool, .arguments = arguments } }, .alloc = alloc, .asker = asker };
+        return r.callObserved(alloc, server, tool, arguments, cancel, asker, null);
+    }
+
+    pub fn callObserved(r: *Runtime, alloc: Allocator, server: []const u8, tool: []const u8, arguments: ?[]const u8, cancel: ?*const std.atomic.Value(bool), asker: ?Asker, observed: ?observation.McpCall) Error!CallResult {
+        var req: Request = .{ .kind = .{ .call = .{ .server = server, .tool = tool, .arguments = arguments } }, .alloc = alloc, .asker = asker, .observation = observed };
         try r.submit(&req, cancel);
         return switch (req.result) {
             .call => |c| c,
@@ -577,6 +583,7 @@ pub const Runtime = struct {
                 // Room first: a call the engine took must have its waiter.
                 try r.calls.ensureUnusedCapacity(r.gpa, 1);
                 const handle_ = try r.engine.call(r.resolved.servers[i].name, c.tool, c.arguments);
+                if (req.observation) |call_| call_.engineRequest(handle_);
                 r.calls.putAssumeCapacity(handle_, req);
             },
             .cancel => |target| {

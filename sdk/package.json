@@ -92,6 +92,7 @@
     "node.js",
     "node.cjs",
     "fx-sdk.js",
+    "tool-observation.js",
     "durable.js",
     "fx-harness.js",
     "durable/local.mjs",

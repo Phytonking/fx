@@ -34,6 +34,7 @@ const files = [
   ["sdk/fx-harness.js", "fx-harness.js"],
   ["sdk/wasm-module.js", "wasm-module.js"],
   ["sdk/core-output.js", "core-output.js"],
+  ["sdk/tool-observation.js", "tool-observation.js"],
   ["sdk/subscription.js", "subscription.js"],
   ["sdk/oauth.js", "oauth.js"],
   ["sdk/chatgpt.js", "chatgpt.js"],

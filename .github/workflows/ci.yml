@@ -247,6 +247,8 @@ jobs:
       - name: Test libfx Wasm integrations
         run: |
           node --experimental-wasm-jspi sdk/tests/test-host-tools.mjs wasm
+          node --experimental-wasm-jspi sdk/tests/test-hooks.mjs wasm
+          env LIBFX_TEST_HOOKS=1 node --experimental-wasm-jspi sdk/tests/test-agent-steering.mjs wasm
           node --experimental-wasm-jspi sdk/tests/test-host-tool-cancel.mjs wasm
           node --experimental-wasm-jspi sdk/tests/test-mcp-adapter.mjs http wasm
           node --experimental-wasm-jspi sdk/tests/test-skills-adapter.mjs host wasm
@@ -254,6 +256,7 @@ jobs:
       - name: Test durable sessions on Wasm
         run: |
           node --experimental-wasm-jspi sdk/tests/test-durable.mjs memory wasm
+          env LIBFX_TEST_HOOKS=1 node --experimental-wasm-jspi sdk/tests/test-durable.mjs memory wasm
           node --experimental-wasm-jspi sdk/tests/test-durable.mjs local wasm
           node --experimental-wasm-jspi sdk/tests/test-durable-provider-crash.mjs wasm
 
@@ -290,6 +293,8 @@ jobs:
         run: |
           node sdk/tests/test-minimal-api.mjs
           node sdk/tests/test-host-tools.mjs native
+          node sdk/tests/test-hooks.mjs native
+          env LIBFX_TEST_HOOKS=1 node sdk/tests/test-agent-steering.mjs native
           node sdk/tests/test-host-tool-cancel.mjs native
           node sdk/tests/test-mcp-adapter.mjs stdio native
           node sdk/tests/test-skills-adapter.mjs disk native
@@ -300,6 +305,7 @@ jobs:
       - name: Test durable sessions on N-API
         run: |
           node sdk/tests/test-durable.mjs memory native
+          env LIBFX_TEST_HOOKS=1 node sdk/tests/test-durable.mjs memory native
           node sdk/tests/test-durable.mjs local native
           node sdk/tests/test-durable.mjs world native
           node sdk/tests/test-durable-provider-crash.mjs native
@@ -375,6 +381,7 @@ jobs:
           echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $jar" | sha256sum -c -
           TLA2TOOLS_JAR="$jar" sdk/tests/model/check.sh
           bun sdk/tests/model/drive.mjs send --walks 40
+          bun sdk/tests/model/drive.mjs send --walks 20 --seed 3 --hooks
           bun sdk/tests/model/drive.mjs lookup --walks 40 --seed 7
           bun sdk/tests/model/drive.mjs send --walks 20 --seed 3 --durability world
           bun sdk/tests/model/drive.mjs lookup --walks 20 --seed 9 --durability world
@@ -386,6 +393,7 @@ jobs:
           bun sdk/tests/model/drive-agents.mjs consume --walks 60 --seed 13
           bun sdk/tests/model/drive-steer.mjs ideal --walks 20 --seed 2
           bun sdk/tests/model/drive-steer.mjs faults --walks 20 --seed 4
+          bun sdk/tests/model/drive-steer.mjs faults --walks 10 --seed 4 --hooks
           bun sdk/tests/model/drive-steer.mjs faults --walks 10 --seed 6 --backend wasm
 
       - name: Test libfx on a World

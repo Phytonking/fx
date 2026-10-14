@@ -132,25 +132,32 @@ pub const Catalog = struct {
         if (options.expected_binding) |b| if (b.runtime_generation != c.generation) return error.McpAdvertisedToolChanged;
         if (options.expected_runtime_generation) |g| if (g != c.generation) return error.McpAuthorityChanged;
         try c.ensure(name, options.cancel_flag);
-        const server, const tool = found: {
+        const server, const tool, const transport = found: {
             c.mutex.lockUncancelable(c.io);
             defer c.mutex.unlock(c.io);
             const found = c.findLocked(name) orelse return null;
             if (options.expected_binding) |b| {
                 if (!b.sameDefinition(c.bindingLocked(found.server, found.tool.*))) return error.McpAdvertisedToolChanged;
             }
-            break :found .{ c.runtime.servers()[found.server].name, try arena.dupe(u8, found.tool.original_name) };
+            break :found .{ c.runtime.servers()[found.server].name, try arena.dupe(u8, found.tool.original_name), @tagName(c.runtime.servers()[found.server].transport) };
         };
         var asking: Asking = .{ .responder = options.input_responder orelse undefined, .tool = name, .cancel = options.cancel_flag, .io = c.io };
+        const observed = if (options.observer) |observer| observer.beginMcp(.{ .call_id = options.call_id, .server = server, .tool = tool, .transport = transport }) else null;
         const asker: ?runtime_mod.Asker = if (options.input_responder != null) .{ .context = &asking, .ask = Asking.ask } else null;
-        const answer = c.runtime.call(arena, server, tool, arguments_json, options.cancel_flag, asker) catch |err| {
+        const answer = c.runtime.callObserved(arena, server, tool, arguments_json, options.cancel_flag, asker, observed) catch |err| {
+            if (observed) |call| call.end(if (err == error.Cancelled) .cancelled else .failure, @errorName(err));
             asking.finish(arena, .abandoned);
             return err;
         };
         // The questions asked end with the call: an editor hears that a URL it
         // opened was used (ACP `elicitation/complete`).
         asking.finish(arena, if (answer == .result) .completed else .abandoned);
-        return try render(arena, server, name, answer, max_tool_result_bytes);
+        const result = render(arena, server, name, answer, max_tool_result_bytes) catch |err| {
+            if (observed) |call| call.end(.failure, @errorName(err));
+            return err;
+        };
+        if (observed) |call| call.end(if (result) |value| value.status.observed() else .unavailable, null);
+        return result;
     }
 
     pub fn searchTools(
@@ -712,7 +719,13 @@ test "an MCP-v2 server's tools reach the model under fx's names" {
     try testing.expectEqual(c.generation, (try c.validateTool(a, "mcp_fake_echo", "{}", .unrestricted)).valid);
     try testing.expect((try c.validateTool(a, "mcp_fake_echo", "[", .unrestricted)) == .invalid);
 
-    const result = (try c.callTool(a, "mcp_fake_echo", "{}", 4096, .{ .expected_binding = binding })).?;
+    var capture: @import("../agent/runtime/observation_testing.zig").Capture = .{ .expected_call = "mcp-call" };
+    var observer = capture.observer();
+    const result = (try c.callTool(a, "mcp_fake_echo", "{}", 4096, .{ .expected_binding = binding, .observer = &observer, .call_id = "mcp-call" })).?;
+    try testing.expectEqual(@as(usize, 1), capture.count(.mcp_start));
+    try testing.expectEqual(capture.count(.mcp_start), capture.count(.mcp_end));
+    try testing.expect(capture.saw_mcp_request);
+    try testing.expect(!capture.invalid);
     try testing.expectEqual(tool_mcp_runtime.CallStatus.success, result.status);
     try testing.expect(std.mem.find(u8, result.model_output, "hi") != null);
     var stale = binding;

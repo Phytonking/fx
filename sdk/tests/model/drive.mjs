@@ -4,7 +4,7 @@
 // checks after every step that the code is in a state the model allows.
 //
 //   bun sdk/tests/model/drive.mjs [send|lookup|write|cutoff|leased|queue] [--walks N] [--seed S] [--backend native|wasm]
-//     [--durability local|world|vercel]
+//     [--durability local|world|vercel] [--hooks]
 //
 // The lookup and cutoff graphs run a lookup, which starts before its intent
 // is stored: the driver holds that intent's record, so the call runs while
@@ -51,6 +51,7 @@ import { createFxAgent } from "../../node.js";
 import { local } from "../../durable/local.mjs";
 import { holdWrites } from "../hold-writes.mjs";
 import { loadGraph } from "./graph.mjs";
+import { testHooks } from "../hooks-fixture.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => {
@@ -231,6 +232,7 @@ async function harness() {
     });
     writes[w] = held;
     agents[w] = createFxAgent({
+      ...(testHooks ? { hooks: testHooks } : {}),
       backend,
       nativeAddon: addon,
       ...(wasm ? { wasm } : {}),

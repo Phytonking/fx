@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFxEngine, supportsJspi } from "../node.js";
+import { testHooks } from "./hooks-fixture.mjs";
 
 const backend = process.argv[2] || "native";
 if (!new Set(["native", "wasm"]).has(backend)) throw new Error("usage: test-agent-steering.mjs [native|wasm]");
@@ -79,6 +80,7 @@ await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen
 const { port } = server.address();
 
 const options = (checkpoint) => ({
+  ...(testHooks ? { hooks: testHooks } : {}),
   backend,
   nativeAddon: addon,
   ...(wasm ? { wasm } : {}),

@@ -1,4 +1,5 @@
 const std = @import("std");
+const observation = @import("observation.zig");
 const builtin = @import("builtin");
 const agent_stream_provider = @import("../stream_provider.zig");
 const context_limits = @import("../../config/context_limits.zig");
@@ -25,6 +26,8 @@ const system_prompt =
     "Extract exactly one record for every requested image ID, in requested order.";
 
 pub const Config = struct {
+    observer: ?*observation.Observer = null,
+    parent_call_id: ?[]const u8 = null,
     stream_provider: agent_stream_provider.Provider,
     api_key: []const u8,
     credential_source: ?types.CredentialSource = null,
@@ -287,6 +290,8 @@ fn runBatchAttempt(
         verified_images,
         .{
             .stream_provider = config.stream_provider,
+            .observer = config.observer,
+            .parent_call_id = config.parent_call_id,
             .api_key = config.api_key,
             .credential_source = config.credential_source,
             .gateway_team = config.gateway_team,

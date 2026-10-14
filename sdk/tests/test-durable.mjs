@@ -14,6 +14,7 @@ import { createFxAgent, createFxEngine, memory } from "../node.js";
 import { createFxEngine as createWasmEngine } from "../fx-sdk.js";
 import { foldSessionLog } from "../durable.js";
 import { holdWrites } from "./hold-writes.mjs";
+import { testHooks } from "./hooks-fixture.mjs";
 
 const durabilityKind = process.argv[2] || "memory";
 const engineBackend = process.argv[3] || "native";
@@ -380,6 +381,7 @@ const queueOutlivesProcess = (durability) => {
   };
 };
 const agentOptions = (durability, extra = {}) => ({
+  ...(testHooks ? { hooks: testHooks } : {}),
   backend: engineBackend,
   nativeAddon: addon,
   ...(wasm ? { wasm } : {}),

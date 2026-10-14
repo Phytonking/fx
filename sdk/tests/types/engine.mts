@@ -16,6 +16,8 @@ import {
   type FxEngineTurn,
   type FxEngineTurnResult,
   type FxHostTool,
+  type FxHooks,
+  type FxHookEvent,
   type FxToolResult,
   type JournalRecord,
   type Persistence,
@@ -27,6 +29,40 @@ function assertType<T extends true>(): void {}
 
 declare const process: { env: Record<string, string | undefined> };
 declare const apiKey: string;
+
+const hooks: FxHooks = {
+  captureContent: true,
+  onEvent(event: FxHookEvent) {
+    if (event.type === "model.start") {
+      assertType<Equal<typeof event.data.modelCallId, number>>();
+      assertType<Equal<typeof event.data.messages, import("libfx").FxHookMessage[] | undefined>>();
+    }
+    if (event.type === "tool.result") {
+      assertType<Equal<typeof event.data.call.callId, string>>();
+      // @ts-expect-error accepted tool results have no transport response headers
+      void event.data.headers;
+    }
+  },
+  async onError(_error: unknown) {},
+};
+void createFxEngine({ apiKey, hooks });
+void createFxAgent({ apiKey, hooks });
+const interactiveTool: FxHostTool = {
+  name: "confirm",
+  description: "Ask the host",
+  inputSchema: { type: "object" },
+  async execute(_input, context) {
+    if (!context.observation) return "no observer";
+    const response = await context.observation.wait<number>({ kind: "approval", prompt: "Continue?" }, async () => ({ outcome: "accepted", value: 42 }));
+    assertType<Equal<typeof response.value, number | undefined>>();
+    const childHooks: import("libfx/browser").FxHooks = context.observation.childHooks();
+    const wasmObserver: import("libfx/wasm").FxToolObservation = context.observation;
+    void childHooks;
+    void wasmObserver;
+    return response.outcome;
+  },
+};
+void interactiveTool;
 declare const model: string;
 declare const file: File;
 declare const pngBytes: Uint8Array;

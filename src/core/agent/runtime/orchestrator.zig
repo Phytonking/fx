@@ -65,6 +65,7 @@ const runtime_tool_admission = @import("tool_admission.zig");
 const runtime_interruption = @import("interruption.zig");
 const runtime_parallel_execution = @import("parallel_execution.zig");
 const runtime_tool_batch = @import("tool_batch.zig");
+const observation = @import("observation.zig");
 const model_response_recovery = @import("model_response_recovery.zig");
 const response_language = @import("response_language.zig");
 const tool_mcp_runtime = @import("../../tooling/tool_mcp_runtime.zig");
@@ -3179,7 +3180,7 @@ fn materializeConfirmedProviderTools(
         novel_calls,
         try deps.agent_stream_provider.projectReplay(arena, if (completion.provider_state_json) |parts| .{ .source = selection, .parts_json = parts } else null, novel_calls, false, true),
     );
-    var batch: runtime_tool_batch.StepBatchState = .{};
+    var batch: runtime_tool_batch.StepBatchState = .{ .observer = deps.observer };
     reportProviderExecutedUsage(deps, novel_calls);
     for (novel_calls) |call| {
         try appendProviderExecutedToolResult(
@@ -5442,9 +5443,28 @@ pub fn processAgentPrompt(
     );
     defer finalization.deinit();
 
+    var observed_error: ?anyerror = null;
+    if (deps.observer) |observer| observer.beginTurn(job.prompt, job.recovery_checkpoint != null);
+    defer if (deps.observer) |observer| {
+        const outcome: observation.TurnOutcome = if (observed_error) |err| switch (err) {
+            error.TurnYielded => .yielded,
+            error.Cancelled => .cancelled,
+            error.SessionWriterChanged, error.SessionWriterParked => .fenced,
+            else => .failed,
+        } else if (finalization.outcome) |outcome| switch (outcome) {
+            .completed => .completed,
+            .interrupted => .interrupted,
+            .failed => .failed,
+            .paused => .paused,
+        } else .failed;
+        observer.endTurn(outcome, if (observed_error) |err| @errorName(err) else null);
+    };
+
     processQueuedPromptInner(deps, semantic_presentation, effective_lifecycle, effective_config, effective_job, &finalization, agent) catch |err| {
+        observed_error = err;
         if (finalization.state == .open) {
             finalization.finish(.failed, null, null) catch |finalization_err| {
+                observed_error = finalization_err;
                 if (deps.compaction_failure) |out| out.* = null;
                 return finalization_err;
             };
@@ -5452,7 +5472,10 @@ pub fn processAgentPrompt(
         return err;
     };
     if (finalization.state == .open) {
-        try finalization.finish(.completed, null, null);
+        finalization.finish(.completed, null, null) catch |err| {
+            observed_error = err;
+            return err;
+        };
     }
 }
 
@@ -6993,6 +7016,8 @@ fn processQueuedPromptLoop(
     var step: usize = 0;
     agent_steps_loop: while (agent_steps.allowsStep(config.agent_step_limit, step)) : (step += 1) {
         current_step_index = step + 1;
+        if (deps.observer) |observer| observer.beginStep(current_step_index);
+        defer if (deps.observer) |observer| observer.endStep();
         const step_ctx: TraceContext = .{ .turn_id = turn_id, .step_id = debug_trace.nextStepId(), .subagent_id = config.subagent_id };
         const presentation_group_id = runtime_tool_presentation.presentationGroupForStep(
             active_presentation_group_id,
@@ -7496,6 +7521,7 @@ fn processQueuedPromptLoop(
                         .trace_ctx = step_ctx,
                     };
                     var summary_model: runtime_text_completion.CompactorCaller = .{
+                        .observer = deps.observer,
                         .stream_provider = deps.agent_stream_provider,
                         .cooperative_transport_pulse = deps.cooperative_transport_pulse,
                         .provider = job.provider,
@@ -7654,6 +7680,7 @@ fn processQueuedPromptLoop(
                 .pending_status = &pending_auto_retry_status,
             };
             var model_request = agent_stream_provider.ModelRequest{
+                .observer = deps.observer,
                 .credential = if (job.credential_source == .host_managed)
                     .host_managed
                 else
@@ -9958,6 +9985,7 @@ fn processQueuedPromptLoop(
         }
 
         var step_batch = runtime_tool_batch.StepBatchState{
+            .observer = deps.observer,
             .identical_failure_escalation = &identical_failure_escalation,
         };
         terminal_validation_retry.beginBatch();
@@ -11701,7 +11729,7 @@ fn processQueuedPromptLoop(
             const execution_lifecycle_id = types.ToolLifecycleId{ .turn_id = turn_id, .call_id = execution_call.id };
             const execution_is_command = runtime_tool_presentation.activityKindForCall(arena, deps.tool_registry, tool_call) == .command;
             var execution_error: ?anyerror = null;
-            var execution = deps.execute_tool_call(deps.ctx, .{
+            var execution = deps.executeToolCall(.{
                 .skill_locations = if (skills.catalog) |catalog| &catalog.locations else null,
                 .call_allocator = call_allocator,
                 .result_allocator = arena,

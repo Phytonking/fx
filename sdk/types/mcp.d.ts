@@ -10,7 +10,8 @@ export interface McpClient {
   /** Resolves to the tools array or `{ tools, nextCursor? }`. */
   listTools(params?: { cursor: string }): unknown;
   /** Called with the tool's original name, the model's arguments, and the turn's `signal` in `options`. */
-  callTool(params: { name: string; arguments?: unknown }, resultSchema?: unknown, options?: { signal?: AbortSignal }): unknown;
+  callTool(params: { name: string; arguments?: unknown; _meta?: { "libfx/correlationId": string } }, resultSchema?: unknown, options?: { signal?: AbortSignal }): unknown;
+  getServerVersion?(): { name?: string } | undefined;
   /** Required when `resources` is given. */
   readResource?(params: { uri: string }): unknown;
   /** Required when `prompts` is given. */
@@ -20,6 +21,10 @@ export interface McpClient {
 
 /** Options for `createMcpAdapter()`. */
 export interface McpAdapterOptions {
+  /** Local server identity for hook events. Defaults to the client's reported server name, or null. */
+  serverName?: string;
+  /** Send an opaque UUID as `_meta["libfx/correlationId"]`. Default false; doesn't request MCP progress notifications. */
+  propagateCorrelation?: boolean;
   /** Prepended to each tool name: letters, digits, `_`, or `-`. */
   prefix?: string;
   /** Resource URIs whose text becomes instructions. */

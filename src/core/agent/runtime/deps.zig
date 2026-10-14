@@ -1,4 +1,5 @@
 const std = @import("std");
+const observation = @import("observation.zig");
 const skill_contract = @import("../../skills/skill_contract.zig");
 const agent_stream_provider = @import("../stream_provider.zig");
 const auth_runtime = @import("../../auth/auth_runtime.zig");
@@ -200,6 +201,7 @@ pub const DiffMarkerStyles = struct {
 
 pub const AgentRuntimeDeps = struct {
     ctx: *anyopaque,
+    observer: ?*observation.Observer = null,
     agent_stream_provider: agent_stream_provider.Provider = agent_stream_provider.unavailable_provider,
     flush_assistant_stream_per_content_chunk: bool = false,
     render_assistant_text: bool = true,
@@ -301,6 +303,27 @@ pub const AgentRuntimeDeps = struct {
     pub fn pushContextNotice(self: *const AgentRuntimeDeps, text: []const u8) !void {
         if (self.push_context_notice) |push| return push(self.ctx, text);
         return self.push_system_notice(self.ctx, text);
+    }
+
+    pub fn executeToolCall(self: *const AgentRuntimeDeps, request: ToolExecutionRequest) !ToolExecutionResult {
+        if (self.observer) |observer| observer.emit(.{ .tool_start = .{ .call = request.call } });
+        var observed_request = request;
+        observed_request.observer = self.observer orelse request.observer;
+        const result = self.execute_tool_call(self.ctx, observed_request) catch |err| {
+            if (self.observer) |observer| observer.emit(.{ .tool_end = .{
+                .call = request.call,
+                .status = if (err == error.Cancelled) "cancelled" else "failure",
+                .error_name = @errorName(err),
+            } });
+            return err;
+        };
+        if (self.observer) |observer| observer.emit(.{ .tool_end = .{
+            .call = request.call,
+            .output = result.model_output,
+            .status = if (result.cancelled) "cancelled" else @tagName(result.status),
+            .usage = result.inner_usage,
+        } });
+        return result;
     }
 };
 

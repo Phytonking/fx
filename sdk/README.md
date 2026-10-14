@@ -407,6 +407,45 @@ A session stores each prompt as JSON before it runs, so a session prompt takes i
 
 `onEvent` receives diagnostics apart from the model's output: request timing and retries, and session events such as `session.deadline` when a turn stops for a function's time limit. The `FxAgentEvent` type lists them all.
 
+## Instrumentation hooks
+
+Pass `hooks` to `createFxAgent()` or `createFxEngine()` to observe semantic execution on both native and Wasm backends. Your host owns span topology, naming, redaction, and export. libfx doesn't load a tracing library.
+
+```ts
+import { createFxAgent, type FxHookEvent } from "libfx";
+
+const observed: FxHookEvent[] = [];
+const agent = createFxAgent({
+  hooks: {
+    captureContent: true,
+    onEvent(event) { observed.push(event); },
+    onError(error) { console.error("Instrumentation callback failed", error); },
+  },
+});
+```
+
+`FxHookEvent` includes turn and step boundaries, model requests and completions, provider admission and first output, tool execution and accepted results, permission evaluation, and journal restore/commit/error receipts. Events carry the session ID, logical turn ID, and a fresh execution ID for each prompt or resume. Model-call and step ordinals are scoped to that execution; tool call IDs come from the model and survive recovery. Join a tool to its issuing model through `model.end.data.toolCalls`, without matching tool names or parsing UI events.
+
+`tool.end` reports execution; `tool.result` means the result entered the conversation, not that storage accepted it. `journal.commit` follows a successful append and includes its validated cursor and sequence range. Journal receipts are session-scoped, with null turn and execution IDs. A yielded or paused turn stays resumable; `turn.end.data.handoff` identifies an explicit host handoff. Replaying saved results doesn't emit fresh tool execution events; an authorized rerun emits `tool.start` with `rerun: true` and the original call ID.
+
+`wait.start` and `wait.end` describe actual input requests separately from permission evaluation. Their `kind` is `approval`, `question`, `mcp_form`, or `mcp_url`; request IDs pair outcomes, including denial, cancellation, and failure. Native delegation events carry the child session and durable work ID. Child events retain that work ID, their own session/turn/execution identity, and the root and parent session IDs, so the host can join them even if delivery interleaves.
+
+MCP events include the configured server, original remote tool name, and owning fx call ID. `mcp.request.data.requestIdKind` distinguishes a native JSON-RPC ID, an MCP-v2 engine handle, and an explicitly propagated host correlation token. Hooks don't change remote MCP requests by default: the host adapter emits `mcp.start` and `mcp.end` without adding metadata or emitting a request ID. Opt in with `createMcpAdapter(client, { propagateCorrelation: true })` to send an opaque UUID as `_meta["libfx/correlationId"]` and record it in `mcp.request`. It contains no internal execution/call IDs and doesn't request progress notifications. Give the adapter a `serverName` for a stable local identity; otherwise it uses the client's reported server name when available. Native resource/prompt operations also report their server and action.
+
+`mcp.end.status` uses `success`, `failure`, `cancelled`, `input_required`, `unavailable`, or `unknown`. Native tool/protocol failures map to `failure`; `unavailable` means no operation result was available, and `unknown` means observation couldn't classify a returned host result.
+
+Host tools receive `context.observation` when hooks are enabled. Wrap host-owned approvals or questions with `observation.wait(request, effect)`; the effect still owns the decision, response, cancellation, and error. For a host-created child engine, pass `hooks: context.observation.childHooks()` to retain the parent tool relationship. These helpers are optional, and neither requires a tracing library. Native review, vision, title, and compaction calls use the model event family with an explicit purpose; tool-owned model calls include `parentCallId`.
+
+Always call the host effect when `context.observation` is absent too. Disabling hooks must not skip an approval or question; the observer doesn't make permission decisions.
+
+JavaScript host-tool callbacks apply to the engine's own root session, not native descendant sessions. Descendant hook metadata doesn't authorize a cross-session host-tool request. A host-created child engine has its own root session and can install `childHooks()` for lineage.
+
+Content capture defaults to off. Enabling it includes bounded messages, instructions, tool arguments/results, input prompts/answers, and schemas, which can contain sensitive application content. Each event has a shared 64 KiB text budget. For model requests, the newest messages are kept first from the last 128 messages, followed by instructions, tool descriptions, and schemas. Collections keep at most 128 entries, and tool `inputSchemaJson` fields keep at most 8 KiB each. `contentTruncated` marks omissions. JSON text fields can be prefixes after truncation; `inputSchemaJson` is complete JSON or null. Credentials, request headers, raw image bytes, and opaque provider replay state aren't fields in this protocol. Apply your own redaction before export.
+
+Callbacks run in delivery order, but libfx doesn't await their promises. Callback throws and rejections go to `hooks.onError` and don't fail or retry agent work. A slow synchronous callback still delays delivery, so enqueue events and let the host own buffering and flushing. Hooks are best-effort observations, not a durable trace outbox or exactly-once delivery contract. Existing `onEvent` diagnostics and turn UI streams remain separate.
+
+Auxiliary title-model calls can outlive `turn.end` and report model events with the same turn/execution IDs afterward. Their model-call IDs and `purpose: "title"` distinguish them from the finished agent loop.
+
 ## Without sessions
 
 `createFxEngine()` is the engine under the agent: one conversation in the memory of one process, with no queue and no session store. Use it for a single request, a subagent inside a tool call, or a conversation you store yourself.

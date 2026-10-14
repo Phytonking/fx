@@ -1,4 +1,5 @@
 const std = @import("std");
+const observation = @import("../agent/runtime/observation.zig");
 const auto_classifier_context = @import("auto_classifier_context.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const diff_mod = @import("../output/diff.zig");
@@ -225,6 +226,7 @@ const ReviewView = enum {
 /// Borrowed view of the successful model turn. Every referenced slice must
 /// remain valid until `Reviewer.review` returns.
 pub const ReviewTurnContext = struct {
+    observer: ?*observation.Observer = null,
     model: []const u8,
     pending_assistant: types.ChatMessage,
     target_call_id: []const u8,
@@ -521,27 +523,41 @@ pub const Reviewer = struct {
                 "event=auto_review_send attempt={d} max_attempts=3 target_call_id={s}",
                 .{ attempt, review_turn.target_call_id },
             );
+            const observed = if (review_turn.observer) |observer| observer.beginModelWithSchemas(.{
+                .model = self.model,
+                .instructions = &instructions,
+                .messages = &messages,
+                .tool_choice = .required,
+                .provider_options = .{},
+            }, .permission_review, review_turn.target_call_id, tools_json) else null;
             var transport_outcome = transport.send(
                 alloc,
                 self.model,
                 payload,
                 send_deadline,
                 cancel_flag,
-            ) catch |err| switch (err) {
-                error.OutOfMemory, error.Cancelled => return err,
-                else => {
-                    if (!transport_retry_available) return .{ .invalid = .transport_call_failed };
-                    transport_retry_available = false;
-                    attempt += 1;
-                    send_deadline = reviewAttemptDeadline(self.timeout_ms);
-                    debug_trace.logf(
-                        "permission",
-                        "event=auto_review_transport_retry reason=call_failed target_call_id={s}",
-                        .{review_turn.target_call_id},
-                    );
-                    continue;
-                },
+            ) catch |err| failed: {
+                if (observed) |call| call.emit(.{ .model_end = .{ .id = call.id, .error_name = @errorName(err), .cancelled = err == error.Cancelled } });
+                break :failed switch (err) {
+                    error.OutOfMemory, error.Cancelled => return err,
+                    else => {
+                        if (!transport_retry_available) return .{ .invalid = .transport_call_failed };
+                        transport_retry_available = false;
+                        attempt += 1;
+                        send_deadline = reviewAttemptDeadline(self.timeout_ms);
+                        debug_trace.logf(
+                            "permission",
+                            "event=auto_review_transport_retry reason=call_failed target_call_id={s}",
+                            .{review_turn.target_call_id},
+                        );
+                        continue;
+                    },
+                };
             };
+            if (observed) |call| call.emit(.{ .model_end = switch (transport_outcome) {
+                .completion => |owned| .{ .id = call.id, .completion = owned.completion, .cancelled = cancel_flag.load(.seq_cst) },
+                else => .{ .id = call.id, .error_name = @tagName(transport_outcome), .cancelled = transport_outcome == .cancelled },
+            } });
             switch (transport_outcome) {
                 .cancelled => return error.Cancelled,
                 .timed_out, .transient_failure => {
@@ -1855,6 +1871,8 @@ test "review response retries malformed completion once on the same deadline" {
         }
     };
     var fixture = Fixture{};
+    var capture: @import("../agent/runtime/observation_testing.zig").Capture = .{ .expected_call = "pending" };
+    var observer = capture.observer();
     defer if (fixture.first_payload) |payload| std.testing.allocator.free(payload);
     var result = try Reviewer.withTransport(.{
         .context = &fixture,
@@ -1862,6 +1880,7 @@ test "review response retries malformed completion once on the same deadline" {
         .build_fn = buildTestReviewPayload,
     }, null, 1000).review(std.testing.allocator, .{
         .review_turn = .{
+            .observer = &observer,
             .model = "test/main",
             .target_call_id = "pending",
             .origin = .root,
@@ -1879,6 +1898,9 @@ test "review response retries malformed completion once on the same deadline" {
     try std.testing.expectEqual(std.meta.Tag(ParseOutcome).valid, std.meta.activeTag(result));
     try std.testing.expectEqual(Decision.clear, result.valid.decision);
     try std.testing.expectEqual(@as(usize, 2), fixture.sends);
+    try std.testing.expectEqual(@as(usize, 2), capture.count(.model_start));
+    try std.testing.expectEqual(capture.count(.model_start), capture.count(.model_end));
+    try std.testing.expect(!capture.invalid);
 }
 
 test "review response recovery is bounded and releases every completion" {
@@ -1948,11 +1970,15 @@ test "review response recovery is bounded and releases every completion" {
         };
         for (0..cycles) |_| {
             var fixture = Fixture{ .mode = mode };
+            var capture: @import("../agent/runtime/observation_testing.zig").Capture = .{ .expected_call = "pending" };
+            var observer = capture.observer();
+            var observed_request = request;
+            observed_request.review_turn.observer = &observer;
             const reviewer = Reviewer.withTransport(.{ .context = &fixture, .send_fn = Fixture.send, .build_fn = buildTestReviewPayload }, &fixture.cancel, if (mode == .expired) 20 else 1000);
             if (mode == .cancel_between or mode == .cancel_second) {
-                try std.testing.expectError(error.Cancelled, reviewer.review(std.testing.allocator, request));
+                try std.testing.expectError(error.Cancelled, reviewer.review(std.testing.allocator, observed_request));
             } else {
-                var outcome = try reviewer.review(std.testing.allocator, request);
+                var outcome = try reviewer.review(std.testing.allocator, observed_request);
                 defer outcome.deinit(std.testing.allocator);
                 switch (mode) {
                     .recover_clear, .transport_recover, .transport_then_invalid, .transport_throws => {
@@ -1985,6 +2011,9 @@ test "review response recovery is bounded and releases every completion" {
             };
             try std.testing.expectEqual(expected_sends, fixture.sends);
             try std.testing.expectEqual(expected_released, fixture.released);
+            try std.testing.expectEqual(fixture.sends, capture.count(.model_start));
+            try std.testing.expectEqual(capture.count(.model_start), capture.count(.model_end));
+            try std.testing.expect(!capture.invalid);
         }
     }
 }

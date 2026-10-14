@@ -1,4 +1,5 @@
 const std = @import("std");
+const observation = @import("../agent/runtime/observation.zig");
 const testing_allocator = @import("../shared/testing_allocator.zig");
 const skill_contract = @import("../skills/skill_contract.zig");
 const builtin = @import("builtin");
@@ -112,6 +113,7 @@ test {
 }
 
 pub const Context = struct {
+    observer: ?*observation.Observer = null,
     workspace_root: []const u8,
     access_scope: ?workspace_access.AccessScope = null,
     ignored_list_entries: []const []const u8,
@@ -240,6 +242,7 @@ pub const Context = struct {
 
     /// Projects only the borrowed capabilities consumed by admission.
     pub fn admissionInput(self: Context) tool_admission.Input {
+        const observer = self.observer orelse if (self.permission_review_turn) |review| review.observer else null;
         var input: tool_admission.Input = .{
             .workspace_root = self.workspace_root,
             .access_scope = self.access_scope,
@@ -265,6 +268,11 @@ pub const Context = struct {
         if (self.permission_state_override != null) {
             input.session_permission_state_provider = null;
         }
+        if (input.permission_prompter) |*prompter| {
+            prompter.observer = observer orelse prompter.observer;
+            prompter.cancel_flag = self.cancel_flag orelse prompter.cancel_flag;
+        }
+        if (input.permission_review_turn) |*review| review.observer = observer;
         return input;
     }
 
@@ -389,6 +397,7 @@ pub fn executeToolCallAuthorized(
         request.command_replay_capture.?.abort(request.result_allocator);
     };
     var execution_ctx = ctx;
+    execution_ctx.observer = request.observer orelse ctx.observer;
     execution_ctx.skill_locations = request.skill_locations orelse ctx.skill_locations;
     if (request.permission_mode) |permission_mode| {
         execution_ctx.permission_mode = permission_mode;
@@ -602,6 +611,7 @@ pub fn executeHostToolCallAuthorized(
     if (spec.executor_kind != .host) return error.InvalidToolArguments;
 
     var execution_ctx = ctx;
+    execution_ctx.observer = request.observer orelse ctx.observer;
     if (request.permission_mode) |permission_mode| {
         execution_ctx.permission_mode = permission_mode;
     }
@@ -849,6 +859,8 @@ fn executeRegisteredTool(
     dispatch_ctx.result_commit_sink = &result_commit_token;
     dispatch_ctx.execution_authority = authority;
     dispatch_ctx.mcp_call_options = .{
+        .observer = ctx.observer,
+        .call_id = call.id,
         .expected_runtime_generation = ctx.expected_mcp_runtime_generation,
         .expected_binding = ctx.expected_mcp_binding,
         .cancel_flag = dispatch_ctx.cancel_flag,
@@ -1154,6 +1166,7 @@ fn typedDispatchContext(ctx: Context, arena: Allocator) tool_dispatch.DispatchCo
         ctx.web_search_runtime_ready and ctx.web_search_backend != null;
     return .{
         .allocator = arena,
+        .observer = ctx.observer,
         .permission_mode = ctx.permission_mode,
         .workspace_root = ctx.workspace_root,
         .access_scope = ctx.access_scope,
@@ -1329,6 +1342,8 @@ fn executeVisionRequest(
     authority: command_admission.ToolExecutionAuthority,
 ) !ToolExecutionResult {
     const config: vision_executor.Config = .{
+        .observer = state.runtime.observer,
+        .parent_call_id = if (state.runtime.output_chunk_lifecycle_id) |id| id.call_id else null,
         .stream_provider = state.runtime.agent_stream_provider,
         .api_key = state.runtime.api_key,
         .credential_source = state.runtime.credential_source,
@@ -2173,6 +2188,7 @@ fn executeSubagentProvider(
     const identity_epoch = host.issueOperationIdentity(invocation_id);
     var progress_bridge = SubagentProgressBridge.init(arena, ctx, state.call);
     const output = host.executeManaged(arena, request, .{
+        .observer = ctx.observer,
         .caller_id = caller_id,
         .invocation_id = invocation_id,
         .parent_permission_mode = ctx.permission_mode,
@@ -2442,6 +2458,7 @@ fn testReviewTurn() permission_auto_classifier.ReviewTurnContext {
 }
 
 const TestRuntime = struct {
+    observer: ?*observation.Observer = null,
     agent_stream_provider: agent_stream_provider.Provider = agent_stream_provider.unavailable_provider,
     tool_registry: tool_dispatch.Registry = test_tool_registry,
     worker: WorkerRuntime = .{},
@@ -2517,6 +2534,7 @@ const TestRuntime = struct {
             .max_tool_result_bytes = self.max_tool_result_bytes,
             .api_key = self.api_key,
             .agent_stream_provider = self.agent_stream_provider,
+            .observer = self.observer,
             .gateway_team = self.gateway_team,
             .provider = self.provider,
             .provider_capabilities = self.provider_capabilities,
@@ -7560,7 +7578,10 @@ test "vision runtime resolves historical authorized images and batches twenty as
     };
     var fixture = VisionGatewayFixture{ .alloc = alloc, .responses = &responses };
     defer fixture.deinit();
+    var capture: @import("../agent/runtime/observation_testing.zig").Capture = .{};
+    var observer = capture.observer();
     var rt = TestRuntime{
+        .observer = &observer,
         .agent_stream_provider = fixture.provider(),
         .tool_registry = .{ .tools = vision_test_registry_tools[0..] },
         .api_key = "gateway-key",
@@ -7582,6 +7603,9 @@ test "vision runtime resolves historical authorized images and batches twenty as
 
     try std.testing.expectEqual(tool_contracts.ToolExecutionStatus.success, result.status);
     try std.testing.expectEqual(@as(usize, 3), fixture.call_count);
+    try std.testing.expectEqual(@as(usize, 3), capture.count(.model_start));
+    try std.testing.expectEqual(capture.count(.model_start), capture.count(.model_end));
+    try std.testing.expectEqual(@as(usize, 3), capture.purposes[@backingInt(observation.ModelPurpose.vision)]);
     try std.testing.expectEqual(@as(usize, 8), std.mem.count(u8, fixture.payloads.items[0], "\"type\":\"file\""));
     try std.testing.expectEqual(@as(usize, 8), std.mem.count(u8, fixture.payloads.items[1], "\"type\":\"file\""));
     try std.testing.expectEqual(@as(usize, 4), std.mem.count(u8, fixture.payloads.items[2], "\"type\":\"file\""));

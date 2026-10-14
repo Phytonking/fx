@@ -888,9 +888,14 @@ pub fn requestToolPermissionTraced(
         }
         break :schema null;
     };
-    const outcome = hooks.request_tool_permission(hooks.ctx, arena, call, review_turn, mode, local_grants, live_authority, revalidation, advertised_dynamic_tool_names, review_schema) catch |err| {
+    if (hooks.observer) |observer| observer.emit(.{ .permission_start = call });
+    var observed_review = review_turn;
+    observed_review.observer = hooks.observer;
+    const outcome = hooks.request_tool_permission(hooks.ctx, arena, call, observed_review, mode, local_grants, live_authority, revalidation, advertised_dynamic_tool_names, review_schema) catch |err| {
+        if (hooks.observer) |observer| observer.emit(.{ .permission_end = .{ .call = call, .error_name = @errorName(err) } });
         return permissionErrorOutcome(arena, call, mode, err, target_class, ctx);
     };
+    if (hooks.observer) |observer| observer.emit(.{ .permission_end = .{ .call = call, .decision = outcome.decision } });
     tracePermissionOutcome(call, mode, local_grants.len, target_class, ctx, outcome);
     return outcome;
 }
@@ -920,9 +925,14 @@ pub fn requestPreparedFileMutationPermissionTraced(
             ctx,
         );
     };
-    const outcome = request(hooks.ctx, arena, call, prepared, review_turn, mode, local_grants, live_authority, advertised_dynamic_tool_names) catch |err| {
+    if (hooks.observer) |observer| observer.emit(.{ .permission_start = call });
+    var observed_review = review_turn;
+    observed_review.observer = hooks.observer;
+    const outcome = request(hooks.ctx, arena, call, prepared, observed_review, mode, local_grants, live_authority, advertised_dynamic_tool_names) catch |err| {
+        if (hooks.observer) |observer| observer.emit(.{ .permission_end = .{ .call = call, .error_name = @errorName(err) } });
         return permissionErrorOutcome(arena, call, mode, err, target_class, ctx);
     };
+    if (hooks.observer) |observer| observer.emit(.{ .permission_end = .{ .call = call, .decision = outcome.decision } });
     tracePermissionOutcome(call, mode, local_grants.len, target_class, ctx, outcome);
     return outcome;
 }

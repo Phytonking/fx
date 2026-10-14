@@ -6,6 +6,7 @@ const debug_trace = @import("../../shared/debug_trace.zig");
 const io_mod = @import("../../shared/io.zig");
 const runtime_telemetry = @import("telemetry.zig");
 const runtime_tool_contracts = @import("tool_contracts.zig");
+const observation = @import("observation.zig");
 
 const Allocator = std.mem.Allocator;
 const TraceContext = debug_trace.TraceContext;
@@ -23,6 +24,7 @@ const InvocationAdmission = struct {
     model: []const u8,
     caller_admission: agent_stream_provider.Admission,
     admitted: bool = false,
+    observed: ?*observation.ModelCall = null,
 
     fn admit(raw: *anyopaque) !void {
         const self: *@This() = @ptrCast(@alignCast(raw));
@@ -32,6 +34,7 @@ const InvocationAdmission = struct {
             try self.caller_admission.admit();
         }
         self.attempt_evidence.provider_admitted = true;
+        if (self.observed) |observed| observed.emit(.{ .model_admitted = observed.id });
         debug_trace.eventf(
             "agent",
             "provider_admitted",
@@ -51,13 +54,17 @@ pub fn streamModelCompletion(
         return agent_stream_provider.failResult(error.Cancelled);
     }
     const started_at_ms = io_mod.milliTimestamp();
+    var observed = if (request_value.observer) |observer| observer.beginModelForTool(request_value.data(), request_value.purpose, request_value.parent_call_id) else null;
+    var observed_events = ObservedEvents{ .upstream = request_value.events, .observed = if (observed) |*call| call else null };
     var admission = InvocationAdmission{
         .attempt_evidence = request_value.attempt_evidence,
         .trace_ctx = request_value.trace_ctx,
         .model = request_value.model,
         .caller_admission = request_value.admission,
+        .observed = if (observed) |*call| call else null,
     };
     var request = request_value;
+    if (observed != null) request.events = .{ .context = &observed_events, .emit_fn = ObservedEvents.emit };
     request.admission = .{ .context = &admission, .admit_fn = InvocationAdmission.admit };
     // Only the owned result escapes. HTTP and parser scratch is released after
     // every attempt, including transport failure and cancellation.
@@ -65,11 +72,19 @@ pub fn streamModelCompletion(
     defer scratch.deinit();
     const request_alloc = scratch.allocator();
     var result = provider.stream(request_alloc, request) catch |err| {
+        if (observed) |call| call.emit(.{ .model_end = .{ .id = call.id, .error_name = @errorName(err), .cancelled = err == error.Cancelled or request.cancel_flag.load(.seq_cst) } });
         runtime_telemetry.recordGatewayCallMetric(request.model, started_at_ms, 0, 0, 0, 0, request.trace_ctx.turn_id, request.trace_ctx.step_id, request.trace_ctx.subagent_id, @errorName(err), "");
         return err;
     };
     defer result.deinit(request_alloc);
-    if (!admission.admitted) return agent_stream_provider.failResult(error.ProviderAdmissionMissing);
+    if (!admission.admitted) {
+        if (observed) |call| call.emit(.{ .model_end = .{ .id = call.id, .error_name = "ProviderAdmissionMissing" } });
+        return agent_stream_provider.failResult(error.ProviderAdmissionMissing);
+    }
+    if (observed) |call| call.emit(.{ .model_end = switch (result) {
+        .completed => |value| .{ .id = call.id, .completion = value.completion, .cancelled = request.cancel_flag.load(.seq_cst) },
+        .failed => |value| .{ .id = call.id, .error_name = @tagName(value.kind), .cancelled = request.cancel_flag.load(.seq_cst) },
+    } });
 
     recordProviderResultMetric(request.model, started_at_ms, result, request.trace_ctx);
     return switch (result) {
@@ -77,6 +92,22 @@ pub fn streamModelCompletion(
         .failed => |value| if (value.ownership == .borrowed) result else try result.dupe(alloc),
     };
 }
+
+const ObservedEvents = struct {
+    upstream: agent_stream_provider.EventSink,
+    observed: ?*observation.ModelCall,
+    fn emit(raw: *anyopaque, event: agent_stream_provider.Event) void {
+        const self: *@This() = @ptrCast(@alignCast(raw));
+        if (self.observed) |call| switch (event) {
+            .content_delta, .reasoning_delta => |chunk| if (chunk.len > 0) {
+                call.output();
+            },
+            .tool_started => call.output(),
+            .tool_input_delta => {},
+        };
+        self.upstream.emit(event);
+    }
+};
 
 fn recordProviderResultMetric(
     model: []const u8,
@@ -129,6 +160,17 @@ fn recordProviderResultMetric(
 test "gateway request scratch is released across success failure cancellation and retries" {
     const Fake = struct {
         mode: usize = 0,
+        observed_starts: usize = 0,
+        observed_ends: usize = 0,
+
+        fn observe(raw: *anyopaque, _: usize, event: observation.Event) void {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            switch (event) {
+                .model_start => self.observed_starts += 1,
+                .model_end => self.observed_ends += 1,
+                else => {},
+            }
+        }
 
         fn stream(raw: ?*anyopaque, alloc: Allocator, request: agent_stream_provider.ModelRequest) !StreamResult {
             const self: *@This() = @ptrCast(@alignCast(raw.?));
@@ -150,12 +192,14 @@ test "gateway request scratch is released across success failure cancellation an
     var turn = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer turn.deinit();
     var fake: Fake = .{};
+    var observer = observation.Observer{ .sink = .{ .context = &fake, .emit_fn = Fake.observe } };
     var cancel: std.atomic.Value(bool) = .init(false);
     for (0..1000) |attempt| {
         fake.mode = attempt % 4;
         var delivery = DeliveryCertainty.init();
         var evidence: AttemptEvidence = .{};
         const result = streamModelCompletion(.{ .context = &fake, .stream_fn = Fake.stream }, turn.allocator(), .{
+            .observer = &observer,
             .credential = .{ .direct = .{ .secret_bytes = "fixture-key", .source = .ai_gateway_api_key } },
             .model = "fixture-model",
             .retry_count = 1,
@@ -185,6 +229,8 @@ test "gateway request scratch is released across success failure cancellation an
         }
         try std.testing.expect(turn.queryCapacity() < 128 * 1024);
     }
+    try std.testing.expectEqual(@as(usize, 1000), fake.observed_starts);
+    try std.testing.expectEqual(fake.observed_starts, fake.observed_ends);
 }
 
 fn failureMetricCode(kind: agent_stream_provider.FailureKind) u16 {

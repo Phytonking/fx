@@ -1,4 +1,5 @@
 const std = @import("std");
+const observation = @import("../../core/agent/runtime/observation.zig");
 const question_answer = @import("../../core/agent/question_answer.zig");
 const core_types = @import("../../core/shared/types.zig");
 const text_utils = @import("../../core/shared/text_utils.zig");
@@ -44,6 +45,8 @@ pub const Input = struct {
 };
 
 pub const Requester = struct {
+    observer: ?*observation.Observer = null,
+    call_id: ?[]const u8 = null,
     ctx: ?*anyopaque,
     response_alloc: Allocator,
     request: tool_dispatch.AskQuestionBatchFn,
@@ -94,6 +97,8 @@ pub fn call(ctx: tool_dispatch.DispatchContext, erased: tool_dispatch.ToolInput)
     };
     const input = erased.as(Input);
     const output = executeWithRequester(ctx.allocator, input.args_json, .{
+        .observer = ctx.observer,
+        .call_id = ctx.tool_call_id,
         .ctx = ctx.ask_question_ctx,
         .response_alloc = ctx.allocator,
         .request = request,
@@ -110,12 +115,59 @@ pub fn executeWithRequester(result_alloc: Allocator, args_json: []const u8, requ
     const parse_arena = parse_arena_state.allocator();
 
     const entries = parseQuestionBatch(parse_arena, args_json) catch |err| return invalidArgsBody(result_alloc, err);
-    const answers_opt = try requester.request(requester.ctx, requester.response_alloc, entries);
+    const wait = if (requester.observer) |observer| observer.beginWait(.{ .kind = .question, .call_id = requester.call_id, .questions = entries }) else null;
+    const answers_opt = requester.request(requester.ctx, requester.response_alloc, entries) catch |err| {
+        if (wait) |value| value.end(.failed, &.{}, @errorName(err));
+        return err;
+    };
+    if (wait) |value| value.end(if (answers_opt == null) .cancelled else .accepted, answers_opt orelse &.{}, null);
     if (answers_opt) |answers| {
         defer freeAnswers(requester.response_alloc, answers);
         return question_answer.encodeJson(result_alloc, entries, answers);
     }
     return result_alloc.dupe(u8, cancel_sentinel);
+}
+
+test "question observer records answers cancellation and failure at the real requester" {
+    const Fixture = struct {
+        cancelled: bool = false,
+        failure: bool = false,
+        fn request(raw: ?*anyopaque, alloc: Allocator, _: []const core_types.QuestionBatchEntry) Allocator.Error!?[][]u8 {
+            const self: *@This() = @ptrCast(@alignCast(raw.?));
+            if (self.failure) return error.OutOfMemory;
+            if (self.cancelled) return null;
+            const answers = try alloc.alloc([]u8, 1);
+            errdefer alloc.free(answers);
+            answers[0] = try alloc.dupe(u8, "Yes");
+            return answers;
+        }
+    };
+    var fixture: Fixture = .{};
+    var capture: @import("../../core/agent/runtime/observation_testing.zig").Capture = .{ .expected_call = "question-call" };
+    var observer = capture.observer();
+    for ([_]bool{ false, true }) |cancelled| {
+        fixture.cancelled = cancelled;
+        const output = try executeWithRequester(std.testing.allocator, "{\"questions\":[{\"question\":\"Continue?\",\"options\":[{\"label\":\"Yes\"},{\"label\":\"No\"}]}]}", .{
+            .ctx = &fixture,
+            .response_alloc = std.testing.allocator,
+            .request = Fixture.request,
+            .observer = &observer,
+            .call_id = "question-call",
+        });
+        defer std.testing.allocator.free(output);
+        try std.testing.expect(if (cancelled) std.mem.eql(u8, output, cancel_sentinel) else std.mem.find(u8, output, "Yes") != null);
+    }
+    fixture.failure = true;
+    try std.testing.expectError(error.OutOfMemory, executeWithRequester(std.testing.allocator, "{\"questions\":[{\"question\":\"Continue?\",\"options\":[{\"label\":\"Yes\"},{\"label\":\"No\"}]}]}", .{
+        .ctx = &fixture,
+        .response_alloc = std.testing.allocator,
+        .request = Fixture.request,
+        .observer = &observer,
+        .call_id = "question-call",
+    }));
+    try std.testing.expectEqual(@as(usize, 3), capture.count(.wait_start));
+    try std.testing.expectEqual(capture.count(.wait_start), capture.count(.wait_end));
+    try std.testing.expect(!capture.invalid);
 }
 
 fn parseQuestionBatch(arena: Allocator, args_json: []const u8) QuestionBatchParseError![]const core_types.QuestionBatchEntry {

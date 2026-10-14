@@ -1,4 +1,5 @@
 const std = @import("std");
+const observation = @import("runtime/observation.zig");
 const testing_allocator = @import("../shared/testing_allocator.zig");
 const model_capabilities = @import("../config/model_capabilities.zig");
 const image_attachments = @import("../images/image_attachments.zig");
@@ -217,6 +218,9 @@ pub fn validate_prompt_lanes(
 /// Borrowed typed request. Providers own validation, wire serialization,
 /// endpoint selection, headers, HTTP, and stream reduction.
 pub const ModelRequest = struct {
+    observer: ?*observation.Observer = null,
+    parent_call_id: ?[]const u8 = null,
+    purpose: observation.ModelPurpose = .agent,
     credential: types.CredentialLease,
     session_id: ?[]const u8 = null,
     model: []const u8,

@@ -704,6 +704,10 @@ class AcpClient {
     return Buffer.concat(this._stderrChunks).toString();
   }
 
+  get hookEvents(): any[] {
+    return this.rawLines.map(line => JSON.parse(line)).filter(message => message.method === "libfx/hook").map(message => message.params);
+  }
+
   get closed(): boolean {
     return this._closed;
   }
@@ -867,6 +871,33 @@ class AcpClient {
     });
   }
 }
+
+test("ACP load and resume negotiate hooks and clear them when omitted", async () => {
+  const fixture = createConfiguredProviderFixture();
+  const client = await AcpClient.create({ cwd: fixture.workspace, env: fixture.env });
+  try {
+    await client.request("initialize", { protocolVersion: 1, clientCapabilities: {} });
+    const created = await client.request("session/new", { cwd: fixture.workspace, mcpServers: [] }) as any;
+    expect(created.error).toBeUndefined();
+    const sessionId = created.result.sessionId;
+    for (const method of ["session/load", "session/resume"]) {
+      const enabled = await client.request(method, { sessionId, mcpServers: [], _meta: { fx: { hooks: { captureContent: true } } } }) as any;
+      expect(enabled.error).toBeUndefined();
+      expect(enabled.result._meta.fx.hooksVersion).toBe(1);
+      await runPrompt(client, "observe this prompt");
+      expect(client.hookEvents.some(event => event.type === "turn.end")).toBe(true);
+      const count = client.hookEvents.length;
+      const disabled = await client.request(method, { sessionId, mcpServers: [] }) as any;
+      expect(disabled.error).toBeUndefined();
+      expect(disabled.result._meta).toBeUndefined();
+      await runPrompt(client, "do not observe this prompt");
+      expect(client.hookEvents.length).toBe(count);
+    }
+    client.endStdin();
+    expect(await client.waitForExit()).toBe(0);
+    expect(client.stderr).toBe("");
+  } finally { await client.close(); fixture.close(); }
+}, 30000);
 
 test("configured provider ACP preserves reasoning between prompts", async () => {
   const fixture = createConfiguredProviderFixture(async body => {
@@ -1229,9 +1260,9 @@ function sendSteeringPrompt(client: AcpClient, id: number, text: string): void {
   });
 }
 
-async function startAutoSession(client: AcpClient) {
+async function startAutoSession(client: AcpClient, hooks = false) {
   await client.request("initialize", { protocolVersion: 1 }, 1);
-  const created = await client.request("session/new", { mcpServers: [] }, 2) as any;
+  const created = await client.request("session/new", { mcpServers: [], ...(hooks ? { _meta: { fx: { hooks: { captureContent: true } } } } : {}) }, 2) as any;
   await client.readLine(); // consume session/update notification
   await client.request("session/set_mode", { modeId: "auto" }, 3);
   return created.result.sessionId as string;
@@ -1479,6 +1510,7 @@ describe("acp: model-independent", () => {
           "session/new",
           {
             cwd: root.workspace,
+            _meta: { fx: { hooks: { captureContent: true } } },
             mcpServers: [acpStdioServer(
               "UNUSED",
               pidPath,
@@ -1509,6 +1541,8 @@ describe("acp: model-independent", () => {
         expect(wire).toContain('"method":"resources/read"');
         expect(wire).toContain('"method":"prompts/get"');
         expect(wire.match(/"method":"completion\/complete"/g)).toHaveLength(2);
+        expect(client.hookEvents.some(event => event.type === "mcp.start" && event.data.server === "fixture" && event.data.tool === "resource_read")).toBe(true);
+        expect(client.hookEvents.some(event => event.type === "mcp.start" && event.data.server === "fixture" && event.data.tool === "prompt_get")).toBe(true);
         expect(client.stderr).toBe("");
         client.endStdin();
         expect(await client.waitForExit()).toBe(0);
@@ -2966,6 +3000,7 @@ describe("acp: model-independent", () => {
           "session/new",
           {
             cwd: root.workspace,
+            _meta: { fx: { hooks: { captureContent: true } } },
             mcpServers: [{
               type: "http",
               name: "fixture",
@@ -3022,6 +3057,12 @@ describe("acp: model-independent", () => {
           expect(entry.headers["x-workspace"]).toBe("acp");
         }
         expect(httpFixture.requests[2]?.headers["mcp-param-text"]).toBe("acp");
+        const mcpStart = client.hookEvents.find(event => event.type === "mcp.start");
+        expect(mcpStart.data).toMatchObject({ callId: "call_http", server: "fixture", tool: "echo", transport: "http" });
+        const mcpRequest = client.hookEvents.find(event => event.type === "mcp.request");
+        expect(mcpRequest.data.requestId).toBe(httpFixture.requests[2]?.message.id);
+        expect(mcpRequest.data.requestIdKind).toBe("jsonrpc");
+        expect(client.hookEvents.find(event => event.type === "mcp.end").data.operationId).toBe(mcpStart.data.operationId);
         expect(client.stderr).toBe("");
       } finally {
         await client?.close();
@@ -3063,6 +3104,7 @@ describe("acp: model-independent", () => {
           "session/new",
           {
             cwd: root.workspace,
+            _meta: { fx: { hooks: { captureContent: true } } },
             mcpServers: [{
               type: "http",
               name: "fixture",
@@ -3092,6 +3134,9 @@ describe("acp: model-independent", () => {
         expect(toolCall("search_http")?._meta.fx.toolCall).toEqual({ internal: true });
         expect(toolCall("select_http")?._meta.fx.toolCall).toEqual({ internal: true });
         expect(toolCall("call_http")?.name).toBe(MCP_TOOL_NAME);
+        expect(client.hookEvents.find(event => event.type === "mcp.start").data).toMatchObject({ callId: "call_http", server: "fixture", tool: "echo", transport: "http" });
+        expect(client.hookEvents.find(event => event.type === "mcp.request").data.requestIdKind).toBe("engine");
+        expect(client.hookEvents.filter(event => event.type === "mcp.end")).toHaveLength(1);
 
         const initialPrompt = acpGatewayRequest(gateway.requests[0]!.body).prompt
           .map((message) => acpContentText(message.content))
@@ -5560,6 +5605,7 @@ describe("acp: model-independent", () => {
           "session/new",
           {
             cwd: root.workspace,
+            _meta: { fx: { hooks: { captureContent: true } } },
             mcpServers: [acpStdioServer(
               "unused",
               pidPath,
@@ -5601,6 +5647,10 @@ describe("acp: model-independent", () => {
         expect(prompt.promptResult.result.stopReason).toBe("end_turn");
         expect(gateway.requests).toHaveLength(3);
         expect(directRequests).toHaveLength(1);
+        const wait = client.hookEvents.find(event => event.type === "wait.start");
+        expect(wait.data).toMatchObject({ kind: "mcp_form", callId: "call_form", server: "fixture" });
+        expect(client.hookEvents.find(event => event.type === "wait.end").data).toMatchObject({ requestId: wait.data.requestId, outcome: "accepted" });
+        expect(client.hookEvents.filter(event => event.type === "mcp.request")).toHaveLength(2);
         expect(directRequests[0]).toMatchObject({
           sessionId,
           toolCallId: "call_form",
@@ -5668,6 +5718,7 @@ describe("acp: model-independent", () => {
           "session/new",
           {
             cwd: root.workspace,
+            _meta: { fx: { hooks: { captureContent: true } } },
             mcpServers: [acpStdioServer("unused", pidPath, "mrtr_input_required", {
               FX_MCP_WIRE_LOG: wirePath,
               FX_MCP_EXPECT_ELICITATION: "form",
@@ -5688,6 +5739,9 @@ describe("acp: model-independent", () => {
         expect(prompt.promptResult.result.stopReason).toBe("end_turn");
         expect(gateway.requests).toHaveLength(3);
         expect(directRequests).toHaveLength(1);
+        const wait = client.hookEvents.find(event => event.type === "wait.start");
+        expect(wait.data).toMatchObject({ kind: "mcp_form", callId: "call_form", server: "fixture" });
+        expect(client.hookEvents.find(event => event.type === "wait.end").data).toMatchObject({ requestId: wait.data.requestId, outcome: "accepted" });
         expect(directRequests[0]).toMatchObject({
           toolCallId: "call_form",
           mode: "form",
@@ -5742,6 +5796,7 @@ describe("acp: model-independent", () => {
           "session/new",
           {
             cwd: root.workspace,
+            _meta: { fx: { hooks: { captureContent: true } } },
             mcpServers: [acpStdioServer(
               "unused",
               pidPath,
@@ -5761,7 +5816,7 @@ describe("acp: model-independent", () => {
 
         sendPrompt(client, 4, "Start an MCP elicitation and wait for the client.");
         let sawDirectRequest = false;
-        for (let index = 0; index < 20 && !sawDirectRequest; index += 1) {
+        for (let index = 0; index < 60 && !sawDirectRequest; index += 1) {
           const message = await client.readLine(TIMEOUT) as any;
           sawDirectRequest = message.method === "elicitation/create";
         }
@@ -5770,6 +5825,7 @@ describe("acp: model-independent", () => {
 
         client.endStdin();
         expect(await client.waitForExit(TIMEOUT)).toBe(0);
+        expect(client.hookEvents.find(event => event.type === "wait.end")?.data.outcome).toBe("cancelled");
         await expectMcpProcessExited(pidPath);
       } finally {
         await client?.close();
@@ -5898,6 +5954,7 @@ describe("acp: model-independent", () => {
           "session/new",
           {
             cwd: root.workspace,
+            _meta: { fx: { hooks: { captureContent: true } } },
             mcpServers: [acpStdioServer(
               "unused",
               pidPath,
@@ -5927,6 +5984,9 @@ describe("acp: model-independent", () => {
         );
         expect(prompt.promptResult.result.stopReason).toBe("end_turn");
         expect(directRequests).toHaveLength(1);
+        const wait = client.hookEvents.find(event => event.type === "wait.start");
+        expect(wait.data).toMatchObject({ kind: "mcp_url", callId: "call_url", server: "fixture" });
+        expect(client.hookEvents.find(event => event.type === "wait.end").data).toMatchObject({ requestId: wait.data.requestId, outcome: "accepted" });
         const direct = directRequests[0]!;
         expect(direct).toMatchObject({
           sessionId,
@@ -9780,11 +9840,20 @@ describe("acp: model-independent", () => {
           cwd: root.workspace,
           env: fakeGatewayEnv(root, gateway),
         });
-        await startAutoSession(client);
+        const parentSession = await startAutoSession(client, true);
         const result = await runPrompt(client, "Delegate workspace inspection.", TIMEOUT);
         expect(result.promptResult.result.stopReason).toBe("end_turn");
         expect(gateway.requests).toHaveLength(3);
         expect(gateway.requests[0]!.body).toContain('"name":"subagent"');
+        const dispatched = client.hookEvents.find(event => event.type === "delegation" && event.data.phase === "dispatched");
+        expect(dispatched.data.callId).toBe(createId);
+        const child = client.hookEvents.find(event => event.type === "turn.start" && event.sessionId === dispatched.data.childSessionId);
+        expect(child.rootSessionId).toBe(parentSession);
+        expect(child.parentSessionId).toBe(parentSession);
+        expect(child.workId).toBe(dispatched.data.workId);
+        expect(child.turnId).toBe(dispatched.data.workId);
+        expect(client.hookEvents.some(event => event.type === "model.start" && event.sessionId === child.sessionId)).toBe(true);
+        expect(client.hookEvents.some(event => event.type === "delegation" && event.data.phase === "completed")).toBe(true);
         expect(client.stderr).toBe("");
       } finally {
         await client?.close();
@@ -9813,7 +9882,7 @@ describe("acp: model-independent", () => {
           cwd: root.workspace,
           env: fakeGatewayEnv(root, gateway),
         });
-        await startAutoSession(client);
+        await startAutoSession(client, true);
 
         const promptId = 6810;
         const cancelId = 6811;
@@ -9848,6 +9917,7 @@ describe("acp: model-independent", () => {
         }
         expect(responses.get(cancelId)?.result).toBeNull();
         expect(responses.get(promptId)?.result?.stopReason).toBe("cancelled");
+        expect(client.hookEvents.some(event => event.type === "delegation" && event.data.phase === "cancelled")).toBe(true);
 
         heldChild.resolve(finalText("late child completion"));
         const followUp = await runPrompt(
@@ -9888,9 +9958,12 @@ describe("acp: model-independent", () => {
           cwd: root.workspace,
           env: fakeGatewayEnv(root, gateway),
         });
-        await startAutoSession(client);
+        await startAutoSession(client, true);
         client.setPermissionOption("allow_once");
         const result = await runPrompt(client, "Run the approved command.", TIMEOUT);
+        const wait = client.hookEvents.find(event => event.type === "wait.start" && event.data.kind === "approval");
+        expect(wait.data.callId).toBe("approved_command_1");
+        expect(client.hookEvents.find(event => event.type === "wait.end").data).toMatchObject({ requestId: wait.data.requestId, outcome: "accepted" });
         const permission = result.messages.find(
           (message: any) => message.method === "session/request_permission",
         );

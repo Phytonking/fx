@@ -1,4 +1,5 @@
 const std = @import("std");
+const execution_observation = @import("../agent/runtime/observation.zig");
 const testing_allocator = @import("../shared/testing_allocator.zig");
 const approval_registry = @import("approval_registry.zig");
 const authority = @import("authority.zig");
@@ -61,6 +62,15 @@ fn unavailableChildRun(
     return error.ProviderFailed;
 }
 
+test "managed execution receipts retain the pending contract" {
+    var runtime: Runtime = undefined;
+    for ([_]bool{ false, true }) |pending| {
+        const result = try runtime.encodeManaged(std.testing.allocator, .{ .ok = true, .pending = pending });
+        defer std.testing.allocator.free(result.body);
+        try std.testing.expectEqual(pending, result.pending);
+    }
+}
+
 pub const ProgressSink = struct {
     context: *anyopaque,
     publish_fn: *const fn (*anyopaque, types.SubagentStatus) void,
@@ -91,6 +101,7 @@ pub const ModelOverrideResolver = struct {
 };
 
 pub const ExecuteOptions = struct {
+    observer: ?*execution_observation.Observer = null,
     caller_id: []const u8,
     invocation_id: []const u8,
     parent_permission_mode: types.PermissionMode = .yolo,
@@ -109,6 +120,7 @@ pub const ExecuteOptions = struct {
 };
 
 pub const ManagedExecutionResult = struct {
+    pending: bool = false,
     success: bool,
     body: []u8,
     /// The final status model is owned by the result allocator.
@@ -341,6 +353,17 @@ pub const Runtime = struct {
                             };
                             switch (result) {
                                 .receipt => |delivery| {
+                                    if (options.observer) |observer| observer.emit(.{ .delegation = .{
+                                        .call_id = options.invocation_id,
+                                        .child_id = target.child_id,
+                                        .work_id = target.work_id,
+                                        .operation_id = operation_id,
+                                        .phase = switch (delivery) {
+                                            .queued => .feedback_queued,
+                                            .applied => .feedback_applied,
+                                            .not_applied => .feedback_not_applied,
+                                        },
+                                    } });
                                     if (delivery == .queued) {
                                         const queued = queued_receipt.?;
                                         queued_receipt = null;
@@ -371,7 +394,8 @@ pub const Runtime = struct {
                             });
                         },
                         .ready => |ready| {
-                            const result = try self.observeManagedState(
+                            if (options.observer) |observer| observer.emit(.{ .delegation = .{ .call_id = options.invocation_id, .child_id = ready.child_id, .work_id = operation_id, .phase = .dispatched } });
+                            const result = self.observeManagedState(
                                 alloc,
                                 ready.child_id,
                                 operation_id,
@@ -380,15 +404,22 @@ pub const Runtime = struct {
                                 options.cancel_flag,
                                 options.steering_worker,
                                 options.model_capability_resolver,
-                            );
+                            ) catch |err| {
+                                if (options.observer) |observer| observer.emit(.{ .delegation = .{ .call_id = options.invocation_id, .child_id = ready.child_id, .work_id = operation_id, .phase = if (err == error.Cancelled) .cancelled else .failed } });
+                                return err;
+                            };
+                            if (options.observer) |observer| observer.emit(.{ .delegation = .{ .call_id = options.invocation_id, .child_id = ready.child_id, .work_id = operation_id, .phase = if (result.pending) .yielded else if (result.success) .completed else .failed } });
                             break :blk result;
                         },
-                        .completed => |completed| break :blk self.completeManagedResult(
-                            alloc,
-                            completed.child_id,
-                            operation_id,
-                            completed.observation,
-                        ),
+                        .completed => |completed| {
+                            if (options.observer) |observer| observer.emit(.{ .delegation = .{ .call_id = options.invocation_id, .child_id = completed.child_id, .work_id = operation_id, .phase = .replayed } });
+                            break :blk self.completeManagedResult(
+                                alloc,
+                                completed.child_id,
+                                operation_id,
+                                completed.observation,
+                            );
+                        },
                     }
                 }
             },
@@ -1049,6 +1080,7 @@ pub const Runtime = struct {
         _ = self;
         return .{
             .success = result.ok,
+            .pending = result.pending,
             .body = try model_contract.encodeResultAlloc(alloc, result),
         };
     }

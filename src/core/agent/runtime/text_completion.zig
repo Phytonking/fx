@@ -4,6 +4,7 @@
 //! fx-compactor as its model caller.
 
 const std = @import("std");
+const observation = @import("observation.zig");
 const agent_stream_provider = @import("../stream_provider.zig");
 const runtime_gateway_step = @import("gateway_step.zig");
 const compactor = @import("../../compactor/compactor.zig");
@@ -16,6 +17,8 @@ const types = @import("../../shared/types.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Request = struct {
+    observer: ?*observation.Observer = null,
+    purpose: observation.ModelPurpose = .auxiliary,
     stream_provider: agent_stream_provider.Provider,
     cooperative_pulse: ?agent_stream_provider.CooperativePulse = null,
     credential: agent_stream_provider.CredentialLease,
@@ -83,6 +86,8 @@ pub fn complete(alloc: Allocator, request: Request) Error!Outcome {
         request.stream_provider,
         alloc,
         .{
+            .observer = request.observer,
+            .purpose = request.purpose,
             .credential = request.credential,
             .session_id = request.session_id,
             .model = request.model,
@@ -179,6 +184,7 @@ fn onEvent(raw: *anyopaque, event: agent_stream_provider.Event) void {
 /// and its own output limit. A request after the conversation keeps the
 /// conversation's options except Ultrafast, which is reserved for agent turns.
 pub const CompactorCaller = struct {
+    observer: ?*observation.Observer = null,
     stream_provider: agent_stream_provider.Provider,
     cooperative_transport_pulse: ?agent_stream_provider.CooperativePulse = null,
     provider: model_provider.ProviderId,
@@ -239,6 +245,8 @@ pub const CompactorCaller = struct {
         options.ultrafast = false;
         var usage: types.Usage = .{};
         const outcome = try complete(alloc, .{
+            .observer = self.observer,
+            .purpose = .compaction,
             .stream_provider = self.stream_provider,
             .cooperative_pulse = self.cooperative_transport_pulse,
             .credential = if (self.credential_source == .host_managed) .host_managed else .{ .direct = .{

@@ -1,4 +1,5 @@
 const std = @import("std");
+const observation = @import("../core/agent/runtime/observation.zig");
 const testing_allocator = @import("../core/shared/testing_allocator.zig");
 const skill_contract = @import("../core/skills/skill_contract.zig");
 const std_builtin = @import("builtin");
@@ -89,6 +90,7 @@ const types = @import("../core/shared/types.zig");
 const history_range = @import("../core/shared/history_range.zig");
 const worker_runtime = @import("../core/agent/worker_runtime.zig");
 const agent_stream_provider = @import("../core/agent/stream_provider.zig");
+const libfx_hooks = @import("libfx_hooks.zig");
 const runtime_gateway_step = @import("../core/agent/runtime/gateway_step.zig");
 
 const Allocator = std.mem.Allocator;
@@ -213,6 +215,7 @@ const AcpContext = struct {
     captured_mode: ?[]const u8 = null,
     captured_permission_mode: ?PermissionMode = null,
     current_prompt_input: ?*ParsedPromptInput = null,
+    observer: ?*observation.Observer = null,
 
     fn deinitPublishedToolCalls(self: *AcpContext) void {
         var keys = self.published_tool_calls.keyIterator();
@@ -430,6 +433,7 @@ const AcpContext = struct {
             });
         }
         var tc: tool_runtime.Context = .{
+            .observer = self.observer,
             .workspace_root = self.state.workspace_root,
             .access_scope = self.state.workspace_access.scope(self.state.workspace_root),
             .ignored_list_entries = self.state.cfg.ignored_list_entries,
@@ -469,6 +473,8 @@ const AcpContext = struct {
             .subagent_caller_id = session.session_id,
             .worker = &self.state.worker,
             .permission_prompter = if (self.state.initialized) .{
+                .observer = self.observer,
+                .cancel_flag = &session.cancel_flag,
                 .context = @ptrCast(self),
                 .request_fn = requestAcpPermission,
                 .retain_grant_fn = retainAcpGrant,
@@ -567,9 +573,15 @@ const ResumeRerun = struct {
             debug_trace.logf("session", "event=libfx_resume_rerun_unpublished call={s} err={s}", .{ call.id, @errorName(err) });
             break :blk "call_unknown";
         };
-        const outcome = provider.call(alloc, call.name, call.id, call.arguments_json, self.max_result_bytes, self.cancel_flag) catch |err| switch (err) {
-            error.Cancelled => return null,
-            else => |other| return other,
+        if (self.ctx.observer) |observer| observer.emit(.{ .tool_start = .{ .call = call, .rerun = true } });
+        const outcome = provider.call(alloc, call.name, call.id, call.arguments_json, self.max_result_bytes, self.cancel_flag) catch |err| {
+            if (self.ctx.observer) |observer| observer.emit(.{ .tool_end = .{
+                .call = call,
+                .status = if (err == error.Cancelled) "cancelled" else "failure",
+                .error_name = @errorName(err),
+            } });
+            if (err == error.Cancelled) return null;
+            return err;
         };
         const failed = switch (outcome) {
             .success => false,
@@ -581,6 +593,11 @@ const ResumeRerun = struct {
             .rich => |content| content.text,
         };
         const shown = tool_call_presentation.toolUpdateContentText(failed, text);
+        if (self.ctx.observer) |observer| observer.emit(.{ .tool_end = .{
+            .call = call,
+            .status = if (failed) "failure" else "success",
+            .output = text,
+        } });
         const sent = if (failed)
             self.ctx.sendToolCallErrorWithCommandResult(acp_id, shown, null)
         else
@@ -924,6 +941,14 @@ pub fn handlePrompt(
     };
     defer ctx.deinitPublishedToolCalls();
 
+    var hook_bridge: libfx_hooks.Bridge = undefined;
+    if (session.observer_hooks) |hook_config| {
+        const turn_id = prompt_input.turn_id orelse if (session.journal) |*journal| journal.open_turn_id.slice() else null;
+        hook_bridge.init(alloc, &state.writer, session.session_id, turn_id, hook_config);
+        if (hook_bridge.enabled) ctx.observer = &hook_bridge.observer;
+    }
+    defer if (ctx.observer) |observer| observer.endTurn(if (session.cancel_flag.load(.seq_cst)) .cancelled else .failed, null);
+
     var recovery_checkpoint: ?session_codec.RecoveryCheckpoint = null;
     defer if (recovery_checkpoint) |*checkpoint| checkpoint.deinit(alloc);
     if (session.journal) |*journal| {
@@ -959,12 +984,13 @@ pub fn handlePrompt(
         // so before the turn continues, and their results replace the answer
         // that they may have partly run.
         if (answered_step) |step| if (prompt_input.rerun_call_ids.len > 0) {
+            if (ctx.observer) |observer| observer.beginTurn(recovery_checkpoint.?.user.text, true);
             _ = try libfx_journal.rerunCalls(alloc, &recovery_checkpoint.?, step, ResumeRerun{
                 .ctx = &ctx,
                 .cancel_flag = &session.cancel_flag,
                 .max_result_bytes = session.max_tool_result_bytes,
                 .call_ids = prompt_input.rerun_call_ids,
-            });
+            }, ctx.observer);
         };
     } else if (prompt_input.continue_recovery) {
         const writable = if (session.writable) |*value| value else return .{
@@ -1108,7 +1134,7 @@ pub fn handlePrompt(
         .custom_tool_guidance = tool_projection.custom_guidance,
     }, current_prompt_is_root_authority);
     agent_config.session_child_capability = sessionChildCapability(session);
-    maybeStartAcpTitleTask(state, session, owned_prompt, recovery_checkpoint != null);
+    maybeStartAcpTitleTask(state, session, owned_prompt, recovery_checkpoint != null, ctx.observer);
     defer if (session.title_task != null) completeAcpTitleTask(state, session, alloc);
     agent_runtime.processAgentPrompt(&session.session_rt.agent, &deps, null, .{
         .view = state.lifecycle_view,
@@ -1167,6 +1193,7 @@ fn maybeStartAcpTitleTask(
     session: *server.ActiveSessionState,
     prompt_text: []const u8,
     recovery: bool,
+    observer: ?*observation.Observer,
 ) void {
     // Unit tests share the real provider bundles; never spawn network side
     // calls from a test process. Wiring is covered by e2e mock servers.
@@ -1182,6 +1209,7 @@ fn maybeStartAcpTitleTask(
     const excerpt = session_title_generation.promptExcerpt(prompt_text) orelse return;
     if (session.credential_source != .host_managed and session.api_key.len == 0) return;
     const task = session_title_generation.Task.create(.{
+        .observer = observer,
         .session_id = session_id,
         .model = title_model,
         .prompt_excerpt = excerpt,
@@ -1263,6 +1291,15 @@ pub fn runSubagentChild(
         .captured_permission_mode = admission.permission_mode,
     };
     defer ctx.deinitPublishedToolCalls();
+    var child_bridge: libfx_hooks.Bridge = undefined;
+    if (active.observer_hooks) |hook_config| {
+        child_bridge.init(alloc, &state.writer, turn.child_id orelse session_id, message.id, hook_config);
+        child_bridge.root_session_id = session_id;
+        child_bridge.parent_session_id = admission.parent_id;
+        child_bridge.source_session_id = message.source_id;
+        child_bridge.work_id = child_bridge.turn_id;
+        if (child_bridge.enabled) ctx.observer = &child_bridge.observer;
+    }
     var child_projection = state.cfg.mode_registry.buildModelToolProjection(
         alloc,
         builtin_tools.advertisement_set,
@@ -1870,6 +1907,7 @@ fn agentRuntimeDeps(ctx: *AcpContext) agent_runtime.AgentRuntimeDeps {
     const session = if (ctx.state.active_session) |*active| active else unreachable;
     return .{
         .ctx = @ptrCast(ctx),
+        .observer = ctx.observer,
         .agent_stream_provider = server.streamProviderFor(ctx.state, ctx.state.active_session.?.provider),
         .confirm_session_writer = confirmSessionWriter,
         .report_usage = reportUsage,
@@ -3413,6 +3451,18 @@ fn requestAcpElicitation(
         .{},
     );
     defer alloc.free(params);
+    const wait = if (responder.acp.observer) |observer| observer.beginWait(.{
+        .kind = if (input_request.mode == .url) .mcp_url else .mcp_form,
+        .call_id = responder.tool_call_id,
+        .external_id = outbound_id,
+        .prompt = display_message,
+        .schema_json = input_request.requested_schema_json,
+        .server_name = origin.server_name,
+    }) else null;
+    var wait_finished = false;
+    var wait_outcome: observation.WaitOutcome = .failed;
+    var wait_error: ?[]const u8 = null;
+    defer if (!wait_finished) if (wait) |value| value.end(if (responder.operation_cancel_flag != null and responder.operation_cancel_flag.?.load(.seq_cst)) .cancelled else wait_outcome, &.{}, wait_error);
     try state.writer.writeRequest(
         alloc,
         .{ .integer = @intCast(outbound_id) },
@@ -3420,16 +3470,28 @@ fn requestAcpElicitation(
         params,
     );
 
-    const maybe_response = try awaitAcpElicitationResponse(
+    const maybe_response = awaitAcpElicitationResponse(
         state,
         outbound_id,
         origin,
         responder.operation_cancel_flag,
-    );
+    ) catch |err| {
+        wait_outcome = if (err == error.Cancelled) .cancelled else if (err == error.Timeout or err == error.McpOperationTimedOut) .timed_out else .failed;
+        wait_error = @errorName(err);
+        return err;
+    };
     awaiting = false;
-    var response = maybe_response orelse return error.Cancelled;
+    var response = maybe_response orelse {
+        const explicitly_cancelled = (origin.lifecycle_cancel_flag != null and origin.lifecycle_cancel_flag.?.load(.acquire)) or
+            (responder.operation_cancel_flag != null and responder.operation_cancel_flag.?.load(.acquire));
+        wait_outcome = if (!explicitly_cancelled and acpAwakeMillis() >= origin.deadline_ms) .timed_out else .cancelled;
+        return error.Cancelled;
+    };
     defer response.deinit(state.alloc);
-    if (response.cancelled) return error.Cancelled;
+    if (response.cancelled) {
+        wait_outcome = .cancelled;
+        return error.Cancelled;
+    }
     if (response.error_json != null) return error.McpInputRequired;
     const response_json = response.result_json orelse return error.McpInputRequired;
 
@@ -3494,6 +3556,8 @@ fn requestAcpElicitation(
             try responder.accepted_url_ids.append(state.alloc, retained_id);
         }
     }
+    if (wait) |value| value.end(if (action == .accept) .accepted else if (action == .cancel) .cancelled else .denied, if (input_request.mode == .form) &.{canonical_response} else &.{}, null);
+    wait_finished = true;
     return canonical_response;
 }
 

@@ -139,12 +139,15 @@ pub fn call(
         return semanticFailure(ctx.allocator, "No MCP runtime is available.");
     const call_feature = ctx.mcp_call_feature orelse
         return semanticFailure(ctx.allocator, "MCP resources and prompts are unavailable.");
-    const result = call_feature(runtime_context, ctx.allocator, erased.as(Input).request, .{
+    const feature = erased.as(Input).request;
+    const observed = if (ctx.observer) |observer| observer.beginMcp(.{ .call_id = ctx.tool_call_id, .server = feature.server_name, .tool = @tagName(feature.action), .transport = null }) else null;
+    const result = call_feature(runtime_context, ctx.allocator, feature, .{
         .cancel_flag = ctx.cancel_flag,
         .input_responder = ctx.mcp_input_responder,
         .output_limit_bytes = ctx.max_tool_result_bytes,
         .access = ctx.mcp_access,
     }) catch |err| {
+        if (observed) |call_| call_.end(if (err == error.Cancelled) .cancelled else .failure, @errorName(err));
         if (err == error.OutOfMemory) return error.OutOfMemory;
         if (err == error.McpInputRequired or
             err == error.UnsupportedMode or
@@ -158,6 +161,7 @@ pub fn call(
             err,
         ) };
     };
+    if (observed) |call_| call_.end(.success, null);
     if (result.images.len > 0) return .{ .rich = .{ .text = result.model_output, .images = result.images } };
     return .{ .success = result.model_output };
 }

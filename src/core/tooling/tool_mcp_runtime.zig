@@ -1,4 +1,5 @@
 const std = @import("std");
+const observation = @import("../agent/runtime/observation.zig");
 const capability_retrieval = @import("capability_retrieval.zig");
 const types = @import("../shared/types.zig");
 const context_limits = @import("../config/context_limits.zig");
@@ -86,6 +87,9 @@ pub const SnapshotToolFn = *const fn (*anyopaque, Allocator, []const u8, Binding
 pub const Binding = types.McpToolBinding;
 
 pub const CallOptions = struct {
+    observer: ?*observation.Observer = null,
+    call_id: ?[]const u8 = null,
+    mcp_observation: ?*observation.McpCall = null,
     expected_binding: ?Binding = null,
     expected_runtime_generation: ?u64 = null,
     cancel_flag: ?*std.atomic.Value(bool) = null,
@@ -279,7 +283,22 @@ pub const CallStatus = enum {
     tool_failure,
     protocol_failure,
     input_required,
+
+    pub fn observed(self: CallStatus) observation.McpStatus {
+        return switch (self) {
+            .success => .success,
+            .tool_failure, .protocol_failure => .failure,
+            .input_required => .input_required,
+        };
+    }
 };
+
+test "MCP hook statuses normalize tool and protocol failures" {
+    try std.testing.expectEqual(observation.McpStatus.success, CallStatus.success.observed());
+    try std.testing.expectEqual(observation.McpStatus.failure, CallStatus.tool_failure.observed());
+    try std.testing.expectEqual(observation.McpStatus.failure, CallStatus.protocol_failure.observed());
+    try std.testing.expectEqual(observation.McpStatus.input_required, CallStatus.input_required.observed());
+}
 
 pub const CallResult = struct {
     model_output: []const u8,

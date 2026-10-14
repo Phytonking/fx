@@ -4,6 +4,7 @@ import { customProviderDefinition, customProviderSpec } from "./custom-provider.
 import { grokSubscription } from "./grok.js";
 import { createSubscriptionAuthorizer, credentialMemory } from "./subscription.js";
 import { loadModule } from "./wasm-module.js";
+import { toolObservation } from "./tool-observation.js";
 
 // Providers that run on a user's plan, authorized by the host's credentials.
 const subscriptionProviders = new Set(["codex", "grok"]);
@@ -150,6 +151,25 @@ export function normalizeAgentOptions(value) {
     throw new TypeError("createFxEngine() options must be an object");
   }
   const options = { ...value };
+  if (options.hooks !== undefined) {
+    const hooks = options.hooks;
+    if (!hooks || typeof hooks !== "object" || Array.isArray(hooks) || typeof hooks.onEvent !== "function") {
+      throw new TypeError("hooks must be an object with onEvent()");
+    }
+    if (hooks.onError !== undefined && typeof hooks.onError !== "function") throw new TypeError("hooks.onError must be a function");
+    if (hooks.captureContent !== undefined && typeof hooks.captureContent !== "boolean") throw new TypeError("hooks.captureContent must be a boolean");
+    options.hooks = {
+      captureContent: hooks.captureContent === true,
+      onEvent: hooks.onEvent.bind(hooks),
+      ...(hooks.onError === undefined ? {} : { onError: hooks.onError.bind(hooks) }),
+      ...(hooks.parent === undefined ? {} : { parent: { ...hooks.parent } }),
+    };
+    if (options.hooks.parent !== undefined) {
+      for (const name of ["rootSessionId", "sessionId", "turnId", "callId"]) {
+        if (typeof options.hooks.parent[name] !== "string" || options.hooks.parent[name].length === 0 || options.hooks.parent[name].length > 1024) throw new TypeError(`hooks.parent.${name} must be a bounded identity`);
+      }
+    }
+  }
   if (Object.hasOwn(options, "env")) {
     throw new TypeError("createFxEngine() does not accept env; pass apiKey and model directly");
   }
@@ -2245,6 +2265,33 @@ export async function createFxEngine(options = {}) {
   const pending = new Map();
   let nextId = 1;
   let sessionId = null;
+  const hookScopes = new Map();
+  // Observation never participates in effects, journal barriers, or retries.
+  // Contain both throws and rejected promises, including an error handler's.
+  const hookError = (error) => {
+    try { Promise.resolve(options.hooks?.onError?.(error)).catch(() => {}); } catch {}
+  };
+  const hook = (event) => {
+    if (!options.hooks) return;
+    if (options.hooks.parent) event = {
+      ...event, rootSessionId: options.hooks.parent.rootSessionId,
+      ...(event.sessionId === sessionId && event.parentSessionId == null ? {
+        parentSessionId: options.hooks.parent.sessionId, parentTurnId: options.hooks.parent.turnId, parentCallId: options.hooks.parent.callId,
+      } : {}),
+    };
+    if (event.type === "tool.start") {
+      const { data, type, ...scope } = event;
+      hookScopes.set(`${event.sessionId}:${data.call.callId}`, scope);
+    } else if (event.type === "tool.end") hookScopes.delete(`${event.sessionId}:${event.data.call.callId}`);
+    else if (event.type === "turn.end") {
+      for (const [key, scope] of hookScopes) if (scope.executionId === event.executionId) hookScopes.delete(key);
+    } else if (event.type === "journal.error" && event.data.fenced) hookScopes.clear();
+    try { Promise.resolve(options.hooks.onEvent(event)).catch(hookError); } catch (error) { hookError(error); }
+  };
+  const journalHook = (type, data) => hook({
+    version: 1, type, sessionId, rootSessionId: sessionId, parentSessionId: null, sourceSessionId: null, workId: null, turnId: null, executionId: null, stepIndex: 0,
+    timestamp: Date.now(), contentCaptured: false, contentTruncated: false, data,
+  });
   let activeTurn = null;
   let closing = false;
   let coreExitError = null;
@@ -2279,6 +2326,7 @@ export async function createFxEngine(options = {}) {
         journalHead = result.cursor;
         if (Number.isSafeInteger(lastSeq)) appendedSeq = lastSeq;
         bytesSinceCheckpoint += data.byteLength;
+        journalHook("journal.commit", { cursor: result.cursor, firstSeq: Number.isSafeInteger(events[0]?.seq) ? events[0].seq : null, lastSeq: Number.isSafeInteger(lastSeq) ? lastSeq : null, eventCount: events.length });
       });
       // A failed append fails every later one: they would not continue it.
       appendTail = appended;
@@ -2422,6 +2470,7 @@ export async function createFxEngine(options = {}) {
       if (journalFailure) return;
       journalFailure = journalAppendError(error);
       emit("journal.error", { error: error instanceof Error ? error.name : "Error" });
+      journalHook("journal.error", { error: error instanceof Error ? error.name : "Error", fenced: error?.code === "FX_FENCED" || error?.cause?.code === "FX_FENCED" });
       rejectInputWaiters([...inputWaiters.keys()], journalFailure);
       // Nothing the turn does from here can be saved, and after a fence the
       // session has another owner: stop the turn and its effects now.
@@ -2560,7 +2609,10 @@ export async function createFxEngine(options = {}) {
   };
   const executeHostTool = async (name, input, requestedSessionId, toolCallId) => {
     const execute = hostTools.executors.get(name);
-    const turn = requestedSessionId === undefined || requestedSessionId === sessionId
+    const issuerSessionId = requestedSessionId ?? sessionId;
+    const scope = hookScopes.get(`${issuerSessionId}:${toolCallId}`);
+    // Hook metadata is not authority to execute a foreign session's tool.
+    const turn = issuerSessionId === sessionId
       ? activeTurn
       : null;
     if (!isCurrentTurn(turn)) return { content: "", isError: true, cancelled: true };
@@ -2581,7 +2633,8 @@ export async function createFxEngine(options = {}) {
         return execute(input, {
           signal: controller.signal,
           executionId: String(toolCallId ?? ""),
-          sessionId,
+          sessionId: issuerSessionId,
+          ...(options.hooks && scope ? { observation: toolObservation(scope, String(toolCallId), options.hooks, hook, controller.signal) } : {}),
           ...(options.toolContext === undefined ? {} : { context: options.toolContext }),
         });
       });
@@ -2695,12 +2748,13 @@ export async function createFxEngine(options = {}) {
     // when the host could not. A journaled turn's first progress records its id.
     const fx = {
       ...(followUp ? { inputId: followUp.id, inputAccepted: followUp.accepted } : {}),
-      ...(journal && turnId ? { turnId } : {}),
+      ...((journal || options.hooks) && turnId ? { turnId } : {}),
       ...stopAt,
     };
     return request("session/prompt", { sessionId, prompt, ...(Object.keys(fx).length ? { _meta: { fx } } : {}) });
   };
   runtime.exited.then((code) => {
+    hookScopes.clear();
     closing = true;
     // An agent whose core exited writes nothing more.
     if (journal) void closeJournal().catch(() => {});
@@ -2712,6 +2766,13 @@ export async function createFxEngine(options = {}) {
     emit("runtime.exit", { code });
   });
   runtime.setLineHandler((message, size) => {
+    if (message.method === "libfx/hook") {
+      if (message.params?.rootSessionId === sessionId && message.params?.version === 1) {
+        if (message.params.type === "turn.end" && handedOff) message.params.data.handoff = true;
+        hook(message.params);
+      }
+      return;
+    }
     emit("acp.receive", { message });
     if (message.method === "libfx/journal_append") {
       if (journal && message.params?.sessionId === sessionId) {
@@ -2783,8 +2844,12 @@ export async function createFxEngine(options = {}) {
 
     const loaded = persistence ? await loadPersistence(persistence) : null;
     const requestedSessionId = options.sessionId ?? null;
-    const sessionResult = await request("libfx/new", requestedSessionId === null ? {} : { sessionId: requestedSessionId });
+    const sessionResult = await request("libfx/new", {
+      ...(requestedSessionId === null ? {} : { sessionId: requestedSessionId }),
+      ...(options.hooks ? { hooks: { captureContent: options.hooks.captureContent === true } } : {}),
+    });
     sessionId = sessionResult.sessionId;
+    if (options.hooks && sessionResult?._meta?.fx?.hooksVersion !== 1) throw new Error("Semantic hooks require a matching libfx core with hooks version 1");
     if (initialCheckpoint) {
       const [checkpointAttachment] = attachBytes([initialCheckpoint]);
       const restored = await request("libfx/restore", { sessionId, checkpointAttachment }).catch((error) => {
@@ -2828,6 +2893,7 @@ export async function createFxEngine(options = {}) {
         followUps.push({ id: held.id, text: held.text, accepted: true, held: true });
       }
       emit("journal.open", { events: events.length, checkpoint: checkpoint !== null, turns: opened?.turns, resumable });
+      journalHook("journal.restore", { cursor: loaded.head, lastSeq: loaded.lastSeq, resumable, openTurnId, lastTurnId });
     }
   } catch (error) {
     closing = true;
@@ -2980,6 +3046,7 @@ export async function createFxEngine(options = {}) {
       return run;
     },
     async close() {
+      hookScopes.clear();
       if (closing) {
         await runtime.exited;
         if (journal) await closeJournal();

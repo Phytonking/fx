@@ -1,4 +1,5 @@
 const std = @import("std");
+const observation = @import("observation.zig");
 const agent_stream_provider = @import("../stream_provider.zig");
 const image_attachments = @import("../../images/image_attachments.zig");
 const types = @import("../../shared/types.zig");
@@ -11,6 +12,8 @@ const ChatMessage = types.ChatMessage;
 const model = "google/gemini-2.5-flash";
 
 pub const Request = struct {
+    observer: ?*observation.Observer = null,
+    parent_call_id: ?[]const u8 = null,
     stream_provider: agent_stream_provider.Provider,
     api_key: []const u8,
     credential_source: ?types.CredentialSource = null,
@@ -54,6 +57,9 @@ pub fn inspect(
         request.stream_provider,
         alloc,
         .{
+            .observer = request.observer,
+            .parent_call_id = request.parent_call_id,
+            .purpose = .vision,
             .credential = if (request.credential_source == .host_managed)
                 .host_managed
             else

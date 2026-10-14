@@ -3,6 +3,7 @@
 //! opens from the events the host stored through `libfx/journal_open`.
 //! The events themselves are `core/agent/runtime/journal.zig`'s.
 const std = @import("std");
+const observation = @import("../core/agent/runtime/observation.zig");
 const jsonrpc = @import("jsonrpc.zig");
 const journal = @import("../core/agent/runtime/journal.zig");
 const session_runtime = @import("../core/session/session.zig");
@@ -601,6 +602,7 @@ pub fn rerunCalls(
     checkpoint: *session_codec.RecoveryCheckpoint,
     step_index: usize,
     runner: anytype,
+    observer: ?*observation.Observer,
 ) !usize {
     const steps = checkpoint.execution.tool_steps;
     if (step_index >= steps.len) return 0;
@@ -616,6 +618,7 @@ pub fn rerunCalls(
         const replacement = try persistedResult(alloc, call, outcome);
         types.freePersistedToolResult(alloc, result.*);
         result.* = replacement;
+        if (observer) |sink| sink.emit(.{ .tool_result = .{ .call = call, .output = replacement.output, .status = replacement.status } });
         reran += 1;
         debug_trace.logf("session", "event=libfx_resume_rerun call={s} tool={s} status={s}", .{ call.id, call.name, @tagName(replacement.status) });
     }
@@ -845,7 +848,7 @@ test "a resumed turn runs again the calls the host asks for and leaves the rest 
     defer ran.deinit(alloc);
 
     const ids = [_][]const u8{ "call-1", "call-3" };
-    const reran = try rerunCalls(alloc, &answered, 0, TestRerunner{ .ids = &ids, .ran = &ran });
+    const reran = try rerunCalls(alloc, &answered, 0, TestRerunner{ .ids = &ids, .ran = &ran }, null);
     try std.testing.expectEqual(@as(usize, 2), reran);
     try std.testing.expectEqual(@as(usize, 2), ran.items.len);
     const results = answered.execution.tool_steps[0].tool_results;
@@ -871,12 +874,12 @@ test "a resume cancelled during a rerun keeps that call and the later ones answe
     defer ran.deinit(alloc);
 
     const ids = [_][]const u8{ "call-1", "call-2", "call-3" };
-    const reran = try rerunCalls(alloc, &answered, 0, TestRerunner{ .ids = &ids, .stop_at = "call-2", .ran = &ran });
+    const reran = try rerunCalls(alloc, &answered, 0, TestRerunner{ .ids = &ids, .stop_at = "call-2", .ran = &ran }, null);
     try std.testing.expectEqual(@as(usize, 1), reran);
     const results = answered.execution.tool_steps[0].tool_results;
     try std.testing.expectEqualStrings("ran again as call-1", results[0].output);
     try std.testing.expectEqualStrings(session_adapter.unfinished_tool_output, results[1].output);
     try std.testing.expectEqualStrings(session_adapter.unfinished_tool_output, results[2].output);
     // A step index past the turn's steps runs nothing.
-    try std.testing.expectEqual(@as(usize, 0), try rerunCalls(alloc, &answered, 5, TestRerunner{ .ids = &ids, .ran = &ran }));
+    try std.testing.expectEqual(@as(usize, 0), try rerunCalls(alloc, &answered, 5, TestRerunner{ .ids = &ids, .ran = &ran }, null));
 }

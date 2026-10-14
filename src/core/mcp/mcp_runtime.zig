@@ -2321,16 +2321,24 @@ pub const McpRuntime = struct {
 
         try tools_feature.validateArguments(arena, arguments_json, .{});
 
-        return try self.toolOperations().callToolFromSnapshot(
+        var observed = if (options.observer) |observer| observer.beginMcp(.{ .call_id = options.call_id, .server = snapshot.server_name, .tool = snapshot.original_name, .transport = @tagName(match.server.config.transport) }) else null;
+        var observed_options = options;
+        observed_options.mcp_observation = if (observed) |*call| call else null;
+        const result = self.toolOperations().callToolFromSnapshot(
             arena,
             match.server,
             &snapshot,
             arguments_json,
             max_tool_result_bytes,
-            options,
+            observed_options,
             0,
             null,
-        );
+        ) catch |err| {
+            if (observed) |call| call.end(if (err == error.Cancelled) .cancelled else .failure, @errorName(err));
+            return err;
+        };
+        if (observed) |call| call.end(result.status.observed(), null);
+        return result;
     }
 
     fn serverForSnapshotLocked(

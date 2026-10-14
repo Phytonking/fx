@@ -1,4 +1,5 @@
 const std = @import("std");
+const observation = @import("../agent/runtime/observation.zig");
 const testing_allocator = @import("../shared/testing_allocator.zig");
 const skill_contract = @import("../skills/skill_contract.zig");
 const command_admission = @import("../permissions/command_admission.zig");
@@ -294,6 +295,7 @@ pub const DispatchContext = struct {
     vision_provider: ?VisionProvider = null,
     host_tool_provider: ?HostToolProvider = null,
     ask_question_ctx: ?*anyopaque = null,
+    observer: ?*observation.Observer = null,
     ask_question_batch: ?AskQuestionBatchFn = null,
     tool_capabilities: ToolCapabilities = .{},
     web_fetch_runtime: ?*web_fetch_runtime.Runtime = null,

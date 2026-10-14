@@ -220,6 +220,7 @@ const PendingLegacyUrl = struct {
 };
 
 pub const ActiveSessionState = struct {
+    observer_hooks: ?@import("libfx_hooks.zig").Config = null,
     session_id: []u8,
     store: ?session_store.Store = null,
     writable: ?session_store.LoadedWritableSession = null,
