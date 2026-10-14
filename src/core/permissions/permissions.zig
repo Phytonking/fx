@@ -179,7 +179,7 @@ pub fn permissionTargetForCall(
         return arena.dupe(u8, source);
     }
 
-    if (std.mem.eql(u8, call.name, "thread_send")) {
+    if (std.mem.eql(u8, call.name, "thread_send") or std.mem.eql(u8, call.name, "thread_new")) {
         const args = try tool_args.parseToolArgsObject(arena, call.arguments_json);
         const name = try tool_args.requiredStringArg(args, "name");
         // Real thread names never hold wildcard characters. A name that does
@@ -3423,4 +3423,14 @@ test "a shell refresh resets remembered command grants only" {
     shell_snapshot.processOwner().recordShellGrant(command);
     try std.testing.expect(sessionGrantAllowed(&grants, "run_command", command));
     try std.testing.expectEqual(@as(usize, 2), liveSessionGrantCount(&grants));
+}
+
+test "thread_new permission target is the thread name and a wildcard name is not a grant" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const beta: types.ToolCall = .{ .id = "a", .name = "thread_new", .arguments_json = "{\"name\":\"beta\",\"task\":\"go\"}" };
+    const wild: types.ToolCall = .{ .id = "w", .name = "thread_new", .arguments_json = "{\"name\":\"*\",\"task\":\"go\"}" };
+    try std.testing.expectEqualStrings("beta", try permissionTargetForCall(arena, "/tmp/workspace", beta, .none));
+    try std.testing.expectEqualStrings("thread_new", try permissionTargetForCall(arena, "/tmp/workspace", wild, .none));
 }

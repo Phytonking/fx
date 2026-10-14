@@ -584,7 +584,7 @@ fn appendBuiltinTool(
 }
 
 fn isThreadTool(name: []const u8) bool {
-    return std.mem.eql(u8, name, "thread_read") or std.mem.eql(u8, name, "thread_send");
+    return std.mem.eql(u8, name, "thread_read") or std.mem.eql(u8, name, "thread_send") or std.mem.eql(u8, name, "thread_new");
 }
 
 /// A provider-executed tool is never dispatched locally, so an unsettled `ask`

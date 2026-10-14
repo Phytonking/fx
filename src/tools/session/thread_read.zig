@@ -119,7 +119,7 @@ const Fixture = struct {
                 self.seen_name = r.name;
                 self.seen_lines = r.lines;
             },
-            .send => unreachable,
+            .send, .new => unreachable,
         }
         return .{ .status = .success, .body = try alloc.dupe(u8, "listed") };
     }

@@ -11,6 +11,8 @@ pub const Request = union(enum) {
     read: struct { name: ?[]const u8, lines: usize },
     /// Borrowed from the decoded input.
     send: struct { name: []const u8, message: []const u8 },
+    /// Starts a new thread. Borrowed from the decoded input.
+    new: struct { name: []const u8, task: []const u8 },
 };
 
 pub const Status = enum { success, failure };

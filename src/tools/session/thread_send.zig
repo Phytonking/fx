@@ -115,7 +115,7 @@ const Fixture = struct {
                 self.seen_message = s.message;
                 self.invocation_id = invocation_id;
             },
-            .read => unreachable,
+            .read, .new => unreachable,
         }
         return .{ .status = .success, .body = try alloc.dupe(u8, "sent") };
     }

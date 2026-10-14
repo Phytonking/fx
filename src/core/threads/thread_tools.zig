@@ -1,4 +1,5 @@
-//! Behavior behind the `thread_read` and `thread_send` model tools.
+//! Behavior behind the `thread_read`, `thread_send` and `thread_new` model
+//! tools, and the creation step `/thread new` shares with `thread_new`.
 //!
 //! The tools only decode arguments. This file owns what they do with the
 //! registry and the subagent host, and how thread state reads as plain text.
@@ -54,7 +55,7 @@ pub fn formatList(alloc: Allocator, entries: []const ListEntry) FormatError![]u8
     errdefer out.deinit();
     const w = &out.writer;
     if (entries.len == 0) {
-        try w.writeAll("No threads. Only the user starts threads, with /thread new NAME TASK.");
+        try w.writeAll("No threads. The user starts one with /thread new NAME TASK, or asks you to with thread_new.");
         return out.toOwnedSlice();
     }
     try w.print("Threads ({d}):\n", .{entries.len});
@@ -167,6 +168,74 @@ pub fn execute(
         else
             readAll(alloc, host, registry),
         .send => |s| sendOne(alloc, host, registry, s.name, s.message, send_options),
+        .new => |n| newOne(alloc, host, registry, home, n.name, n.task, send_options),
+    };
+}
+
+pub const CreateOutcome = union(enum) {
+    /// The thread runs. `saved` is false when the thread list could not be
+    /// written, so the thread works now but is not listed after a restart.
+    started: struct { saved: bool },
+    invalid_name: thread_registry.Error,
+    duplicate,
+    /// The host refused; the code is a static string.
+    rejected: []const u8,
+};
+
+/// Starts a thread named `name` on `task` and records it in `registry` and on
+/// disk. This is the one place a thread is created, so `/thread new` and the
+/// `thread_new` tool cannot drift apart. `options.caller_id` must be the
+/// registry's root session.
+pub fn createThread(
+    alloc: Allocator,
+    host: *subagent_tool_host.Runtime,
+    registry: *thread_registry.Registry,
+    home: []const u8,
+    name: []const u8,
+    task: []const u8,
+    options: subagent_tool_host.ExecuteOptions,
+) !CreateOutcome {
+    thread_registry.validateName(name) catch |err| return .{ .invalid_name = err };
+    if (registry.find(name) != null) return .duplicate;
+    const now = io_mod.milliTimestamp();
+    const agent = try thread_registry.agentNameFor(alloc, name, @intCast(now));
+    defer alloc.free(agent);
+    const outcome = try host.sendThread(alloc, agent, task, options);
+    defer outcome.deinit(alloc);
+    switch (outcome) {
+        .started => |child_id| {
+            try registry.add(alloc, name, agent, now);
+            try registry.setSession(alloc, name, child_id);
+            const saved = if (thread_registry.save(alloc, home, registry)) true else |_| false;
+            return .{ .started = .{ .saved = saved } };
+        },
+        // The agent name is new, so a running thread cannot answer to it.
+        .steered => return .{ .rejected = "thread_busy" },
+        .rejected => |code| return .{ .rejected = code },
+    }
+}
+
+fn newOne(
+    alloc: Allocator,
+    host: *subagent_tool_host.Runtime,
+    registry: *thread_registry.Registry,
+    home: []const u8,
+    name: []const u8,
+    task: []const u8,
+    options: subagent_tool_host.ExecuteOptions,
+) !Result {
+    const outcome = try createThread(alloc, host, registry, home, name, task, options);
+    return switch (outcome) {
+        .started => |s| ok(try alloc.print("Started thread {s}. It works on the task on its own and returns at once. Read its progress with thread_read, and add to it with thread_send.{s}", .{
+            name,
+            if (s.saved) "" else " The thread list could not be saved, so it will not be listed after a restart.",
+        })),
+        .invalid_name => |err| switch (err) {
+            error.ReservedThreadName => fail(alloc, "{s} is the current session and cannot be a thread name.", .{name}),
+            else => fail(alloc, "Invalid thread name. Use lowercase letters, digits, - and _, starting with a letter or digit, within {d} characters.", .{thread_registry.max_name_bytes}),
+        },
+        .duplicate => fail(alloc, "A thread named {s} already exists. Pick another name, or use thread_send to message it.", .{name}),
+        .rejected => |code| fail(alloc, "Could not start thread {s}: {s}", .{ name, code }),
     };
 }
 
@@ -239,7 +308,7 @@ fn sendOne(
 fn unknownThread(alloc: Allocator, registry: *const thread_registry.Registry, name: []const u8) !Result {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
-    try out.writer.print("No thread named {s}. Threads are started only by the user with /thread new.", .{name});
+    try out.writer.print("No thread named {s}. Start one with thread_new when the user asks for it.", .{name});
     if (registry.threads.items.len == 0) {
         try out.writer.writeAll(" There are no threads.");
     } else {
@@ -263,7 +332,7 @@ test "list output names each thread, phase, and idle time" {
     try std.testing.expect(std.mem.find(u8, text, "- fresh: not started\n") != null);
 }
 
-test "list output with no threads says only the user starts them" {
+test "list output with no threads says how one is started" {
     const alloc = std.testing.allocator;
     const text = try formatList(alloc, &.{});
     defer alloc.free(text);
@@ -346,5 +415,5 @@ test "unknown thread refusal lists what exists and says threads are user-made" {
     const some = try unknownThread(alloc, &registry, "ghost");
     defer alloc.free(some.body);
     try std.testing.expect(std.mem.find(u8, some.body, "Existing threads: alpha") != null);
-    try std.testing.expect(std.mem.find(u8, some.body, "only by the user") != null);
+    try std.testing.expect(std.mem.find(u8, some.body, "thread_new") != null);
 }

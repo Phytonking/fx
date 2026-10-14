@@ -703,7 +703,10 @@ pub fn formatPermissionLabel(alloc: Allocator, registry: tool_dispatch.Registry,
         );
     }
     if (std.mem.eql(u8, call.name, "thread_send")) {
-        if (try formatThreadSendPermissionLabel(alloc, args)) |label| return label;
+        if (try formatThreadSendPermissionLabel(alloc, args, "thread_send", "message")) |label| return label;
+    }
+    if (std.mem.eql(u8, call.name, "thread_new")) {
+        if (try formatThreadSendPermissionLabel(alloc, args, "thread_new", "task")) |label| return label;
     }
     const value = tool_dispatch.toolLabelValue(spec.*, args) orelse return try alloc.dupe(u8, call.name);
 
@@ -724,9 +727,14 @@ const thread_send_label_message_width: usize = 160;
 /// thread name alone says nothing about what the other agent will be asked to
 /// do. The text is flattened to one line and clipped. Null when the arguments
 /// lack a name or message. The caller owns the returned allocation.
-fn formatThreadSendPermissionLabel(alloc: Allocator, args: std.json.ObjectMap) Allocator.Error!?[]const u8 {
+fn formatThreadSendPermissionLabel(
+    alloc: Allocator,
+    args: std.json.ObjectMap,
+    tool_name: []const u8,
+    text_field: []const u8,
+) Allocator.Error!?[]const u8 {
     const name = tool_args.optionalStringArg(args, "name") orelse return null;
-    const message = tool_args.optionalStringArg(args, "message") orelse return null;
+    const message = tool_args.optionalStringArg(args, text_field) orelse return null;
     const flat = try alloc.dupe(u8, message);
     defer alloc.free(flat);
     for (flat) |*byte| {
@@ -734,7 +742,7 @@ fn formatThreadSendPermissionLabel(alloc: Allocator, args: std.json.ObjectMap) A
     }
     var clip_buf: [thread_send_label_message_width * 4 + 8]u8 = undefined;
     const clipped = text_utils.clippedLabel(&clip_buf, std.mem.trim(u8, flat, " "), thread_send_label_message_width);
-    return try alloc.print("thread_send {s}: {s}", .{ name, clipped });
+    return try alloc.print("{s} {s}: {s}", .{ tool_name, name, clipped });
 }
 
 /// The caller owns the returned allocation and must free it with `alloc`.
@@ -1547,4 +1555,16 @@ test "thread_send permission label shows the thread and a one line message" {
 
 fn expectContains(text: []const u8, needle: []const u8) !void {
     try std.testing.expect(std.mem.find(u8, text, needle) != null);
+}
+
+test "thread_new permission label shows the thread and a one line task" {
+    const alloc = std.testing.allocator;
+    const registry = tool_dispatch.Registry{ .tools = &.{test_builtin_tools.thread_new} };
+    const label = try formatPermissionLabel(alloc, registry, .{
+        .id = "new",
+        .name = "thread_new",
+        .arguments_json = "{\"name\":\"beta\",\"task\":\"fix the\\nlogin bug\"}",
+    });
+    defer alloc.free(label);
+    try std.testing.expectEqualStrings("thread_new beta: fix the login bug", label);
 }

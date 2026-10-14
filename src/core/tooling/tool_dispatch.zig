@@ -417,6 +417,7 @@ pub const ExecutorKind = enum {
     subagent,
     thread_read,
     thread_send,
+    thread_new,
     capability_search,
     mcp_select_tool,
     mcp_features,

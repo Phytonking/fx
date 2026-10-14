@@ -934,7 +934,7 @@ fn selectReviewView(request: ReviewRequest) ReviewView {
         // A message to a thread hands text to another agent that can run
         // tools, so the reviewer needs the user's own requests to tell trusted
         // intent from injected influence, as it does for subagent actions.
-        .tool => |tool| if (tool.schema_required or std.mem.eql(u8, tool.tool_name, "thread_send")) .contextual else .normal,
+        .tool => |tool| if (tool.schema_required or std.mem.eql(u8, tool.tool_name, "thread_send") or std.mem.eql(u8, tool.tool_name, "thread_new")) .contextual else .normal,
     };
 }
 

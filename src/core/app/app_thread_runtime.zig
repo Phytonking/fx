@@ -276,31 +276,23 @@ pub fn Runtime(comptime App: type) type {
             name: []const u8,
             task: []const u8,
         ) !void {
-            thread_registry.validateName(name) catch |err| {
-                try notice(app, .@"error", "thread", nameProblem(err));
-                return;
-            };
-            if (registry.find(name) != null) {
-                try noticeFmt(app, .@"error", "thread", "A thread named {s} already exists.", .{name});
-                return;
-            }
-            const now = io_mod.milliTimestamp();
-            const agent = try thread_registry.agentNameFor(app.alloc, name, @intCast(now));
-            defer app.alloc.free(agent);
             var id_buf: [96]u8 = undefined;
-            const outcome = try host.sendThread(app.alloc, agent, task, executeOptions(app, root_id, invocationId(&id_buf, "new")));
-            defer outcome.deinit(app.alloc);
+            const outcome = try thread_tools.createThread(
+                app.alloc,
+                host,
+                registry,
+                home,
+                name,
+                task,
+                executeOptions(app, root_id, invocationId(&id_buf, "new")),
+            );
             switch (outcome) {
-                .started => |child_id| {
-                    try registry.add(app.alloc, name, agent, now);
-                    try registry.setSession(app.alloc, name, child_id);
-                    thread_registry.save(app.alloc, home, registry) catch |err| {
-                        try noticeFmt(app, .warning, "thread", "Started {s}, but the thread list was not saved ({s}).", .{ name, @errorName(err) });
-                        return;
-                    };
-                    try noticeFmt(app, .success, "thread", "Started thread {s}.", .{name});
-                },
-                .steered => try notice(app, .@"error", "thread", "Thread already running."),
+                .started => |s| if (s.saved)
+                    try noticeFmt(app, .success, "thread", "Started thread {s}.", .{name})
+                else
+                    try noticeFmt(app, .warning, "thread", "Started {s}, but the thread list was not saved.", .{name}),
+                .invalid_name => |err| try notice(app, .@"error", "thread", nameProblem(err)),
+                .duplicate => try noticeFmt(app, .@"error", "thread", "A thread named {s} already exists.", .{name}),
                 .rejected => |code| try noticeFmt(app, .@"error", "thread", "Could not start {s}: {s}", .{ name, code }),
             }
         }

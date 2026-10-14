@@ -5036,6 +5036,7 @@ test {
     _ = @import("core/threads/thread_tool_provider.zig");
     _ = @import("tools/session/thread_read.zig");
     _ = @import("tools/session/thread_send.zig");
+    _ = @import("tools/session/thread_new.zig");
     _ = @import("core/app/app_thread_runtime.zig");
     _ = @import("tools/skills/install_skill.zig");
     _ = @import("tools/skills/skill.zig");

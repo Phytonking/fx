@@ -427,7 +427,7 @@ test.skipIf(SKIP_TMUX)("thread_send refuses unknown threads without creating any
     tui = await launch(fixture, gateway);
     await tui.sendText("tell ghost hi");
     await tui.waitForText("TOOL_ROUND_DONE", 30000);
-    expect(bodies.some(b => b.includes("only by the user"))).toBe(true);
+    expect(bodies.some(b => b.includes("Start one with thread_new"))).toBe(true);
     expect(existsSync(join(fixture.home, ".fx", "threads"))).toBe(false);
   } finally {
     await tui?.kill();
@@ -753,6 +753,94 @@ test.skipIf(SKIP_TMUX)("/thread watch follows a running thread live and settles 
     await tui.waitForText("alpha: idle", 10000);
     const done = (await tui.capturePaneGrid()).join("\n");
     expect(done).not.toContain("alpha: running");
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 120_000);
+
+test.skipIf(SKIP_TMUX)("the model starts a thread on request with thread_new and the thread works on its own", async () => {
+  const fixture = createFixture("tool-new");
+  const { gateway, bodies } = startToolGateway(
+    "spin up a thread called beta",
+    "thread_new",
+    { name: "beta", task: "write hello for me" },
+    "Started thread beta",
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("spin up a thread called beta");
+    await tui.waitForText("TOOL_ROUND_DONE", 30000);
+    expect(bodies.some(b => b.includes("Started thread beta"))).toBe(true);
+
+    // It is a real thread: listed, working through its own turn, and followable.
+    await waitForThreadIdle(tui, "beta");
+    let seen = false;
+    for (let attempt = 0; attempt < 20 && !seen; attempt++) {
+      await tui.sendText("/thread watch beta 10");
+      try {
+        await tui.waitForText("THREAD_ANSWER_OK", 2000);
+        seen = true;
+      } catch {
+        // Not there yet.
+      }
+    }
+    expect(seen).toBe(true);
+    // And it was registered, so it survives as an ordinary thread.
+    const files = readdirSync(join(fixture.home, ".fx", "threads")).filter(f => f.endsWith(".json"));
+    const registry = JSON.parse(readFileSync(join(join(fixture.home, ".fx", "threads"), files[0]), "utf8"));
+    expect(registry.threads.map((t: { name: string }) => t.name)).toEqual(["beta"]);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 150_000);
+
+test.skipIf(SKIP_TMUX)("thread_new asks for approval in ask mode and shows the name and task", async () => {
+  const fixture = createFixture("tool-new-ask");
+  const { gateway, bodies } = startToolGateway(
+    "spin up a thread called beta",
+    "thread_new",
+    { name: "beta", task: "write hello for me" },
+    "Started thread beta",
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway, { FX_PERMISSION_MODE: "ask" });
+    await tui.sendText("spin up a thread called beta");
+    await tui.waitForText("write hello for me", 20000);
+    expect(await tui.capturePane()).toContain("thread_new beta");
+    // Nothing starts until the user approves.
+    expect(bodies.some(b => b.includes("Started thread beta"))).toBe(false);
+    expect(existsSync(join(fixture.home, ".fx", "threads"))).toBe(false);
+    await tui.sendKeys("1");
+    await tui.waitForText("TOOL_ROUND_DONE", 30000);
+    expect(bodies.some(b => b.includes("Started thread beta"))).toBe(true);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 120_000);
+
+test.skipIf(SKIP_TMUX)("thread_new refuses a name that already exists and tells the model to message it instead", async () => {
+  const fixture = createFixture("tool-new-dup");
+  const { gateway, bodies } = startToolGateway(
+    "spin up another alpha",
+    "thread_new",
+    { name: "alpha", task: "write hello for me" },
+    "A thread named alpha already exists",
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("/thread new alpha write hello");
+    await tui.waitForText("Started thread alpha", 20000);
+    await waitForThreadIdle(tui, "alpha");
+    await tui.sendText("spin up another alpha");
+    await tui.waitForText("TOOL_ROUND_DONE", 30000);
+    expect(bodies.some(b => b.includes("A thread named alpha already exists"))).toBe(true);
+    expect(bodies.some(b => b.includes("use thread_send"))).toBe(true);
   } finally {
     await tui?.kill();
     gateway.stop();
