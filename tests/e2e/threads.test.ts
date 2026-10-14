@@ -286,3 +286,58 @@ test.skipIf(SKIP_TMUX)("/new is refused while a thread is running and works once
     gateway.stop();
   }
 }, 120_000);
+
+test.skipIf(SKIP_TMUX)("threads survive a restart: resuming the session lists them and keeps their history", async () => {
+  const fixture = createFixture("restart");
+  const gateway = startGateway();
+  let first: TmuxSession | undefined;
+  let second: TmuxSession | undefined;
+  try {
+    first = await launch(fixture, gateway);
+    await first.sendText("/thread new alpha write hello");
+    await first.waitForText("Started thread alpha", 20000);
+    let idle = false;
+    for (let attempt = 0; attempt < 30 && !idle; attempt++) {
+      await first.sendText("/thread list");
+      try {
+        await first.waitForText("alpha  idle", 1500);
+        idle = true;
+      } catch {
+        // Still running.
+      }
+    }
+    expect(idle).toBe(true);
+    await first.kill();
+    first = undefined;
+
+    second = await TmuxSession.create({
+      cmd: `${JSON.stringify(FX_BIN)} --resume last`,
+      cwd: fixture.workspace,
+      isolated: true,
+      remainOnExit: true,
+      env: env(fixture, gateway),
+    });
+    await second.waitForStableComposer(15000);
+    await second.sendText("/thread list");
+    await second.waitForText("alpha", 10000);
+
+    // The thread keeps its own history, so a new message continues it.
+    await second.sendText("/thread send alpha write hello again");
+    await second.waitForText("Sent to alpha", 20000);
+    let again = false;
+    for (let attempt = 0; attempt < 30 && !again; attempt++) {
+      await second.sendText("/thread watch alpha");
+      try {
+        await second.waitForText("THREAD_ANSWER_OK", 1500);
+        again = true;
+      } catch {
+        // Not yet.
+      }
+    }
+    expect(again).toBe(true);
+  } finally {
+    await first?.kill();
+    await second?.kill();
+    gateway.stop();
+  }
+}, 120_000);
