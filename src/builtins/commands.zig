@@ -423,8 +423,8 @@ pub const top_level_specs = [_]TopLevelSpec{
         .options = &config_options,
         .details = &.{
             "Values come from .fx.json, ~/.fx/settings.json, and this workspace's override in it. When a key repeats, the last line is the one fx uses.",
-            "Keys are dotted, such as statusLine.context. A flag or an FX_* variable can override a value for one run; fx status shows what a run uses.",
-            "set and unset change plain preferences for every workspace, such as fast_mode, effort, theme, and statusLine.context. Switches take true or false. Permission, model, provider, and account settings keep their own commands.",
+            "Keys are dotted, such as status_line.context. A flag or an FX_* variable can override a value for one run; fx status shows what a run uses.",
+            "set and unset change plain preferences for every workspace, such as fast_mode, effort, theme, and status_line.context. Switches take true or false. Permission, model, provider, and account settings keep their own commands.",
         },
     },
     command_specs.slack_install_spec,
@@ -708,6 +708,28 @@ pub fn slashCompletionHasArgs(command: []const u8) bool {
 }
 
 pub const argCompletionAnchor = command_specs.argCompletionAnchor;
+
+test "fx config help names settings by their current keys" {
+    const settings_keys = @import("../core/config/settings_keys.zig");
+    const spec = for (top_level_specs) |spec| {
+        if (spec.kind == .config) break spec;
+    } else unreachable;
+    var checked: usize = 0;
+    for (spec.details) |line| {
+        var words = std.mem.tokenizeAny(u8, line, " ,;:()");
+        while (words.next()) |raw| {
+            const word = std.mem.trimEnd(u8, raw, ".");
+            const dot = std.mem.findScalar(u8, word, '.') orelse continue;
+            const key = settings_keys.find(word[0..dot]) orelse continue;
+            try std.testing.expectEqualStrings(settings_keys.currentPath(word), word);
+            var known = false;
+            for (key.children) |child| known = known or std.mem.eql(u8, child, word[dot + 1 ..]);
+            try std.testing.expect(known);
+            checked += 1;
+        }
+    }
+    try std.testing.expect(checked > 0);
+}
 
 test "built-in slash commands register exact active order" {
     const expected_commands = [_][]const u8{
