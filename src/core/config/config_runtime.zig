@@ -4876,3 +4876,112 @@ test "FX_ULTRAFAST overrides the profile and diagnoses malformed values" {
     }
     try std.testing.expect(diagnosed);
 }
+
+/// Whether `parseSettingsValueForLayer` accepts `json` as a whole file.
+fn settingsTextAcceptedForTest(layer: SettingsLayer, json: []const u8) !bool {
+    const alloc = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    var settings = parseSettingsValueForLayer(alloc, parsed.value, layer, false, false) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        return false;
+    };
+    settings.deinit(alloc);
+    return true;
+}
+
+fn expectSettingForTest(layer: SettingsLayer, name: []const u8, value_json: []const u8, accepted: bool) !void {
+    const json = try std.testing.allocator.print("{{\"{s}\": {s}}}", .{ name, value_json });
+    defer std.testing.allocator.free(json);
+    errdefer std.debug.print("settings {s} in layer {t}\n", .{ json, layer });
+    try std.testing.expectEqual(accepted, try settingsTextAcceptedForTest(layer, json));
+}
+
+test "the settings list gives the types, values, and bounds the settings parser accepts" {
+    const alloc = std.testing.allocator;
+    for (settings_keys.keys) |key| {
+        // fx reads these elsewhere or not at all: one workspace's own keys,
+        // the workspace map, retired keys, and `$schema`, which editors read.
+        if (key.workspace_only or key.kind == .workspaces or key.where == .retired or key.where == .editor) continue;
+        const layer: SettingsLayer = if (key.where == .project_safe) .project else .profile;
+        const wrong = switch (key.kind) {
+            .string, .string_or_null => try alloc.dupe(u8, "5"),
+            .switches => try alloc.print("{{\"{s}\": \"wrong\"}}", .{key.children[0]}),
+            .refused => try alloc.dupe(u8, "true"),
+            else => try alloc.dupe(u8, "\"wrong\""),
+        };
+        defer alloc.free(wrong);
+        try expectSettingForTest(layer, key.name, wrong, false);
+        // And a value of the listed kind is accepted, so a key listed as the
+        // wrong kind fails one of the two.
+        if (key.kind != .refused) {
+            const right = switch (key.kind) {
+                .boolean => try alloc.dupe(u8, "true"),
+                .integer => try alloc.print("{d}", .{key.minimum orelse 0}),
+                .string => try alloc.print("\"{s}\"", .{if (key.values.len > 0) key.values[0] else "dark"}),
+                .string_or_null => try alloc.dupe(u8, "\"auto\""),
+                .strings => try alloc.dupe(u8, "[]"),
+                .switches => try alloc.print("{{\"{s}\": true}}", .{key.children[0]}),
+                else => try alloc.dupe(u8, "{}"),
+            };
+            defer alloc.free(right);
+            try expectSettingForTest(layer, key.name, right, true);
+        }
+        // A project file that sets a profile key is ignored, not refused.
+        if (key.where == .profile) try expectSettingForTest(.project, key.name, wrong, true);
+
+        for (key.values) |value| {
+            const json = try alloc.print("\"{s}\"", .{value});
+            defer alloc.free(json);
+            try expectSettingForTest(layer, key.name, json, true);
+        }
+        if (key.minimum) |minimum| {
+            const at = try alloc.print("{d}", .{minimum});
+            defer alloc.free(at);
+            const below = try alloc.print("{d}", .{minimum - 1});
+            defer alloc.free(below);
+            try expectSettingForTest(layer, key.name, at, true);
+            try expectSettingForTest(layer, key.name, below, false);
+        }
+        if (key.maximum) |maximum| {
+            const at = try alloc.print("{d}", .{maximum});
+            defer alloc.free(at);
+            const above = try alloc.print("{d}", .{maximum + 1});
+            defer alloc.free(above);
+            try expectSettingForTest(layer, key.name, at, true);
+            try expectSettingForTest(layer, key.name, above, false);
+        }
+        if (key.max_items) |max_items| {
+            var items: std.Io.Writer.Allocating = .init(alloc);
+            defer items.deinit();
+            try items.writer.writeAll("[\"slug-0\"");
+            for (1..max_items) |index| try items.writer.print(", \"slug-{d}\"", .{index});
+            const full = try alloc.print("{s}]", .{items.written()});
+            defer alloc.free(full);
+            const over = try alloc.print("{s}, \"slug-{d}\"]", .{ items.written(), max_items });
+            defer alloc.free(over);
+            try expectSettingForTest(layer, key.name, full, true);
+            try expectSettingForTest(layer, key.name, over, false);
+        }
+    }
+    try expectSettingForTest(.profile, "effort", "null", true);
+}
+
+test "the settings list names every value the settings enums accept" {
+    const listed = struct {
+        fn has(name: []const u8, value: []const u8) bool {
+            for (settings_keys.find(name).?.values) |listed_value| {
+                if (std.mem.eql(u8, listed_value, value)) return true;
+            }
+            return false;
+        }
+    };
+    for (std.meta.tags(types.PermissionMode)) |mode| try std.testing.expect(listed.has("permission_mode", mode.label()));
+    for (std.meta.tags(update_target.Channel)) |channel| try std.testing.expect(listed.has("update_channel", channel.label()));
+    for (std.meta.tags(types.ToolChoice)) |choice| {
+        if (types.ToolChoice.parse(@tagName(choice)) != null) try std.testing.expect(listed.has("first_call_tool_choice", @tagName(choice)));
+    }
+    for (std.meta.tags(types.CredentialSource)) |source| {
+        if (types.parseCredentialSource(@tagName(source)) != null) try std.testing.expect(listed.has("credential_source", @tagName(source)));
+    }
+}

@@ -15,20 +15,65 @@ pub const Where = enum {
     project_safe,
     /// No longer used. Read only so it is ignored without being reported.
     retired,
+    /// Known in every settings file and never read by fx: `$schema`, which
+    /// editors use to check the file.
+    editor,
+};
+
+/// The JSON value fx accepts for a key, as `fx config schema` describes it.
+pub const Kind = enum {
+    /// Anything. Only retired keys, which fx ignores, use it.
+    any,
+    boolean,
+    integer,
+    string,
+    /// A string, or null for the default.
+    string_or_null,
+    /// An array of strings.
+    strings,
+    /// An object whose values are strings, such as `models`.
+    string_map,
+    /// An object of switches, named by `children`.
+    switches,
+    /// An object that fx checks with its own rules, such as `permission`.
+    object,
+    /// The `workspaces` map from a workspace path to its overrides.
+    workspaces,
+    /// A key fx refuses to load, so a file that has it fails.
+    refused,
 };
 
 pub const Key = struct {
     name: []const u8,
     where: Where,
+    kind: Kind,
+    description: []const u8,
     /// Fixed child keys of an object setting, such as `statusLine.context`.
-    /// Empty for plain values and for maps.
+    /// Empty for plain values and for maps. Every child is a switch.
     children: []const []const u8 = &.{},
+    /// What each of `children` does, in the same order.
+    child_descriptions: []const []const u8 = &.{},
+    /// The strings fx accepts for a string key with a fixed set. fx ignores
+    /// case; the schema lists the spellings fx writes and documents.
+    values: []const []const u8 = &.{},
+    /// Inclusive bounds of an integer key.
+    minimum: ?i64 = null,
+    maximum: ?i64 = null,
+    /// The most items a `strings` key may hold.
+    max_items: ?usize = null,
     /// An object whose keys are free-form, such as `models.codex`.
     map: bool = false,
     /// The current name of a setting that was renamed. fx still reads the
     /// older name, writes only the current one, and the current one wins for
     /// any value both set.
     renamed_to: ?[]const u8 = null,
+    /// The key that replaced an older form fx still reads but no longer
+    /// writes, such as `models.gateway` for `model`.
+    superseded_by: ?[]const u8 = null,
+    /// Read only inside a `workspaces` entry, never at the top of the file.
+    workspace_only: bool = false,
+    /// Read only at the top of the profile, never inside a `workspaces` entry.
+    top_level_only: bool = false,
 
     pub fn hasChild(self: Key, name: []const u8) bool {
         for (self.children) |child| {
@@ -36,56 +81,77 @@ pub const Key = struct {
         }
         return false;
     }
+
+    /// Whether editors should mark the key as old: retired, renamed, or
+    /// superseded.
+    pub fn deprecated(self: Key) bool {
+        return self.where == .retired or self.renamed_to != null or self.superseded_by != null;
+    }
 };
 
+const sound_children = [_][]const u8{ "attention_required", "max", "turn_end" };
+const sound_child_descriptions = [_][]const u8{
+    "Play a sound when fx needs your attention",
+    "Play extra interaction sounds when sound is on",
+    "Play a sound when a turn finishes",
+};
+const status_line_children = [_][]const u8{ "context", "session", "workspace" };
+const status_line_child_descriptions = [_][]const u8{
+    "Show context usage in the footer",
+    "Show the session title in the footer",
+    "Show the workspace path and Git branch in the footer",
+};
+const retired_description = "No longer used; fx ignores it";
+
 pub const keys = [_]Key{
-    .{ .name = "additional_directories", .where = .profile },
-    .{ .name = "auto_compact_percent", .where = .profile },
-    .{ .name = "auto_upgrade", .where = .profile },
-    .{ .name = "codex_model", .where = .profile },
-    .{ .name = "collapse_tool_calls", .where = .profile },
-    .{ .name = "context", .where = .project_safe },
-    .{ .name = "context_limits", .where = .profile, .map = true },
-    .{ .name = "credential_source", .where = .profile },
-    .{ .name = "disabledMcpjsonServers", .where = .profile },
-    .{ .name = "effort", .where = .profile },
-    .{ .name = "enableAllProjectMcpServers", .where = .profile },
-    .{ .name = "enabledMcpjsonServers", .where = .profile },
-    .{ .name = "experimental", .where = .profile, .children = &.{"sessions_v2"} },
-    .{ .name = "fast_mode", .where = .profile },
-    .{ .name = "fast_mode_model_bound", .where = .profile },
-    .{ .name = "first_call_tool_choice", .where = .profile },
-    .{ .name = "grok_model", .where = .profile },
-    .{ .name = "input_appearance", .where = .retired },
-    .{ .name = "max_agent_steps", .where = .project_safe },
-    .{ .name = "max_tool_result_bytes", .where = .project_safe },
-    .{ .name = "maxxing_mode", .where = .retired },
-    .{ .name = "model", .where = .profile },
-    .{ .name = "models", .where = .profile, .map = true },
-    .{ .name = "notifications", .where = .profile, .children = &.{ "attention_required", "max", "turn_end" }, .renamed_to = "sound" },
-    .{ .name = "permission", .where = .profile, .map = true },
-    .{ .name = "permission_mode", .where = .profile },
-    .{ .name = "prompt_history", .where = .profile, .children = &.{"enabled"} },
-    .{ .name = "provider", .where = .profile },
-    .{ .name = "provider_order", .where = .project_safe },
-    .{ .name = "provider_strict", .where = .project_safe },
-    .{ .name = "providers", .where = .profile, .map = true },
-    .{ .name = "review_model", .where = .profile },
-    .{ .name = "session_titles", .where = .profile },
+    .{ .name = "$schema", .where = .editor, .kind = .string, .top_level_only = true, .description = "The JSON Schema editors use to check this file" },
+    .{ .name = "additional_directories", .where = .profile, .kind = .strings, .workspace_only = true, .description = "Directories added to this workspace; manage them with fx workspace" },
+    .{ .name = "auto_compact_percent", .where = .profile, .kind = .integer, .minimum = 10, .maximum = 80, .description = "Start automatic compaction at this percentage of usable input capacity" },
+    .{ .name = "auto_upgrade", .where = .profile, .kind = .boolean, .description = "Download and install updates in the background" },
+    .{ .name = "codex_model", .where = .profile, .kind = .string, .superseded_by = "models.codex", .description = "Older form of models.codex" },
+    .{ .name = "collapse_tool_calls", .where = .profile, .kind = .boolean, .description = "Show a summary for each group of tool calls" },
+    .{ .name = "context", .where = .project_safe, .kind = .boolean, .description = "Load project instructions such as AGENTS.md" },
+    .{ .name = "context_limits", .where = .profile, .kind = .object, .map = true, .description = "Context limits by name, in bytes or off, as --context-limit takes them" },
+    .{ .name = "credential_source", .where = .profile, .kind = .string, .values = &.{ "vercel_oidc_token", "ai_gateway_api_key", "fx_login", "stored_key", "chatgpt_subscription", "grok_subscription" }, .description = "The saved credential fx uses; fx login sets it" },
+    .{ .name = "disabledMcpjsonServers", .where = .profile, .kind = .strings, .workspace_only = true, .description = "Project MCP servers rejected in this workspace; manage them with fx mcp trust" },
+    .{ .name = "effort", .where = .profile, .kind = .string_or_null, .description = "Reasoning effort: auto or a name the model supports; null means auto" },
+    .{ .name = "enableAllProjectMcpServers", .where = .profile, .kind = .boolean, .workspace_only = true, .description = "Approve every server in this workspace's .mcp.json; manage it with fx mcp trust" },
+    .{ .name = "enabledMcpjsonServers", .where = .profile, .kind = .strings, .workspace_only = true, .description = "Project MCP servers approved in this workspace; manage them with fx mcp trust" },
+    .{ .name = "experimental", .where = .profile, .kind = .switches, .children = &.{"sessions_v2"}, .child_descriptions = &.{"Use the experimental v2 session store"}, .description = "Experimental features, which may change or go away" },
+    .{ .name = "fast_mode", .where = .profile, .kind = .boolean, .description = "Use faster inference when the model supports it" },
+    .{ .name = "fast_mode_model_bound", .where = .profile, .kind = .boolean, .description = "Managed by fx alongside fast_mode" },
+    .{ .name = "first_call_tool_choice", .where = .profile, .kind = .string, .values = &.{ "auto", "none" }, .description = "Tool choice for the first request of a turn" },
+    .{ .name = "grok_model", .where = .profile, .kind = .string, .superseded_by = "models.grok", .description = "Older form of models.grok" },
+    .{ .name = "input_appearance", .where = .retired, .kind = .any, .description = retired_description },
+    .{ .name = "max_agent_steps", .where = .project_safe, .kind = .integer, .minimum = 0, .description = "Most agent steps per turn; 0 means no limit" },
+    .{ .name = "max_tool_result_bytes", .where = .project_safe, .kind = .integer, .minimum = 1024, .description = "Tool output budget in model context, in bytes" },
+    .{ .name = "maxxing_mode", .where = .retired, .kind = .any, .description = retired_description },
+    .{ .name = "model", .where = .profile, .kind = .string, .superseded_by = "models.gateway", .description = "Older form of models.gateway" },
+    .{ .name = "models", .where = .profile, .kind = .string_map, .map = true, .description = "The saved model for each provider or connection, such as {\"gateway\": \"<model id>\"}" },
+    .{ .name = "notifications", .where = .profile, .kind = .switches, .children = &sound_children, .child_descriptions = &sound_child_descriptions, .renamed_to = "sound", .description = "Renamed to sound" },
+    .{ .name = "permission", .where = .profile, .kind = .object, .map = true, .description = "Permission rules; manage them with /permissions" },
+    .{ .name = "permission_mode", .where = .profile, .kind = .string, .values = &.{ "ask", "auto", "full-access", "yolo" }, .description = "How fx handles tool calls that need permission; yolo is an older name for full-access" },
+    .{ .name = "prompt_history", .where = .profile, .kind = .switches, .children = &.{"enabled"}, .child_descriptions = &.{"Save prompts and slash commands for input history"}, .description = "Input history" },
+    .{ .name = "provider", .where = .profile, .kind = .string, .description = "The service for model requests: gateway, codex, grok, or a name under providers" },
+    .{ .name = "provider_order", .where = .project_safe, .kind = .strings, .max_items = 8, .description = "Preferred AI Gateway providers, in order" },
+    .{ .name = "provider_strict", .where = .project_safe, .kind = .boolean, .description = "Send AI Gateway requests only to the providers in provider_order" },
+    .{ .name = "providers", .where = .profile, .kind = .object, .map = true, .top_level_only = true, .description = "Named custom model connections" },
+    .{ .name = "review_model", .where = .profile, .kind = .string, .description = "The AI Gateway model that reviews actions in auto mode" },
+    .{ .name = "session_titles", .where = .profile, .kind = .boolean, .description = "Name each session from its first prompt" },
     // Retired, but still read so that fx can explain the migration.
-    .{ .name = "skill_match_fuzzy", .where = .profile },
-    .{ .name = "skill_symlink_authorities", .where = .profile },
-    .{ .name = "slash_menu_categories", .where = .profile },
-    .{ .name = "sound", .where = .profile, .children = &.{ "attention_required", "max", "turn_end" } },
-    .{ .name = "startup_scrollback", .where = .profile },
-    .{ .name = "statusLine", .where = .profile, .children = &.{ "context", "session", "workspace" }, .renamed_to = "status_line" },
-    .{ .name = "status_line", .where = .profile, .children = &.{ "context", "session", "workspace" } },
-    .{ .name = "theme", .where = .profile },
-    .{ .name = "ultrafast_mode", .where = .profile },
-    .{ .name = "update_channel", .where = .profile },
-    .{ .name = "web_fetch_worker_model", .where = .retired },
-    .{ .name = "workspaces", .where = .profile, .map = true },
-    .{ .name = "yolo_acknowledged", .where = .profile },
+    .{ .name = "skill_match_fuzzy", .where = .profile, .kind = .refused, .description = "No longer supported; fx refuses a file that sets it, so remove it" },
+    .{ .name = "skill_symlink_authorities", .where = .profile, .kind = .strings, .description = "Absolute directories that symlinked skills may resolve into" },
+    .{ .name = "slash_menu_categories", .where = .profile, .kind = .boolean, .description = "Show command categories and skill sources in slash menu results" },
+    .{ .name = "sound", .where = .profile, .kind = .switches, .children = &sound_children, .child_descriptions = &sound_child_descriptions, .description = "Sounds" },
+    .{ .name = "startup_scrollback", .where = .profile, .kind = .boolean, .description = "Restore terminal output at startup" },
+    .{ .name = "statusLine", .where = .profile, .kind = .switches, .children = &status_line_children, .child_descriptions = &status_line_child_descriptions, .renamed_to = "status_line", .description = "Renamed to status_line" },
+    .{ .name = "status_line", .where = .profile, .kind = .switches, .children = &status_line_children, .child_descriptions = &status_line_child_descriptions, .description = "What the footer shows" },
+    .{ .name = "theme", .where = .profile, .kind = .string, .description = "light, dark, or the name of a theme file in ~/.fx/themes" },
+    .{ .name = "ultrafast_mode", .where = .profile, .kind = .boolean, .description = "Request the higher-priced Ultrafast tier for an eligible AI Gateway model" },
+    .{ .name = "update_channel", .where = .profile, .kind = .string, .values = &.{ "stable", "dev" }, .description = "Release channel for updates" },
+    .{ .name = "web_fetch_worker_model", .where = .retired, .kind = .any, .description = retired_description },
+    .{ .name = "workspaces", .where = .profile, .kind = .workspaces, .map = true, .top_level_only = true, .description = "Overrides for each workspace, by absolute path" },
+    .{ .name = "yolo_acknowledged", .where = .profile, .kind = .boolean, .description = "Managed by fx after you first confirm full-access mode" },
 };
 
 const names = blk: {
@@ -254,6 +320,24 @@ pub fn unknownPart(path: []const u8) ?UnknownPart {
     if (key.children.len == 0) return .{ .name = rest, .parent = parent, .known = &.{} };
     if (std.mem.findScalar(u8, rest, '.') == null and key.hasChild(rest)) return null;
     return .{ .name = rest, .parent = parent, .known = key.children };
+}
+
+test "every key says what it holds and what it does" {
+    for (keys) |key| {
+        errdefer std.debug.print("key {s}\n", .{key.name});
+        try std.testing.expect(key.description.len > 0);
+        try std.testing.expectEqual(key.children.len, key.child_descriptions.len);
+        try std.testing.expectEqual(key.children.len > 0, key.kind == .switches);
+        try std.testing.expectEqual(key.where == .retired, key.kind == .any);
+        try std.testing.expect(!(key.workspace_only and key.top_level_only));
+        if (key.values.len > 0) try std.testing.expectEqual(Kind.string, key.kind);
+        if (key.minimum != null or key.maximum != null) try std.testing.expectEqual(Kind.integer, key.kind);
+        if (key.max_items != null) try std.testing.expectEqual(Kind.strings, key.kind);
+        if (key.superseded_by) |path| {
+            const dot = std.mem.findScalar(u8, path, '.') orelse path.len;
+            try std.testing.expect(find(path[0..dot]) != null);
+        }
+    }
 }
 
 test "keys are unique and sorted so the list stays easy to scan" {

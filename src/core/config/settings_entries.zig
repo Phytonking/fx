@@ -137,7 +137,7 @@ fn appendSettings(alloc: Allocator, list: *std.ArrayList(Entry), object: std.jso
         const name = entry.key_ptr.*;
         const key = settings_keys.find(name) orelse continue;
         switch (key.where) {
-            .retired => continue,
+            .retired, .editor => continue,
             .profile => if (origin == .project) continue,
             .project_safe => {},
         }

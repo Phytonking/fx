@@ -16,6 +16,7 @@ const cli_config = @import("cli_config.zig");
 const settings_messages = @import("settings_messages.zig");
 const settings_entries = @import("../config/settings_entries.zig");
 const settings_keys = @import("../config/settings_keys.zig");
+const settings_schema = @import("../config/settings_schema.zig");
 const builtin_commands = @import("../../builtins/commands.zig");
 const command_specs = @import("../slash_commands/command_specs.zig");
 const collections = @import("../shared/collections.zig");
@@ -2338,6 +2339,7 @@ fn runNonInteractiveWithDeps(
             return switch (opts.action) {
                 .list, .get => runConfig(alloc, deps, opts),
                 .set, .unset => runConfigWrite(alloc, deps, opts),
+                .schema => runConfigSchema(alloc, deps, opts),
             };
         },
         .replay => |rest| {
@@ -3427,7 +3429,7 @@ fn parsedOptions(kind: TopLevelKind) ?[]const command_specs.OptionDoc {
         .usage => &builtin_commands.usage_options,
         .upgrade => &builtin_commands.upgrade_options,
         .workspace => &builtin_commands.workspace_options,
-        .config => &builtin_commands.config_options,
+        .config => &builtin_commands.config_parse_options,
         .session => &builtin_commands.session_options,
         .acp => &builtin_commands.acp_options,
         .pr, .issue => &builtin_commands.pr_options,
@@ -4373,6 +4375,14 @@ test "pr and issue take the agent-run flags before their context" {
 
 /// Prints the settings `fx config list` or `fx config get` asks for. `get` of a
 /// key that isn't set prints nothing and fails, as `git config get` does.
+fn runConfigSchema(alloc: Allocator, deps: RunDeps, opts: cli_config.Options) !RunResult {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try settings_schema.write(&out.writer, if (opts.project) .project else .profile);
+    try writeStdout(deps, out.written());
+    return .handled_success;
+}
+
 fn runConfig(alloc: Allocator, deps: RunDeps, opts: cli_config.Options) !RunResult {
     const workspace_root = try io_mod.realpathAlloc(alloc, ".");
     defer alloc.free(workspace_root);

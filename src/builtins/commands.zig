@@ -64,9 +64,17 @@ const config_subcommands = [_]command_specs.SubcommandDoc{
     .{ .usage = "get <key>", .description = "Print the value fx uses for a setting" },
     .{ .usage = "set <key> <value>", .description = "Save a preference in ~/.fx/settings.json" },
     .{ .usage = "unset <key>", .description = "Remove a preference from ~/.fx/settings.json" },
+    .{ .usage = "schema", .description = "Print the JSON Schema for ~/.fx/settings.json", .options = &config_schema_options },
 };
 
-pub const config_options = [_]command_specs.OptionDoc{
+const config_schema_options = [_]command_specs.OptionDoc{
+    .{ .flag = "--project", .description = "Print the schema for a project .fx.json instead" },
+};
+
+/// Every flag `fx config` parses: its own and `schema --project`.
+pub const config_parse_options = config_options ++ config_schema_options;
+
+const config_options = [_]command_specs.OptionDoc{
     .{ .flag = "--global", .description = "Only the profile's own settings" },
     .{ .flag = "--workspace", .description = "Only this workspace's override in the profile (list and get)" },
     .{ .flag = "--show-origin", .description = "Start each line with where the value is set" },
@@ -417,7 +425,7 @@ pub const top_level_specs = [_]TopLevelSpec{
     .{
         .kind = .config,
         .token = "config",
-        .usage = "config [list|get <key>|set <key> <value>|unset <key>] [--global|--workspace] [--show-origin] [--json]",
+        .usage = "config [list|get <key>|set <key> <value>|unset <key>|schema [--project]] [--global|--workspace] [--show-origin] [--json]",
         .summary = "Show and change fx settings",
         .subcommands = &config_subcommands,
         .options = &config_options,
@@ -425,6 +433,7 @@ pub const top_level_specs = [_]TopLevelSpec{
             "Values come from .fx.json, ~/.fx/settings.json, and this workspace's override in it. When a key repeats, the last line is the one fx uses.",
             "Keys are dotted, such as status_line.context. A flag or an FX_* variable can override a value for one run; fx status shows what a run uses.",
             "set and unset change plain preferences for every workspace, such as fast_mode, effort, theme, and status_line.context. Switches take true or false. Permission, model, provider, and account settings keep their own commands.",
+            "schema prints a JSON Schema that editors use to complete and check ~/.fx/settings.json, and --project prints the one for .fx.json. A file whose \"$schema\" names https://fx.sh/schemas/settings.json or https://fx.sh/schemas/fx.json gets the same check.",
         },
     },
     command_specs.slack_install_spec,

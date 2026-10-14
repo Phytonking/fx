@@ -723,6 +723,7 @@ describe("cli: status", () => {
         writeFileSync(
           join(home, ".fx", "settings.json"),
           JSON.stringify({
+            $schema: "https://fx.sh/schemas/settings.json",
             fast_mdoe: true,
             statusLine: { contxt: true },
             status_line: { context: true },
@@ -731,7 +732,7 @@ describe("cli: status", () => {
           }) + "\n",
           { mode: 0o600 },
         );
-        writeFileSync(join(cwd, ".fx.json"), JSON.stringify({ max_agent_step: 5 }) + "\n");
+        writeFileSync(join(cwd, ".fx.json"), JSON.stringify({ $schema: "https://fx.sh/schemas/fx.json", max_agent_step: 5 }) + "\n");
         const env = { ...NO_GATEWAY_AUTH, HOME: home, FX_DISABLE_KEYCHAIN: "1" };
 
         const doctor = await runFx(["doctor", "--json"], { cwd, env });
@@ -752,6 +753,51 @@ describe("cli: status", () => {
         expect(status.stderr).toBe("");
       } finally {
         rmSync(root, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
+    "fx config schema prints the settings.json and .fx.json schemas",
+    async () => {
+      const home = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-config-schema-")));
+      try {
+        const env = { ...NO_GATEWAY_AUTH, HOME: home };
+        const profile = await runFx(["config", "schema"], { env });
+        expect(profile.code).toBe(0);
+        expect(profile.stderr).toBe("");
+        const schema = JSON.parse(profile.stdout);
+        expect(schema.$id).toBe("https://fx.sh/schemas/settings.json");
+        expect(schema.additionalProperties).toBe(false);
+        expect(schema.properties.fast_mode).toEqual({ description: "Use faster inference when the model supports it", type: "boolean" });
+        expect(schema.properties.permission_mode.enum).toEqual(["ask", "auto", "full-access", "yolo"]);
+        expect(schema.properties.auto_compact_percent).toMatchObject({ type: "integer", minimum: 10, maximum: 80 });
+        expect(schema.properties.statusLine.deprecated).toBe(true);
+        expect(schema.properties.workspaces.additionalProperties).toEqual({ $ref: "#/$defs/workspace" });
+        expect(schema.properties.additional_directories).toBeUndefined();
+        expect(schema.$defs.workspace.properties.additional_directories.type).toBe("array");
+        expect(schema.$defs.workspace.properties.providers).toBeUndefined();
+
+        const project = await runFx(["config", "schema", "--project"], { env });
+        expect(project.code).toBe(0);
+        const projectSchema = JSON.parse(project.stdout);
+        expect(projectSchema.$id).toBe("https://fx.sh/schemas/fx.json");
+        expect(Object.keys(projectSchema.properties)).toEqual([
+          "$schema",
+          "context",
+          "max_agent_steps",
+          "max_tool_result_bytes",
+          "provider_order",
+          "provider_strict",
+        ]);
+
+        const misplaced = await runFx(["config", "list", "--project"], { env });
+        expect(misplaced.code).toBe(2);
+        expect(misplaced.stdout).toBe("");
+        expect(misplaced.stderr).toContain("usage: fx config [list|get <key>|set <key> <value>|unset <key>|schema [--project]]");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
       }
     },
     TIMEOUT,
@@ -6111,7 +6157,8 @@ describe("cli: completion", () => {
   // Tab offers there.
   const cases: [string[], string][] = [
     [["fx", "con"], "config"],
-    [["fx", "config", ""], "list get set unset"],
+    [["fx", "config", ""], "list get set unset schema"],
+    [["fx", "config", "schema", "--p"], "--project"],
     [["fx", "config", "get", "status_line.c"], "status_line.context"],
     [["fx", "config", "get", "theme", ""], ""],
     [["fx", "ask", "--permission-mode", ""], "ask auto full-access"],

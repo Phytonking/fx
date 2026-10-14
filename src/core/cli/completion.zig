@@ -194,7 +194,9 @@ fn buildModel(arena: Allocator, registry: command_specs.TopLevelRegistry, launch
     for (registry.flags) |flag| try addTopLevelFlag(&model, arena, root, flag, launch_model.values.items);
 
     for (settings_keys.keys) |key| {
-        if (key.where == .retired or key.renamed_to != null or key.map) continue;
+        // Old names, maps, a key fx refuses, and `$schema`, which is for
+        // editors, are not settings to offer.
+        if (key.deprecated() or key.map or key.kind == .refused or key.where == .editor) continue;
         if (key.children.len == 0) {
             try model.setting_keys.append(arena, key.name);
             continue;

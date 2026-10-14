@@ -63,6 +63,7 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 | Concept | Name |
 |---|---|
 | Shell completion | `fx completion bash\|zsh\|fish` |
+| Settings JSON Schema | `fx config schema [--project]`, served at `https://fx.sh/schemas/settings.json` and `https://fx.sh/schemas/fx.json` |
 | MCP servers | `fx mcp` (stays the command) |
 | Usage and spend | `fx usage`, `/usage` (`/cost`) |
 | In-session token and turn statistics | `/stats` |

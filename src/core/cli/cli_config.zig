@@ -26,7 +26,7 @@ fn profileDisplay() []const u8 {
 }
 pub const project_display = ".fx.json";
 
-pub const Action = enum { list, get, set, unset };
+pub const Action = enum { list, get, set, unset, schema };
 
 pub const Options = struct {
     action: Action = .list,
@@ -37,10 +37,12 @@ pub const Options = struct {
     scope: settings_entries.Scope = .all,
     show_origin: bool = false,
     format: output_contracts.OutputFormat = .text,
+    /// `schema --project`: describe `.fx.json` instead of `settings.json`.
+    project: bool = false,
 };
 
-const ConfigFlag = enum { global, workspace, show_origin, json };
-const config_flag_ids = cli_flags.idTable(ConfigFlag, &builtin_commands.config_options);
+const ConfigFlag = enum { global, workspace, show_origin, json, project };
+const config_flag_ids = cli_flags.idTable(ConfigFlag, &builtin_commands.config_parse_options);
 
 /// Parses `fx config [list|get <key>|set <key> <value>|unset <key>]` and its
 /// flags. On a key that names no setting, sets `unknown_key` to the part that
@@ -52,7 +54,7 @@ pub fn parseArgs(
     var options: Options = .{};
     var words: [3][]const u8 = undefined;
     var word_count: usize = 0;
-    var parser: cli_flags.Parser = .init(&builtin_commands.config_options, args);
+    var parser: cli_flags.Parser = .init(&builtin_commands.config_parse_options, args);
     while (parser.next() catch return error.InvalidConfigArgs) |item| switch (item) {
         .positional => |word| {
             if (word_count == words.len) return error.InvalidConfigArgs;
@@ -64,18 +66,28 @@ pub fn parseArgs(
             .workspace => options.scope = .workspace,
             .show_origin => options.show_origin = true,
             .json => options.format = .json,
+            .project => options.project = true,
         },
     };
 
-    if (word_count == 0) return options;
+    if (word_count == 0) {
+        if (options.project) return error.InvalidConfigArgs;
+        return options;
+    }
     options.action = std.meta.stringToEnum(Action, words[0]) orelse return error.InvalidConfigArgs;
+    if (options.project and options.action != .schema) return error.InvalidConfigArgs;
     const expected_words: usize = switch (options.action) {
-        .list => 1,
+        .list, .schema => 1,
         .get, .unset => 2,
         .set => 3,
     };
     if (word_count != expected_words) return error.InvalidConfigArgs;
     if (options.action == .list) return options;
+    // The schema is already JSON and describes files, not one scope's values.
+    if (options.action == .schema) {
+        if (options.scope != .all or options.show_origin or options.format == .json) return error.InvalidConfigArgs;
+        return options;
+    }
 
     // An older name, such as `statusLine.context`, means its current one.
     const key = settings_keys.currentPath(words[1]);
@@ -656,4 +668,46 @@ test "load names the file it can't parse" {
         try std.testing.expectEqualStrings(profileDisplay(), failed.?);
         try std.testing.expectEqualStrings("isn't valid JSON", loadFailureReason(err));
     }
+}
+
+test "fx config set writes each key with the type the settings list gives it" {
+    inline for (@typeInfo(Writable).@"enum".field_names) |path| {
+        errdefer std.debug.print("key {s}\n", .{path});
+        const dot = comptime std.mem.findScalar(u8, path, '.');
+        const key = settings_keys.find(path[0 .. dot orelse path.len]).?;
+        // Every child of an object setting is a switch.
+        const kind: settings_keys.Kind = if (dot != null) .boolean else key.kind;
+        var buffer: [32]u8 = undefined;
+        const sample: []const u8 = switch (kind) {
+            .boolean => "true",
+            .integer => try std.mem.print(&buffer, "{d}", .{key.minimum orelse 0}),
+            .string => if (key.values.len > 0) key.values[0] else "dark",
+            .string_or_null => "auto",
+            else => return error.TestUnexpectedResult,
+        };
+        var problem: WriteProblem = .none;
+        const planned = try change(.{ .action = .set, .key = path, .value = sample }, &problem);
+        const want: std.meta.Tag(std.json.Value) = switch (kind) {
+            .boolean => .bool,
+            .integer => .integer,
+            else => .string,
+        };
+        try std.testing.expectEqual(want, std.meta.activeTag(planned.value.?));
+    }
+}
+
+test "fx config schema takes only --project" {
+    var unknown: ?settings_keys.UnknownPart = null;
+    const plain = try parseForTest(&.{"schema"});
+    try std.testing.expectEqual(Action.schema, plain.action);
+    try std.testing.expect(!plain.project);
+    try std.testing.expect((try parseForTest(&.{ "schema", "--project" })).project);
+    for ([_][]const [:0]const u8{
+        &.{"--project"},
+        &.{ "list", "--project" },
+        &.{ "schema", "--json" },
+        &.{ "schema", "--global" },
+        &.{ "schema", "--show-origin" },
+        &.{ "schema", "extra" },
+    }) |args| try std.testing.expectError(error.InvalidConfigArgs, parseArgs(args, &unknown));
 }
