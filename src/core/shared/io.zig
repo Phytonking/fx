@@ -430,7 +430,7 @@ pub fn homeDir() ?[]const u8 {
 }
 
 pub fn e2eFailIfDurableMutationAttempted() void {
-    const enabled = getenv("FX_E2E_FAIL_ON_DURABLE_MUTATION") orelse return;
+    const enabled = getenv("FX_TEST_FAIL_ON_DURABLE_MUTATION") orelse return;
     if (!std.mem.eql(u8, enabled, "1")) return;
     std.process.exit(86);
 }

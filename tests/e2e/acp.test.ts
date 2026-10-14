@@ -1131,9 +1131,9 @@ function createPromptTerminalBoundary(root: string) {
     reapReady,
     release,
     env: {
-      FX_E2E_ACP_PROMPT_TERMINAL_READY: terminalReady,
-      FX_E2E_ACP_PROMPT_REAP_READY: reapReady,
-      FX_E2E_ACP_PROMPT_RELEASE: release,
+      FX_TEST_ACP_PROMPT_TERMINAL_READY: terminalReady,
+      FX_TEST_ACP_PROMPT_REAP_READY: reapReady,
+      FX_TEST_ACP_PROMPT_RELEASE: release,
     },
   };
 }
@@ -7373,9 +7373,9 @@ describe("acp: model-independent", () => {
         ...fakeGatewayEnv(root, gateway),
         FX_PROVIDER: "codex",
         FX_MODEL: undefined,
-        FX_E2E_OPENAI_CODEX_RESPONSES_URL: codex.responsesUrl,
-        FX_E2E_OPENAI_CODEX_MODELS_URL: codex.modelsUrl,
-        FX_E2E_CHATGPT_TOKEN_URL: codex.tokenUrl,
+        FX_TEST_OPENAI_CODEX_RESPONSES_URL: codex.responsesUrl,
+        FX_TEST_OPENAI_CODEX_MODELS_URL: codex.modelsUrl,
+        FX_TEST_CHATGPT_TOKEN_URL: codex.tokenUrl,
       };
       try {
         client = await AcpClient.create({ cwd: root.workspace, env });
@@ -7412,9 +7412,9 @@ describe("acp: model-independent", () => {
           cwd: root.workspace,
           env: {
             ...fakeGatewayEnv(root, gateway),
-            FX_E2E_OPENAI_CODEX_RESPONSES_URL: codex.responsesUrl,
-            FX_E2E_OPENAI_CODEX_MODELS_URL: codex.modelsUrl,
-            FX_E2E_CHATGPT_TOKEN_URL: codex.tokenUrl,
+            FX_TEST_OPENAI_CODEX_RESPONSES_URL: codex.responsesUrl,
+            FX_TEST_OPENAI_CODEX_MODELS_URL: codex.modelsUrl,
+            FX_TEST_CHATGPT_TOKEN_URL: codex.tokenUrl,
           },
         });
         const initialized = await client.request(
@@ -8342,7 +8342,7 @@ describe("acp: model-independent", () => {
             HOME: realpathSync(home),
             AI_GATEWAY_API_KEY: "e2e-placeholder",
             VERCEL_OIDC_TOKEN: "",
-            FX_E2E_FAIL_ON_DURABLE_MUTATION: "1",
+            FX_TEST_FAIL_ON_DURABLE_MUTATION: "1",
           },
         });
         expect((await client.request("initialize", { protocolVersion: 1 }, 1) as any).result).toBeDefined();
@@ -8680,7 +8680,7 @@ describe("acp: model-independent", () => {
             HOME: realpathSync(home),
             AI_GATEWAY_API_KEY: "e2e-placeholder",
             VERCEL_OIDC_TOKEN: "",
-            FX_E2E_FAIL_ON_DURABLE_MUTATION: "1",
+            FX_TEST_FAIL_ON_DURABLE_MUTATION: "1",
           },
         });
         expect((await client.request("initialize", { protocolVersion: 1 }, 1) as any).result).toBeDefined();
@@ -10373,9 +10373,9 @@ describe("acp: model catalog authentication", () => {
           cwd: root.workspace,
           env: {
             ...fakeGatewayEnv(root, gateway),
-            FX_E2E_OPENAI_CODEX_RESPONSES_URL: codex.responsesUrl,
-            FX_E2E_OPENAI_CODEX_MODELS_URL: codex.modelsUrl,
-            FX_E2E_CHATGPT_TOKEN_URL: codex.tokenUrl,
+            FX_TEST_OPENAI_CODEX_RESPONSES_URL: codex.responsesUrl,
+            FX_TEST_OPENAI_CODEX_MODELS_URL: codex.modelsUrl,
+            FX_TEST_CHATGPT_TOKEN_URL: codex.tokenUrl,
           },
         });
         await client.request("initialize", { protocolVersion: 1 }, 1);
@@ -10431,14 +10431,14 @@ describe("acp: model catalog authentication", () => {
               ...fakeGatewayEnv(root, gateway),
               FX_DISABLE_KEYCHAIN: "1",
               FX_SOUND: "0",
-              FX_E2E_OPENAI_CODEX_RESPONSES_URL: codex.responsesUrl,
-              FX_E2E_OPENAI_CODEX_MODELS_URL: codex.modelsUrl,
-              FX_E2E_CHATGPT_TOKEN_URL: codex.tokenUrl,
-              FX_E2E_XAI_GROK_RESPONSES_URL: grok.responsesUrl,
-              FX_E2E_XAI_GROK_MODELS_URL: grok.modelsUrl,
-              FX_E2E_XAI_GROK_MODALITIES_URL: grok.modalitiesUrl,
-              FX_E2E_GROK_TOKEN_URL: grok.tokenUrl,
-              FX_E2E_GROK_USERINFO_URL: grok.userinfoUrl,
+              FX_TEST_OPENAI_CODEX_RESPONSES_URL: codex.responsesUrl,
+              FX_TEST_OPENAI_CODEX_MODELS_URL: codex.modelsUrl,
+              FX_TEST_CHATGPT_TOKEN_URL: codex.tokenUrl,
+              FX_TEST_XAI_GROK_RESPONSES_URL: grok.responsesUrl,
+              FX_TEST_XAI_GROK_MODELS_URL: grok.modelsUrl,
+              FX_TEST_XAI_GROK_MODALITIES_URL: grok.modalitiesUrl,
+              FX_TEST_GROK_TOKEN_URL: grok.tokenUrl,
+              FX_TEST_GROK_USERINFO_URL: grok.userinfoUrl,
             },
           });
           const initialized = await client.request("initialize", { protocolVersion: 1 }, 1) as any;
@@ -10497,9 +10497,9 @@ describe("acp: model catalog authentication", () => {
         cwd: root.workspace,
         env: {
           ...fakeGatewayEnv(root, gateway),
-          FX_E2E_OPENAI_CODEX_RESPONSES_URL: codex.responsesUrl,
-          FX_E2E_OPENAI_CODEX_MODELS_URL: codex.modelsUrl,
-          FX_E2E_CHATGPT_TOKEN_URL: codex.tokenUrl,
+          FX_TEST_OPENAI_CODEX_RESPONSES_URL: codex.responsesUrl,
+          FX_TEST_OPENAI_CODEX_MODELS_URL: codex.modelsUrl,
+          FX_TEST_CHATGPT_TOKEN_URL: codex.tokenUrl,
         },
       });
       await client.request("initialize", { protocolVersion: 1 }, 1);
@@ -10535,11 +10535,11 @@ describe("acp: model catalog authentication", () => {
           cwd: root.workspace,
           env: {
             ...fakeGatewayEnv(root, gateway),
-            FX_E2E_XAI_GROK_RESPONSES_URL: grok.responsesUrl,
-            FX_E2E_XAI_GROK_MODELS_URL: grok.modelsUrl,
-            FX_E2E_XAI_GROK_MODALITIES_URL: grok.modalitiesUrl,
-            FX_E2E_GROK_TOKEN_URL: grok.tokenUrl,
-            FX_E2E_GROK_USERINFO_URL: grok.userinfoUrl,
+            FX_TEST_XAI_GROK_RESPONSES_URL: grok.responsesUrl,
+            FX_TEST_XAI_GROK_MODELS_URL: grok.modelsUrl,
+            FX_TEST_XAI_GROK_MODALITIES_URL: grok.modalitiesUrl,
+            FX_TEST_GROK_TOKEN_URL: grok.tokenUrl,
+            FX_TEST_GROK_USERINFO_URL: grok.userinfoUrl,
           },
         });
         await client.request("initialize", { protocolVersion: 1 }, 1);

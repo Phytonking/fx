@@ -136,9 +136,9 @@ for (const action of ["run", "message"] as const) for (const stop of [false, tru
         env: {
           PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root.home,
           AI_GATEWAY_API_KEY: "synthetic-steering", FX_DISABLE_KEYCHAIN: "1", FX_E2E_DISABLE_DOTENV: "1",
-          FX_AUTO_UPGRADE: "0", FX_SOUND: "0", FX_SKIP_ONBOARDING: "1", FX_MODEL: MODEL, FX_PERMISSION_MODE: "full-access", FX_MAX_AGENT_STEPS: "5",
+          FX_AUTO_UPGRADE: "0", FX_SOUND: "0", FX_TEST_SKIP_ONBOARDING: "1", FX_MODEL: MODEL, FX_PERMISSION_MODE: "full-access", FX_MAX_AGENT_STEPS: "5",
           FX_GATEWAY_BASE_URL: gateway.baseUrl, FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-          FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl, FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+          FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl, FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
           FX_TRACE_LOG: join(root.root, "trace.log"), FX_TRACE_SCOPES: "subagent,worker,agent,tool",
         },
       });
@@ -499,7 +499,7 @@ function fixtureEnv(
     VERCEL_OIDC_TOKEN: undefined,
     FX_GATEWAY_BASE_URL: gateway.baseUrl,
     FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-    FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+    FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
     FX_MODEL: MODEL,
     FX_TRACE_LOG: tracePath,
     FX_TRACE_SCOPES: "agent,core,gateway,stream",
@@ -1302,7 +1302,7 @@ describe("gateway stream lifecycle", () => {
           env: {
             ...fixtureEnv(root, gateway, tracePath),
             FX_MODEL: undefined,
-            FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+            FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
           },
           timeoutMs: 30_000,
         },
@@ -1359,7 +1359,7 @@ describe("gateway stream lifecycle", () => {
           env: {
             ...fixtureEnv(root, gateway, tracePath),
             FX_MODEL: undefined,
-            FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+            FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
           },
           timeoutMs: 30_000,
         },
@@ -1406,7 +1406,7 @@ describe("gateway stream lifecycle", () => {
     const env = {
       ...fixtureEnv(root, gateway, tracePath),
       FX_MODEL: undefined,
-      FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+      FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
     };
     const ask = (flags: string[]) =>
       runFx(["ask", "--json", "--auto", "--no-save", "--model", MODEL, ...flags, "Use the settings overrides."], {
@@ -1462,7 +1462,7 @@ describe("gateway stream lifecycle", () => {
           env: {
             ...fixtureEnv(root, gateway, tracePath),
             FX_MODEL: undefined,
-            FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+            FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
           },
           timeoutMs: 30_000,
         },
@@ -1505,7 +1505,7 @@ describe("gateway stream lifecycle", () => {
           env: {
             ...fixtureEnv(root, gateway, tracePath),
             FX_MODEL: undefined,
-            FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+            FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
           },
           timeoutMs: 30_000,
         },
@@ -1556,7 +1556,7 @@ describe("gateway stream lifecycle", () => {
       const env = {
         ...fixtureEnv(root, gateway, tracePath),
         FX_MODEL: undefined,
-        FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+        FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
       };
       const first = await runFx(
         ["ask", "--json", "--auto", "Start the saved session."],
@@ -1629,7 +1629,7 @@ describe("gateway stream lifecycle", () => {
           env: {
             ...fixtureEnv(root, gateway, tracePath),
             FX_MODEL: undefined,
-            FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+            FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
           },
           timeoutMs: 30_000,
         },
@@ -4584,7 +4584,7 @@ describe("gateway stream lifecycle", () => {
           cwd: root.workspace,
           env: {
             ...fixtureEnv(root, gateway, tracePath),
-            FX_COMMAND_TEST_INDETERMINATE_AFTER_EXIT: "1",
+            FX_TEST_COMMAND_INDETERMINATE_AFTER_EXIT: "1",
           },
           timeoutMs: 15_000,
         },
@@ -4664,7 +4664,7 @@ describe("gateway stream lifecycle", () => {
           cwd: root.workspace,
           env: {
             ...fixtureEnv(root, gateway, tracePath),
-            FX_COMMAND_TEST_OUTPUT_INCOMPLETE_AFTER_EXIT: "1",
+            FX_TEST_COMMAND_OUTPUT_INCOMPLETE_AFTER_EXIT: "1",
           },
           timeoutMs: 15_000,
         },
@@ -7280,7 +7280,7 @@ printf '%s' ${JSON.stringify(trailingMarker)} > ${JSON.stringify(effectPath)}
               HOME: root.home,
               AI_GATEWAY_API_KEY: "fake-gateway-lifecycle-key",
               VERCEL_OIDC_TOKEN: undefined,
-              FX_E2E_GATEWAY_CHAT_URL:
+              FX_TEST_GATEWAY_CHAT_URL:
                 `http://127.0.0.1:${address.port}/v1/ai/chat/completions`,
               FX_MODEL: MODEL,
               FX_TRACE_LOG: tracePath,
@@ -7411,7 +7411,7 @@ printf '%s' ${JSON.stringify(trailingMarker)} > ${JSON.stringify(effectPath)}
             HOME: root.home,
             AI_GATEWAY_API_KEY: "fake-gateway-lifecycle-key",
             VERCEL_OIDC_TOKEN: undefined,
-            FX_E2E_GATEWAY_CHAT_URL:
+            FX_TEST_GATEWAY_CHAT_URL:
               `http://127.0.0.1:${address.port}/v1/ai/chat/completions`,
             FX_MODEL: MODEL,
             FX_TRACE_LOG: tracePath,

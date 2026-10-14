@@ -17,14 +17,6 @@
       "job": "diagnostics",
       "stability": "internal"
     },
-    "FX_COMMAND_TEST_INDETERMINATE_AFTER_EXIT": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_COMMAND_TEST_OUTPUT_INCOMPLETE_AFTER_EXIT": {
-      "job": "test",
-      "stability": "internal"
-    },
     "FX_CONFIGURED_PROVIDERS": {
       "job": "setting-override",
       "stability": "internal"
@@ -40,126 +32,6 @@
     "FX_DISABLE_KEYCHAIN": {
       "job": "credentials",
       "stability": "stable"
-    },
-    "FX_E2E_ACP_PROMPT_REAP_READY": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_ACP_PROMPT_RELEASE": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_ACP_PROMPT_TERMINAL_READY": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_AUTH_LOCK_CONTENTION": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_CHATGPT_ISSUER_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_CHATGPT_ORIGIN": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_CHATGPT_TOKEN_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_CODEX_CLIENT_VERSION": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_CODEX_VERSION_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_FAIL_ON_DURABLE_MUTATION": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_GATEWAY_CHAT_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_GATEWAY_CREDITS_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_GATEWAY_MODELS_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_GROK_CLIENT_VERSION": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_GROK_ISSUER_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_GROK_ORIGIN": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_GROK_REVOKE_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_GROK_TOKEN_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_GROK_USERINFO_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_GROK_VERSION_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_MCP_AUTH_AUTOMATE": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_OAUTH_ISSUER_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_OPENAI_CODEX_MODELS_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_OPENAI_CODEX_RESPONSES_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_SLACK_ORIGIN": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_UPGRADE_BASE_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_USAGE_CLOCK_FILE": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_XAI_GROK_MODALITIES_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_XAI_GROK_MODELS_URL": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_E2E_XAI_GROK_RESPONSES_URL": {
-      "job": "test",
-      "stability": "internal"
     },
     "FX_EFFORT": {
       "job": "setting-override",
@@ -241,14 +113,6 @@
       "job": "setting-override",
       "stability": "internal"
     },
-    "FX_SKIP_ONBOARDING": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_SNAPSHOT_MARKER": {
-      "job": "test",
-      "stability": "internal"
-    },
     "FX_SOUND": {
       "job": "setting-override",
       "stability": "stable"
@@ -257,31 +121,167 @@
       "job": "diagnostics",
       "stability": "stable"
     },
-    "FX_TERMINAL_TEST_BACKEND_CLEANUP_DELAY_MS": {
+    "FX_TEST_ACP_PROMPT_REAP_READY": {
       "job": "test",
       "stability": "internal"
     },
-    "FX_TERMINAL_TEST_COMMAND_BOUNDARY_DELAY_MS": {
+    "FX_TEST_ACP_PROMPT_RELEASE": {
       "job": "test",
       "stability": "internal"
     },
-    "FX_TERMINAL_TEST_FAIL_CANCELLATION_OPEN": {
+    "FX_TEST_ACP_PROMPT_TERMINAL_READY": {
       "job": "test",
       "stability": "internal"
     },
-    "FX_TERMINAL_TEST_FAIL_SIGNAL_STAGE": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_TERMINAL_TEST_WRITE_BARRIER_PATH": {
-      "job": "test",
-      "stability": "internal"
-    },
-    "FX_TERMINAL_TEST_WRITE_DELAY_MS": {
+    "FX_TEST_AUTH_LOCK_CONTENTION": {
       "job": "test",
       "stability": "internal"
     },
     "FX_TEST_C04_STREAM_ANSI_OSC8_FIXTURE": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_CHATGPT_ISSUER_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_CHATGPT_ORIGIN": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_CHATGPT_TOKEN_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_CODEX_CLIENT_VERSION": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_CODEX_VERSION_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_COMMAND_INDETERMINATE_AFTER_EXIT": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_COMMAND_OUTPUT_INCOMPLETE_AFTER_EXIT": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_FAIL_ON_DURABLE_MUTATION": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_GATEWAY_CHAT_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_GATEWAY_CREDITS_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_GATEWAY_MODELS_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_GROK_CLIENT_VERSION": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_GROK_ISSUER_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_GROK_ORIGIN": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_GROK_REVOKE_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_GROK_TOKEN_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_GROK_USERINFO_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_GROK_VERSION_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_MCP_AUTH_AUTOMATE": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_OAUTH_ISSUER_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_OPENAI_CODEX_MODELS_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_OPENAI_CODEX_RESPONSES_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_SKIP_ONBOARDING": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_SLACK_ORIGIN": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_SNAPSHOT_MARKER": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_TERMINAL_BACKEND_CLEANUP_DELAY_MS": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_TERMINAL_COMMAND_BOUNDARY_DELAY_MS": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_TERMINAL_FAIL_CANCELLATION_OPEN": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_TERMINAL_FAIL_SIGNAL_STAGE": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_TERMINAL_WRITE_BARRIER_PATH": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_TERMINAL_WRITE_DELAY_MS": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_UPGRADE_BASE_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_USAGE_CLOCK_FILE": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_XAI_GROK_MODALITIES_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_XAI_GROK_MODELS_URL": {
+      "job": "test",
+      "stability": "internal"
+    },
+    "FX_TEST_XAI_GROK_RESPONSES_URL": {
       "job": "test",
       "stability": "internal"
     },

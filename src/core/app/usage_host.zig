@@ -15,7 +15,7 @@ const Allocator = std.mem.Allocator;
 const vercel_api_origin = "https://api.vercel.com";
 /// Test-only: a file holding the current time in milliseconds, so the E2E
 /// driver can move `/usage`'s clock. Unset in normal use.
-const clock_file_env = "FX_E2E_USAGE_CLOCK_FILE";
+const clock_file_env = "FX_TEST_USAGE_CLOCK_FILE";
 
 pub fn host(home: []const u8) usage.Host {
     return .{ .fetch_fn = fetch, .now_fn = now, .io_fn = io, .home = home };
@@ -111,7 +111,7 @@ const chatgpt_origin = "https://chatgpt.com";
 
 /// `https://chatgpt.com`, or a loopback origin set by E2E tests.
 fn chatgptOrigin() []const u8 {
-    const override = io_mod.getenv("FX_E2E_CHATGPT_ORIGIN") orelse return chatgpt_origin;
+    const override = io_mod.getenv("FX_TEST_CHATGPT_ORIGIN") orelse return chatgpt_origin;
     return if (client.isLoopbackHttpUrl(override)) override else chatgpt_origin;
 }
 
@@ -119,7 +119,7 @@ const grok_origin = "https://cli-chat-proxy.grok.com/v1";
 
 /// The Grok CLI proxy, or a loopback origin set by E2E tests.
 fn grokOrigin() []const u8 {
-    const override = io_mod.getenv("FX_E2E_GROK_ORIGIN") orelse return grok_origin;
+    const override = io_mod.getenv("FX_TEST_GROK_ORIGIN") orelse return grok_origin;
     return if (client.isLoopbackHttpUrl(override)) override else grok_origin;
 }
 

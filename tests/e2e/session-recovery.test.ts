@@ -69,7 +69,7 @@ function gatewayEnv(
     VERCEL_OIDC_TOKEN: undefined,
     FX_GATEWAY_BASE_URL: gateway.baseUrl,
     FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-    FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+    FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
     FX_MODEL: FAKE_GATEWAY_MODEL,
     FX_AUTO_UPGRADE: "0",
   };
@@ -373,7 +373,7 @@ function legacyGatewayEnv(
 ) {
   return {
     ...gatewayEnv(fixture, gateway), FX_MODEL: undefined, FX_EFFORT: undefined,
-    FX_FAST_MODE: undefined, FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+    FX_FAST_MODE: undefined, FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
     FX_TRACE_LOG: join(fixture.root, "legacy.trace.log"), FX_TRACE_SCOPES: "tool,session,agent",
   };
 }
@@ -460,7 +460,7 @@ describe("session recovery", () => {
         through_event_id: records.at(-1).event_id, through_event_log_bytes: Buffer.byteLength(events) }), { mode: 0o600 });
       const oldHashes = savedFileHashes(legacy.source);
       const healthyId = await createSavedSession(fixture, gateway);
-      const env = { ...legacyGatewayEnv(fixture, gateway), FX_SOUND: "0", FX_SKIP_ONBOARDING: "1" };
+      const env = { ...legacyGatewayEnv(fixture, gateway), FX_SOUND: "0", FX_TEST_SKIP_ONBOARDING: "1" };
       const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
       async function resume(args: string[], marker: string, label: string) {
         const stderrPath = join(fixture.root, `${label}.stderr`);

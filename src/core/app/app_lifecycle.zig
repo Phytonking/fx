@@ -1813,7 +1813,7 @@ fn loadStartupStatusModel(alloc: Allocator, default_model: []const u8, configure
 }
 
 fn credentialOnboardingDisabled() bool {
-    const value = io_mod.getenv("FX_SKIP_ONBOARDING") orelse return false;
+    const value = io_mod.getenv("FX_TEST_SKIP_ONBOARDING") orelse return false;
     const trimmed = std.mem.trim(u8, value, " \t\r\n");
     if (trimmed.len == 0) return false;
     return !std.mem.eql(u8, trimmed, "0") and !std.ascii.eqlIgnoreCase(trimmed, "false");
@@ -2887,7 +2887,7 @@ test "loadStartupState diagnoses the retired fuzzy skill setting" {
 
 test "credential onboarding can be skipped independently from Keychain" {
     var env = try TestEnv.install(std.testing.allocator, &.{
-        .{ .key = "FX_SKIP_ONBOARDING", .value = "1" },
+        .{ .key = "FX_TEST_SKIP_ONBOARDING", .value = "1" },
         .{ .key = "FX_DISABLE_KEYCHAIN", .value = "1" },
     });
     defer env.deinit();

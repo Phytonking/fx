@@ -617,7 +617,7 @@ describe("cli: status", () => {
           FX_DISABLE_KEYCHAIN: "1",
           FX_AUTO_UPGRADE: "0",
           FX_MODEL: FAKE_GATEWAY_MODEL,
-          FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+          FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
         };
         const cwd = realpathSync(workspace);
         const before = snapshotTree(home);
@@ -1029,7 +1029,7 @@ describe("cli: status", () => {
           FX_DISABLE_KEYCHAIN: "1",
           FX_GATEWAY_BASE_URL: gateway.baseUrl,
           FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-          FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+          FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
         },
       };
       const seeded = await runFx(["ask", "--json", "Create a short greeting."], options);
@@ -1144,7 +1144,7 @@ describe("cli: status", () => {
           ...NO_GATEWAY_AUTH,
           HOME: realpathSync(home),
           FX_DISABLE_KEYCHAIN: "1",
-          FX_E2E_OAUTH_ISSUER_URL: requestCatcher.issuerUrl,
+          FX_TEST_OAUTH_ISSUER_URL: requestCatcher.issuerUrl,
         };
         const cwd = realpathSync(workspace);
 
@@ -1500,7 +1500,7 @@ describe("cli: status", () => {
           ...NO_GATEWAY_AUTH,
           HOME: home,
           FX_DISABLE_KEYCHAIN: "1",
-          FX_SKIP_ONBOARDING: "1",
+          FX_TEST_SKIP_ONBOARDING: "1",
           FX_SOUND: "0",
         };
 
@@ -1672,7 +1672,7 @@ describe("cli: usage", () => {
         },
       });
       writeSeededFxAuth(fixture.home, "team_e2e", fixture.gateway.baseUrl);
-      const env = { ...fixture.env, FX_E2E_OAUTH_ISSUER_URL: fixture.gateway.baseUrl };
+      const env = { ...fixture.env, FX_TEST_OAUTH_ISSUER_URL: fixture.gateway.baseUrl };
       try {
         const json = await runFx(["usage", "--json"], { env });
         expect(json.code).toBe(0);
@@ -2556,7 +2556,7 @@ describe("cli: Keychain authentication", () => {
               USER: account,
               FX_GATEWAY_BASE_URL: gateway.baseUrl,
               FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-              FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+              FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
               FX_MODEL: FAKE_GATEWAY_MODEL,
               FX_AUTO_UPGRADE: "0",
             },
@@ -2621,7 +2621,7 @@ describe("cli: read-only no-create matrix", () => {
             env: {
               ...NO_GATEWAY_AUTH,
               HOME: realpathSync(home),
-              FX_E2E_FAIL_ON_DURABLE_MUTATION: "1",
+              FX_TEST_FAIL_ON_DURABLE_MUTATION: "1",
             },
             timeoutMs: TIMEOUT,
           });
@@ -3419,7 +3419,7 @@ function modelsGatewayEnv(home: string, modelsUrl: string) {
     HOME: home,
     FX_DISABLE_KEYCHAIN: "1",
     FX_AUTO_UPGRADE: "0",
-    FX_E2E_GATEWAY_MODELS_URL: modelsUrl,
+    FX_TEST_GATEWAY_MODELS_URL: modelsUrl,
   };
 }
 
@@ -3761,7 +3761,7 @@ describe("cli: models", () => {
             FX_DISABLE_KEYCHAIN: "1",
             AI_GATEWAY_API_KEY: "redirect-proof-key",
             VERCEL_OIDC_TOKEN: undefined,
-            FX_E2E_GATEWAY_MODELS_URL: `http://127.0.0.1:${redirectServer.port}/v1/models`,
+            FX_TEST_GATEWAY_MODELS_URL: `http://127.0.0.1:${redirectServer.port}/v1/models`,
           },
         });
 
@@ -3910,7 +3910,7 @@ describe("cli: models", () => {
               FX_DISABLE_KEYCHAIN: "1",
               FX_AUTO_UPGRADE: "0",
               FX_GATEWAY_BASE_URL: `http://127.0.0.1:${server.port}`,
-              FX_E2E_GATEWAY_MODELS_URL: undefined,
+              FX_TEST_GATEWAY_MODELS_URL: undefined,
               FX_TRACE_LOG: tracePath,
               FX_TRACE_SCOPES: "catalog",
             },
@@ -4016,7 +4016,7 @@ describe("cli: credits", () => {
             VERCEL_OIDC_TOKEN: undefined,
             HOME: realpathSync(home),
             FX_DISABLE_KEYCHAIN: "1",
-            FX_E2E_GATEWAY_CREDITS_URL: `http://127.0.0.1:${server.port}/v1/credits`,
+            FX_TEST_GATEWAY_CREDITS_URL: `http://127.0.0.1:${server.port}/v1/credits`,
             HOME: home,
           },
         });
@@ -4113,7 +4113,7 @@ describe("cli: ask input validation", () => {
             HOME: realpathSync(home),
             AI_GATEWAY_API_KEY: "invalid-utf8-proof-key",
             FX_DISABLE_KEYCHAIN: "1",
-            FX_E2E_GATEWAY_CHAT_URL: `http://127.0.0.1:${server.port}/ai/v1/chat/completions`,
+            FX_TEST_GATEWAY_CHAT_URL: `http://127.0.0.1:${server.port}/ai/v1/chat/completions`,
           },
           stdin: Uint8Array.from([0xff, 0xfe, 0x80, 0x68, 0x69]),
           timeoutMs: TIMEOUT,
@@ -4566,7 +4566,7 @@ describe("cli: ask success", () => {
               VERCEL_OIDC_TOKEN: undefined,
               FX_GATEWAY_BASE_URL: gateway.baseUrl,
               FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-              FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+              FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
             },
             timeoutMs: 60_000,
           },
@@ -4641,7 +4641,7 @@ describe("cli: ask success", () => {
               FX_TRACE_LOG: tracePath,
               FX_GATEWAY_BASE_URL: undefined,
               FX_GATEWAY_CHAT_URL: undefined,
-              FX_E2E_GATEWAY_MODELS_URL: undefined,
+              FX_TEST_GATEWAY_MODELS_URL: undefined,
               VERCEL_OIDC_TOKEN: undefined,
             },
             timeoutMs: 120_000,
@@ -4740,8 +4740,8 @@ describe("cli: ask success", () => {
               FX_DISABLE_KEYCHAIN: "1",
               FX_GATEWAY_BASE_URL: gateway.baseUrl,
               FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-              FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
-              FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+              FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
+              FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
               FX_MODEL: FAKE_GATEWAY_MODEL,
               FX_AUTO_UPGRADE: "0",
             },
@@ -4808,7 +4808,7 @@ describe("cli: ask success", () => {
               VERCEL_OIDC_TOKEN: undefined,
               FX_GATEWAY_BASE_URL: gateway.baseUrl,
               FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-              FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+              FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
               FX_MODEL: FAKE_GATEWAY_MODEL,
               FX_AUTO_UPGRADE: "0",
             },
@@ -4853,7 +4853,7 @@ describe("cli: ask success", () => {
               VERCEL_OIDC_TOKEN: undefined,
               FX_GATEWAY_BASE_URL: gateway.baseUrl,
               FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-              FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+              FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
               FX_MODEL: FAKE_GATEWAY_MODEL,
               FX_AUTO_UPGRADE: "0",
             },
@@ -4892,7 +4892,7 @@ describe("cli: ask success", () => {
               VERCEL_OIDC_TOKEN: undefined,
               FX_GATEWAY_BASE_URL: gateway.baseUrl,
               FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-              FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+              FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
               FX_MODEL: FAKE_GATEWAY_MODEL,
               FX_AUTO_UPGRADE: "0",
             },
@@ -4972,7 +4972,7 @@ describe("cli: ask success", () => {
           VERCEL_OIDC_TOKEN: undefined,
           FX_GATEWAY_BASE_URL: gateway.baseUrl,
           FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-          FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+          FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
           FX_MODEL: FAKE_GATEWAY_MODEL,
           FX_AUTO_UPGRADE: "0",
         };
@@ -5071,7 +5071,7 @@ describe("cli: ask success", () => {
           VERCEL_OIDC_TOKEN: undefined,
           FX_GATEWAY_BASE_URL: gateway.baseUrl,
           FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-          FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+          FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
           FX_MODEL: FAKE_GATEWAY_MODEL,
           FX_AUTO_UPGRADE: "0",
         };

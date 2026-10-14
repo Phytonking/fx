@@ -34,7 +34,7 @@ for (const userHeavy of [false, true]) test(`automatic compaction ${userHeavy ? 
     AI_GATEWAY_API_KEY: "synthetic-compaction-policy", FX_DISABLE_KEYCHAIN: "1", FX_E2E_DISABLE_DOTENV: "1",
     FX_AUTO_UPGRADE: "0", FX_SOUND: "0", FX_MODEL: model,
     FX_GATEWAY_BASE_URL: gateway.baseUrl, FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-    FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl, FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+    FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl, FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
   };
   async function ask(args: string[], label: string, prompt?: string) {
     const stdout = join(root, `${label}.stdout`), stderr = join(root, `${label}.stderr`);

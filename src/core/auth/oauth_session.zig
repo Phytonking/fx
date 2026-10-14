@@ -16,7 +16,7 @@ const Allocator = std.mem.Allocator;
 pub const issuer = "https://vercel.com";
 pub const client_id_env = "FX_OAUTH_CLIENT_ID";
 pub const default_client_id = "cl_zzh5hiOZbwJ9bfqEcYqPIJv3TaPaEYL0";
-const e2e_issuer_url_env = "FX_E2E_OAUTH_ISSUER_URL";
+const e2e_issuer_url_env = "FX_TEST_OAUTH_ISSUER_URL";
 pub const auth_file_name = profile_paths.auth_file_name;
 const schema_version: i64 = 1;
 const max_auth_file_bytes: usize = 64 * 1024;
@@ -167,7 +167,7 @@ const MutationLockProbe = struct {
 };
 
 fn signalE2ELockContention(fx_dir: std.Io.Dir) void {
-    const enabled = io_mod.getenv("FX_E2E_AUTH_LOCK_CONTENTION") orelse return;
+    const enabled = io_mod.getenv("FX_TEST_AUTH_LOCK_CONTENTION") orelse return;
     if (!std.mem.eql(u8, enabled, "1")) return;
     var file = fx_dir.createFile(io_mod.getIo(), e2e_lock_contention_file_name, .{
         .truncate = true,

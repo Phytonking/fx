@@ -5622,7 +5622,7 @@ test("manual upgrade output links stable notes and dev changes", async () => {
 
   try {
     const stable = Bun.spawn([installedFx, "upgrade", "--channel", "stable"], {
-      env: { ...process.env, HOME: home, FX_E2E_UPGRADE_BASE_URL: release.baseUrl },
+      env: { ...process.env, HOME: home, FX_TEST_UPGRADE_BASE_URL: release.baseUrl },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -5635,7 +5635,7 @@ test("manual upgrade output links stable notes and dev changes", async () => {
     copyFileSync(FX_BIN, installedFx);
     chmodSync(installedFx, 0o755);
     const dev = Bun.spawn([installedFx, "upgrade", "--channel", "dev"], {
-      env: { ...process.env, HOME: home, FX_E2E_UPGRADE_BASE_URL: release.baseUrl },
+      env: { ...process.env, HOME: home, FX_TEST_UPGRADE_BASE_URL: release.baseUrl },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -5693,7 +5693,7 @@ test.skipIf(!tmuxAvailable())(
         env: {
           ...gatewayEnv(home, gateway),
           FX_AUTO_UPGRADE: "1",
-          FX_E2E_UPGRADE_BASE_URL: release.baseUrl,
+          FX_TEST_UPGRADE_BASE_URL: release.baseUrl,
           FX_TRACE_LOG: tracePath,
           FX_TRACE_SCOPES: "core,session",
         },

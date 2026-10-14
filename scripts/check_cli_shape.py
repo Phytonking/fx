@@ -3,7 +3,8 @@
 The check reads the real source rather than a model of it:
 
   env       every FX_* name in src/ is registered with a job and a stability,
-            every other env var read by name is listed, and nothing is stale
+            test hooks and only test hooks start with FX_TEST_, every other
+            env var read by name is listed, and nothing is stale
   flags     flags are kebab-case and carry no value inside their name
   parsing   CLI code reads flags through cli_flags and the option lists help
             renders, so no command compares an argument with a flag by hand
@@ -227,6 +228,13 @@ class Checker:
                 self.report(None, "env", f"{name} is registered but no longer appears in src/; remove it")
             if entry.get("job") not in JOBS:
                 self.report(None, "env", f"{name} has job {entry.get('job')!r}; use one of {sorted(JOBS)}")
+            if (entry.get("job") == "test") != name.startswith("FX_TEST_"):
+                self.report(
+                    None,
+                    "env",
+                    f"{name} has job {entry.get('job')!r}, but test hooks and only test hooks "
+                    "start with FX_TEST_; rename it or change its job",
+                )
             if entry.get("stability") not in STABILITIES:
                 self.report(
                     None,

@@ -70,7 +70,7 @@ function env(fixture: Fixture, gateway: { baseUrl: string; chatUrl: string }, v2
     VERCEL_OIDC_TOKEN: undefined,
     FX_GATEWAY_BASE_URL: gateway.baseUrl,
     FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-    FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+    FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
     FX_MODEL: FAKE_GATEWAY_MODEL,
     FX_AUTO_UPGRADE: "0",
     FX_SESSIONS_V2: undefined,
@@ -482,7 +482,7 @@ for (const userHeavy of [false, true]) {
       }
       return fakeGatewayFinalText(phase === "seed" ? assistant : "CONTINUED_FROM_COMMITTED_MEMORY");
     }, { models: [{ id: model, type: "language", tags: ["tool-use"], context_window: userHeavy ? 256_000 : 128_000, max_tokens: 8192 }] });
-    const compactEnv = { ...env(fixture, gateway), FX_MODEL: model, FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models` };
+    const compactEnv = { ...env(fixture, gateway), FX_MODEL: model, FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models` };
     const run = (args: string[], stdin?: string) =>
       runFx(["ask", "--json", ...args], { cwd: fixture.workspace, env: compactEnv, stdin, timeoutMs: TIMEOUT });
     try {
@@ -3002,7 +3002,7 @@ for (const action of ["run", "message"] as const) {
         cmd: JSON.stringify(FX_BIN), cwd: fixture.workspace, isolated: true, remainOnExit: true, stderrPath,
         env: {
           ...env(fixture, gateway), NO_COLOR: "1", FX_PERMISSION_MODE: "full-access", FX_MAX_AGENT_STEPS: "5",
-          FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+          FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
           FX_TRACE_LOG: tracePath, FX_TRACE_SCOPES: "subagent,worker,agent,tool",
         },
       });

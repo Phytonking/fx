@@ -340,7 +340,7 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
         const catalogEnv = {
           ...NO_AUTH,
           HOME: home,
-          FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+          FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
         };
 
         session = await TmuxSession.create({
@@ -713,7 +713,7 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
           env: {
             ...NO_AUTH,
             HOME: home,
-            FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+            FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
           },
           stderrPath,
         });
@@ -836,7 +836,7 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
               ...NO_AUTH,
               HOME: home,
               FX_AUTO_UPGRADE: "0",
-              FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+              FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
             },
             stderrPath,
           });
@@ -897,7 +897,7 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
             ...NO_AUTH,
             AI_GATEWAY_API_KEY: "fake-standard-key",
             HOME: home,
-            FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+            FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
           },
           stderrPath,
         });
@@ -954,7 +954,7 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
           env: {
             ...NO_AUTH,
             HOME: home,
-            FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+            FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
           },
           stderrPath,
         });
@@ -1065,7 +1065,7 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
           HOME: home,
           FX_GATEWAY_BASE_URL: gateway.baseUrl,
           FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-          FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+          FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
         };
 
         session = await TmuxSession.create({
@@ -1199,7 +1199,7 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
           HOME: home,
           FX_GATEWAY_BASE_URL: gateway.baseUrl,
           FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-          FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+          FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
         };
 
         const staleResult = await runFx(
@@ -1311,7 +1311,7 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
           env: {
             ...NO_AUTH,
             HOME: home,
-            FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+            FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
           },
           stderrPath,
         });
@@ -1375,7 +1375,7 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
           env: {
             ...NO_AUTH,
             HOME: home,
-            FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+            FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
           },
           stderrPath,
         });
@@ -1459,7 +1459,7 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
             HOME: home,
             FX_GATEWAY_BASE_URL: gateway.baseUrl,
             FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-            FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+            FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
           },
           stderrPath,
         });
@@ -2638,7 +2638,7 @@ describe.skipIf(!tmuxAvailable())("config persistence", () => {
               FX_AUTO_UPGRADE: "0",
               FX_GATEWAY_BASE_URL: gateway.baseUrl,
               FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-              FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+              FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
               FX_MODEL: FAKE_GATEWAY_MODEL,
             },
             stderrPath,

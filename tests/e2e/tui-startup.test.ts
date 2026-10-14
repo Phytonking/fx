@@ -91,7 +91,7 @@ describe.skipIf(SKIP_TMUX)("tui: fresh-session commands", () => {
             VERCEL_OIDC_TOKEN: undefined,
             FX_AUTO_UPGRADE: "0",
             FX_DISABLE_KEYCHAIN: "1",
-            FX_SKIP_ONBOARDING: "1",
+            FX_TEST_SKIP_ONBOARDING: "1",
           },
           stderrPath,
           width: 100,
@@ -199,7 +199,7 @@ describe.skipIf(SKIP_TMUX)("tui: fresh-session commands", () => {
             VERCEL_OIDC_TOKEN: undefined,
             FX_AUTO_UPGRADE: "0",
             FX_DISABLE_KEYCHAIN: "1",
-            FX_SKIP_ONBOARDING: "1",
+            FX_TEST_SKIP_ONBOARDING: "1",
           },
           stderrPath,
           width: 100,
@@ -387,7 +387,7 @@ describe.skipIf(SKIP_TMUX)("tui: fresh-session commands", () => {
             VERCEL_OIDC_TOKEN: undefined,
             FX_GATEWAY_BASE_URL: gateway.baseUrl,
             FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-            FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+            FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
             FX_MODEL: FAKE_GATEWAY_MODEL,
           },
           stderrPath,
@@ -442,7 +442,7 @@ describe.skipIf(SKIP_TMUX)("tui: fresh-session commands", () => {
             VERCEL_OIDC_TOKEN: undefined,
             FX_GATEWAY_BASE_URL: gateway.baseUrl,
             FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-            FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+            FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
             FX_MODEL: FAKE_GATEWAY_MODEL,
           },
           stderrPath,
@@ -490,7 +490,7 @@ describe.skipIf(SKIP_TMUX)("tui: fresh-session commands", () => {
         VERCEL_OIDC_TOKEN: undefined,
         FX_GATEWAY_BASE_URL: gateway.baseUrl,
         FX_GATEWAY_CHAT_URL: gateway.chatUrl,
-        FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
+        FX_TEST_GATEWAY_CHAT_URL: gateway.chatUrl,
         FX_MODEL: FAKE_GATEWAY_MODEL,
       };
 
@@ -755,7 +755,7 @@ describe.skipIf(SKIP_TMUX)("tui: standard terminal variables", () => {
             HOME: home,
             FX_AUTO_UPGRADE: "0",
             FX_DISABLE_KEYCHAIN: "1",
-            FX_SKIP_ONBOARDING: "1",
+            FX_TEST_SKIP_ONBOARDING: "1",
             NO_COLOR: noColor,
           },
         });
@@ -779,7 +779,7 @@ describe.skipIf(SKIP_TMUX)("tui: standard terminal variables", () => {
       // The session needs cursor movement, which a dumb terminal lacks.
       const home = realpathSync(mkdtempSync(join(tmpdir(), "fx-e2e-dumb-term-")));
       session = await TmuxSession.create({
-        env: { HOME: home, FX_AUTO_UPGRADE: "0", FX_DISABLE_KEYCHAIN: "1", FX_SKIP_ONBOARDING: "1", TERM: "dumb" },
+        env: { HOME: home, FX_AUTO_UPGRADE: "0", FX_DISABLE_KEYCHAIN: "1", FX_TEST_SKIP_ONBOARDING: "1", TERM: "dumb" },
         remainOnExit: true,
       });
       await session.waitForPane(() => session!.paneStatus().dead === true, TIMEOUT);
@@ -804,7 +804,7 @@ describe.skipIf(SKIP_TMUX)("tui: credential onboarding", () => {
           HOME: home,
           FX_AUTO_UPGRADE: "0",
           FX_DISABLE_KEYCHAIN: "1",
-          FX_SKIP_ONBOARDING: "0",
+          FX_TEST_SKIP_ONBOARDING: "0",
         },
       });
 
@@ -855,7 +855,7 @@ describe.skipIf(SKIP_TMUX)("tui: credential onboarding", () => {
         FX_AUTO_UPGRADE: "0",
         FX_DISABLE_KEYCHAIN: "1",
         FX_NO_OPEN_BROWSER: "1",
-        FX_SKIP_ONBOARDING: "0",
+        FX_TEST_SKIP_ONBOARDING: "0",
       };
 
       session = await TmuxSession.create({ env });
@@ -913,7 +913,7 @@ describe.skipIf(SKIP_TMUX)("tui: custom themes", () => {
         VERCEL_OIDC_TOKEN: undefined,
         FX_AUTO_UPGRADE: "0",
         FX_DISABLE_KEYCHAIN: "1",
-        FX_SKIP_ONBOARDING: "1",
+        FX_TEST_SKIP_ONBOARDING: "1",
         FX_THEME: options.fxTheme,
         COLORFGBG: options.colorFgBg,
         COLORTERM: undefined,
@@ -953,7 +953,7 @@ describe.skipIf(SKIP_TMUX)("tui: custom themes", () => {
             VERCEL_OIDC_TOKEN: undefined,
             FX_AUTO_UPGRADE: "0",
             FX_DISABLE_KEYCHAIN: "1",
-            FX_SKIP_ONBOARDING: "1",
+            FX_TEST_SKIP_ONBOARDING: "1",
             FX_THEME: "e2e-accent",
             COLORFGBG: "15;0",
             COLORTERM: undefined,

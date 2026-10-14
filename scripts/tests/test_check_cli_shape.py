@@ -162,11 +162,21 @@ class CheckCliShapeTests(unittest.TestCase):
         self.assertOnly(self.run_check(), "env", "not_env lists FX_GONE")
 
     def test_stale_and_malformed_env_entries_fail(self) -> None:
-        self.registry["env"]["FX_GONE"] = {"job": "test", "stability": "internal"}
-        self.assertOnly(self.run_check(), "env", "FX_GONE is registered but no longer appears")
-        del self.registry["env"]["FX_GONE"]
+        self.registry["env"]["FX_TEST_GONE"] = {"job": "test", "stability": "internal"}
+        self.assertOnly(self.run_check(), "env", "FX_TEST_GONE is registered but no longer appears")
+        del self.registry["env"]["FX_TEST_GONE"]
         self.registry["env"]["FX_MODEL"]["job"] = "setting"
         self.assertOnly(self.run_check(), "env", "FX_MODEL has job 'setting'")
+
+    def test_test_hooks_and_only_test_hooks_use_the_test_prefix(self) -> None:
+        self.files["src/env.zig"] += 'const hook = io_mod.getenv("FX_E2E_GATEWAY_CHAT_URL");\n'
+        self.registry["env"]["FX_E2E_GATEWAY_CHAT_URL"] = {"job": "test", "stability": "internal"}
+        self.assertOnly(self.run_check(), "env", "FX_E2E_GATEWAY_CHAT_URL has job 'test'")
+        self.files["src/env.zig"] = self.files["src/env.zig"].replace("FX_E2E_", "FX_TEST_")
+        self.registry["env"]["FX_TEST_GATEWAY_CHAT_URL"] = self.registry["env"].pop("FX_E2E_GATEWAY_CHAT_URL")
+        self.assertEqual([], self.run_check())
+        self.registry["env"]["FX_TEST_GATEWAY_CHAT_URL"]["job"] = "integration"
+        self.assertOnly(self.run_check(), "env", "FX_TEST_GATEWAY_CHAT_URL has job 'integration'")
 
     def test_unprefixed_env_var_fails_unless_listed(self) -> None:
         self.files["src/env.zig"] += 'const legacy = io_mod.getenv("FLASH_SYNC_UPDATES");\n'

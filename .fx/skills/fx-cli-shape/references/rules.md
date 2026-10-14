@@ -112,7 +112,7 @@ Each env var has one job and that job's namespace:
 | Location of fx's home | `FX_HOME` (planned) | |
 | Integration with the surroundings | `FX_<INTEGRATION>` | `FX_HERDR=0`, `FX_NO_OPEN_BROWSER=1` |
 | Diagnostics | `FX_TRACE*`, `FX_RECORD*`, `FX_DEBUG_*` | `FX_TRACE=1` |
-| Test hooks | `FX_TEST_*` | Today five prefixes are in use; new hooks use `FX_TEST_` |
+| Test hooks | `FX_TEST_*` | Every test hook uses it, and the shape check rejects a test hook without it or another variable with it |
 | Unix standards | As defined | `NO_COLOR`, `TERM`, `HOME` |
 
 - A setting gets a named env override only when CI jobs or wrapper scripts need it for a whole process tree. For one `fx ask` request, `--config key=value` overrides any key `fx config set` takes, with the same checks. Like `git -c`, it's the top settings layer: it beats every settings file, while dedicated flags such as `--fast` and `FX_*` variables still beat it. It repeats, the last value for a key wins, and it never saves. Interactive sessions don't take it, because they re-read settings during the session; they change settings with `/settings` and slash commands.
