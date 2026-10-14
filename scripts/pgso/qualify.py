@@ -856,7 +856,6 @@ def _measurement_environment(home: pathlib.Path) -> dict[str, str]:
             "FX_SKIP_ONBOARDING": "1",
             "FX_SOUND": "0",
             "HOME": str(home),
-            "NO_COLOR": "1",
         }
     )
     return environment
