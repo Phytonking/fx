@@ -18,6 +18,7 @@ const command_replay_store = @import("../session/command_replay_store.zig");
 const command_runner = @import("../execution/command_runner.zig");
 const managed_execution = @import("../execution/managed_execution.zig");
 const subagent_tool_provider = @import("../subagent/tool_provider.zig");
+const thread_tool_provider = @import("../threads/thread_tool_provider.zig");
 const text_utils = @import("../shared/text_utils.zig");
 const web_fetch_runtime = @import("web_fetch_runtime.zig");
 const web_fetch_artifacts = @import("../session/web_fetch_artifacts.zig");
@@ -291,6 +292,7 @@ pub const DispatchContext = struct {
     captured_command_host: command_environment.Host = .native,
     run_command_backend: ?RunCommandBackend = null,
     subagent_provider: ?subagent_tool_provider.Provider = null,
+    thread_provider: ?thread_tool_provider.Provider = null,
     vision_provider: ?VisionProvider = null,
     host_tool_provider: ?HostToolProvider = null,
     ask_question_ctx: ?*anyopaque = null,
@@ -413,6 +415,8 @@ pub const ExecutorKind = enum {
     skill,
     install_skill,
     subagent,
+    thread_read,
+    thread_send,
     capability_search,
     mcp_select_tool,
     mcp_features,
@@ -431,6 +435,7 @@ pub const RuntimeProviderKind = enum {
     none,
     run_command,
     subagent,
+    thread,
     vision,
 };
 

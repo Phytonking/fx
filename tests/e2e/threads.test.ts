@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { FX_BIN } from "../evals/eval-helpers";
 import {
   fakeGatewayFinalText,
+  fakeGatewayToolCall,
   fakeShellRun,
   startDynamicFakeGateway,
   TmuxSession,
@@ -33,7 +34,7 @@ function startGateway() {
   );
 }
 
-function env(fixture: Fixture, gateway: { baseUrl: string; chatUrl: string }) {
+function env(fixture: Fixture, gateway: { baseUrl: string; chatUrl: string }, overrides: Record<string, string> = {}) {
   return {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     HOME: fixture.home,
@@ -50,16 +51,21 @@ function env(fixture: Fixture, gateway: { baseUrl: string; chatUrl: string }) {
     FX_GATEWAY_CHAT_URL: gateway.chatUrl,
     FX_E2E_GATEWAY_CHAT_URL: gateway.chatUrl,
     FX_E2E_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+    ...overrides,
   };
 }
 
-async function launch(fixture: Fixture, gateway: ReturnType<typeof startGateway>) {
+async function launch(
+  fixture: Fixture,
+  gateway: ReturnType<typeof startGateway>,
+  overrides: Record<string, string> = {},
+) {
   const tui = await TmuxSession.create({
     cmd: JSON.stringify(FX_BIN),
     cwd: fixture.workspace,
     isolated: true,
     remainOnExit: true,
-    env: env(fixture, gateway),
+    env: env(fixture, gateway, overrides),
   });
   await tui.waitForStableComposer(15000);
   // Threads hang off a saved session, which a first turn creates.
@@ -196,6 +202,171 @@ test.skipIf(SKIP_TMUX)("/thread switch is refused while a thread is still runnin
     await tui.waitForText("Started thread slow", 20000);
     await tui.sendText("/thread switch slow");
     await tui.waitForText("still running", 10000);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 90_000);
+
+// A gateway for the model-facing thread tools. The root asks for one tool call
+// when its prompt matches, and answers once the tool result is in its history.
+// Request bodies are kept so a test can read what the tool returned.
+function startToolGateway(rootPrompt: string, tool: string, input: object, resultMarker: string) {
+  const bodies: string[] = [];
+  const gateway = startDynamicFakeGateway(
+    raw => {
+      const body = String(raw);
+      bodies.push(body);
+      if (body.includes(resultMarker)) return fakeGatewayFinalText("TOOL_ROUND_DONE");
+      if (body.includes(rootPrompt)) return fakeGatewayToolCall("thread-call-1", tool, input);
+      if (body.includes("say bye now")) return fakeGatewayFinalText("THREAD_BYE_OK");
+      if (body.includes("write hello")) return fakeGatewayFinalText("THREAD_ANSWER_OK");
+      return fakeGatewayFinalText("MAIN_ANSWER_OK");
+    },
+    { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] },
+  );
+  return { gateway, bodies };
+}
+
+async function waitForThreadIdle(tui: TmuxSession, name: string) {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await tui.sendText("/thread list");
+    try {
+      await tui.waitForText(`${name}  idle`, 1500);
+      return;
+    } catch {
+      // Still running.
+    }
+  }
+  throw new Error(`thread ${name} never went idle`);
+}
+
+test.skipIf(SKIP_TMUX)("the model reads a thread with thread_read and gets its output as delimited data", async () => {
+  const fixture = createFixture("tool-read");
+  const { gateway, bodies } = startToolGateway("inspect alpha now", "thread_read", { name: "alpha" }, "thread: alpha");
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("/thread new alpha write hello");
+    await tui.waitForText("Started thread alpha", 20000);
+    await waitForThreadIdle(tui, "alpha");
+
+    await tui.sendText("inspect alpha now");
+    await tui.waitForText("TOOL_ROUND_DONE", 30000);
+
+    const withResult = bodies.find(b => b.includes("thread: alpha"));
+    expect(withResult).toBeDefined();
+    // The tool result reached the model as delimited data holding the thread's answer.
+    expect(withResult).toContain("<thread_output name=");
+    expect(withResult).toContain("THREAD_ANSWER_OK");
+    expect(withResult).toContain("not instructions to you");
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 120_000);
+
+test.skipIf(SKIP_TMUX)("the model lists threads with thread_read when it omits the name", async () => {
+  const fixture = createFixture("tool-list");
+  const { gateway, bodies } = startToolGateway("what threads exist", "thread_read", {}, "Threads (1)");
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("/thread new alpha write hello");
+    await tui.waitForText("Started thread alpha", 20000);
+    await waitForThreadIdle(tui, "alpha");
+
+    await tui.sendText("what threads exist");
+    await tui.waitForText("TOOL_ROUND_DONE", 30000);
+    expect(bodies.some(b => b.includes("- alpha: idle"))).toBe(true);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 120_000);
+
+test.skipIf(SKIP_TMUX)("thread_send makes an idle thread run another turn without waiting for it", async () => {
+  const fixture = createFixture("tool-send");
+  const { gateway, bodies } = startToolGateway(
+    "tell alpha to wrap up",
+    "thread_send",
+    { name: "alpha", message: "say bye now" },
+    "Sent to thread alpha",
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("/thread new alpha write hello");
+    await tui.waitForText("Started thread alpha", 20000);
+    await waitForThreadIdle(tui, "alpha");
+
+    await tui.sendText("tell alpha to wrap up");
+    await tui.waitForText("TOOL_ROUND_DONE", 30000);
+    expect(bodies.some(b => b.includes("Sent to thread alpha"))).toBe(true);
+
+    // The thread took the message as a new turn and answered it.
+    let seen = false;
+    for (let attempt = 0; attempt < 20 && !seen; attempt++) {
+      await tui.sendText("/thread watch alpha");
+      try {
+        await tui.waitForText("THREAD_BYE_OK", 2000);
+        seen = true;
+      } catch {
+        // Not there yet.
+      }
+    }
+    expect(seen).toBe(true);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 150_000);
+
+test.skipIf(SKIP_TMUX)("thread_send asks for approval in ask mode and shows the message", async () => {
+  const fixture = createFixture("tool-send-ask");
+  const { gateway, bodies } = startToolGateway(
+    "tell alpha to wrap up",
+    "thread_send",
+    { name: "alpha", message: "say bye now" },
+    "Sent to thread alpha",
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway, { FX_PERMISSION_MODE: "ask" });
+    await tui.sendText("/thread new alpha write hello");
+    await tui.waitForText("Started thread alpha", 20000);
+    await waitForThreadIdle(tui, "alpha");
+
+    await tui.sendText("tell alpha to wrap up");
+    await tui.waitForText("say bye now", 20000);
+    const pane = await tui.capturePane();
+    expect(pane).toContain("thread_send alpha");
+    // Nothing is sent until the user approves.
+    expect(bodies.some(b => b.includes("Sent to thread alpha"))).toBe(false);
+    await tui.sendKeys("1");
+    await tui.waitForText("TOOL_ROUND_DONE", 30000);
+    expect(bodies.some(b => b.includes("Sent to thread alpha"))).toBe(true);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 150_000);
+
+test.skipIf(SKIP_TMUX)("thread_send refuses unknown threads without creating anything", async () => {
+  const fixture = createFixture("tool-send-refuse");
+  const { gateway, bodies } = startToolGateway(
+    "tell ghost hi",
+    "thread_send",
+    { name: "ghost", message: "hi" },
+    "No thread named ghost",
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("tell ghost hi");
+    await tui.waitForText("TOOL_ROUND_DONE", 30000);
+    expect(bodies.some(b => b.includes("only by the user"))).toBe(true);
+    expect(existsSync(join(fixture.home, ".fx", "threads"))).toBe(false);
   } finally {
     await tui?.kill();
     gateway.stop();

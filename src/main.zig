@@ -2082,6 +2082,7 @@ const App = struct {
             .permission_mode = permission_mode,
             .permission_rules = permission_rules,
             .subagent_available = self.session_persistence.subagent_host != null,
+            .threads_available = self.session_persistence.subagent_host != null,
         });
     }
 
@@ -5023,6 +5024,10 @@ test {
     _ = @import("tools/session/read_tool_result.zig");
     _ = @import("core/threads/thread_registry.zig");
     _ = @import("core/threads/thread_feed.zig");
+    _ = @import("core/threads/thread_tools.zig");
+    _ = @import("core/threads/thread_tool_provider.zig");
+    _ = @import("tools/session/thread_read.zig");
+    _ = @import("tools/session/thread_send.zig");
     _ = @import("core/app/app_thread_runtime.zig");
     _ = @import("tools/skills/install_skill.zig");
     _ = @import("tools/skills/skill.zig");

@@ -10,9 +10,9 @@ const app_permission_runtime = @import("app_permission_runtime.zig");
 const app_session_runtime = @import("app_session_runtime.zig");
 const provider_runtime = @import("provider_runtime.zig");
 const subagent_tool_host = @import("../subagent/tool_host.zig");
-const child_state = @import("../subagent/child_state.zig");
 const thread_registry = @import("../threads/thread_registry.zig");
 const thread_feed = @import("../threads/thread_feed.zig");
+const thread_tools = @import("../threads/thread_tools.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -228,7 +228,7 @@ pub fn Runtime(comptime App: type) type {
                 if (current_thread == null) {
                     const status = try host.threadStatus(app.alloc, t.agent);
                     defer if (status) |s| s.deinit(app.alloc);
-                    try out.writer.print("  {s}", .{if (status) |s| phaseLabel(s.phase) else "not started"});
+                    try out.writer.print("  {s}", .{if (status) |s| thread_tools.phaseLabel(s.phase) else "not started"});
                     if (status) |s| if (host.feedFor(s.child_id)) |feed| {
                         const last = feed.lastActivityMs();
                         if (last > 0) try out.writer.print("  active {d}s ago", .{@divTrunc(@max(now - last, 0), 1000)});
@@ -310,14 +310,14 @@ pub fn Runtime(comptime App: type) type {
             };
             defer status.deinit(app.alloc);
             const feed = host.feedFor(status.child_id) orelse {
-                try noticeFmt(app, .neutral, name, "{s}. Nothing recorded in this process yet.", .{phaseLabel(status.phase)});
+                try noticeFmt(app, .neutral, name, "{s}. Nothing recorded in this process yet.", .{thread_tools.phaseLabel(status.phase)});
                 return;
             };
             const read = try feed.readSince(app.alloc, 0);
             defer read.deinit(app.alloc);
             var out: std.Io.Writer.Allocating = .init(app.alloc);
             defer out.deinit();
-            try out.writer.print("{s}\n", .{phaseLabel(status.phase)});
+            try out.writer.print("{s}\n", .{thread_tools.phaseLabel(status.phase)});
             const from = read.lines.len -| lines;
             for (read.lines[from..]) |line| try out.writer.print("{s}\n", .{line});
             try notice(app, .neutral, name, std.mem.trimEnd(u8, out.written(), "\n"));
@@ -420,16 +420,6 @@ pub fn Runtime(comptime App: type) type {
             defer app.alloc.free(body);
             try notice(app, tone, topic, body);
         }
-    };
-}
-
-fn phaseLabel(phase: child_state.Phase) []const u8 {
-    return switch (phase) {
-        .idle => "idle",
-        .running => "running",
-        .awaiting_approval => "waiting for approval",
-        .interrupted => "interrupted",
-        .finished => "finished",
     };
 }
 
