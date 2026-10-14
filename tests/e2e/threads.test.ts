@@ -512,3 +512,22 @@ test.skipIf(SKIP_TMUX)("threads survive a restart: resuming the session lists th
     gateway.stop();
   }
 }, 120_000);
+
+test.skipIf(SKIP_TMUX)("/thread completes its verbs from the composer", async () => {
+  const fixture = createFixture("complete");
+  const gateway = startGateway();
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendLiteral("/thread sw");
+    await tui.waitForText("switch", 10000);
+    await tui.sendKeys("Tab");
+    // Completing a verb that takes a name leaves the cursor ready for it.
+    await tui.waitForText("/thread switch", 10000);
+    await tui.sendText("main");
+    await tui.waitForText("You are already in main", 10000);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 60_000);
