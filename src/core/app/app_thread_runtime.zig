@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const io_mod = @import("../shared/io.zig");
+const debug_trace = @import("../shared/debug_trace.zig");
 const app_permission_runtime = @import("app_permission_runtime.zig");
 const app_session_runtime = @import("app_session_runtime.zig");
 const provider_runtime = @import("provider_runtime.zig");
@@ -17,12 +18,40 @@ const thread_tools = @import("../threads/thread_tools.zig");
 const Allocator = std.mem.Allocator;
 
 pub const usage = "usage: /thread new NAME TASK | list | switch NAME | watch NAME [LINES] | send NAME MESSAGE | stop NAME | rename OLD NEW | delete NAME";
-const default_watch_lines: usize = 40;
+/// Lines a live view keeps on screen; older ones scroll out of it.
+const follow_lines: usize = 12;
+const follow_interval_ms: i64 = 120;
+
+/// The one live view `/thread watch NAME` keeps up to date. It owns no
+/// allocations: the text is rebuilt from the thread's feed on each refresh.
+pub const WatchState = struct {
+    active: bool = false,
+    entry_id: u32 = 0,
+    /// The subagent host the view was started on. A different host means the
+    /// session changed and the view ends.
+    host: usize = 0,
+    child_id_buf: [64]u8 = undefined,
+    child_id_len: usize = 0,
+    name_buf: [thread_registry.max_name_bytes]u8 = undefined,
+    name_len: usize = 0,
+    started_ms: i64 = 0,
+    last_refresh_ms: i64 = 0,
+    last_hash: u64 = 0,
+
+    fn childId(self: *const WatchState) []const u8 {
+        return self.child_id_buf[0..self.child_id_len];
+    }
+
+    fn name(self: *const WatchState) []const u8 {
+        return self.name_buf[0..self.name_len];
+    }
+};
 
 pub const Action = union(enum) {
     list,
     new: struct { name: []const u8, task: []const u8 },
-    watch: struct { name: []const u8, lines: usize },
+    /// `lines` null follows the thread live; a count prints that many once.
+    watch: struct { name: []const u8, lines: ?usize },
     send: struct { name: []const u8, message: []const u8 },
     stop: []const u8,
     @"switch": []const u8,
@@ -54,10 +83,8 @@ pub fn parse(rest: []const u8) ParseError!Action {
     if (std.mem.eql(u8, verb, "watch")) {
         const name, const count = splitWord(tail);
         if (name.len == 0) return error.InvalidThreadCommand;
-        const lines = if (count.len == 0)
-            default_watch_lines
-        else
-            std.fmt.parseInt(usize, count, 10) catch return error.InvalidThreadCommand;
+        if (count.len == 0) return .{ .watch = .{ .name = name, .lines = null } };
+        const lines = std.fmt.parseInt(usize, count, 10) catch return error.InvalidThreadCommand;
         if (lines == 0 or lines > thread_feed.default_max_lines) return error.InvalidThreadCommand;
         return .{ .watch = .{ .name = name, .lines = lines } };
     }
@@ -236,7 +263,8 @@ pub fn Runtime(comptime App: type) type {
                 }
                 try out.writer.writeByte('\n');
             }
-            try notice(app, .neutral, "threads", std.mem.trimEnd(u8, out.written(), "\n"));
+            try out.writer.writeAll("\nMention one in a prompt with @thread:NAME. Follow one with /thread watch NAME.");
+            try notice(app, .neutral, "threads", out.written());
         }
 
         fn create(
@@ -301,7 +329,7 @@ pub fn Runtime(comptime App: type) type {
             host: *subagent_tool_host.Runtime,
             registry: *const thread_registry.Registry,
             name: []const u8,
-            lines: usize,
+            lines: ?usize,
         ) !void {
             const t = registry.find(name) orelse return missing(app, name);
             const status = (try host.threadStatus(app.alloc, t.agent)) orelse {
@@ -313,14 +341,96 @@ pub fn Runtime(comptime App: type) type {
                 try noticeFmt(app, .neutral, name, "{s}. Nothing recorded in this process yet.", .{thread_tools.phaseLabel(status.phase)});
                 return;
             };
-            const read = try feed.readSince(app.alloc, 0);
-            defer read.deinit(app.alloc);
-            var out: std.Io.Writer.Allocating = .init(app.alloc);
-            defer out.deinit();
-            try out.writer.print("{s}\n", .{thread_tools.phaseLabel(status.phase)});
-            const from = read.lines.len -| lines;
-            for (read.lines[from..]) |line| try out.writer.print("{s}\n", .{line});
-            try notice(app, .neutral, name, std.mem.trimEnd(u8, out.written(), "\n"));
+            if (lines) |count| {
+                const body = try renderBody(app.alloc, feed, count, status.phase == .running or status.phase == .awaiting_approval, 0);
+                defer app.alloc.free(body);
+                try notice(app, .neutral, name, body);
+                return;
+            }
+            // Following: one entry in the transcript that the tick redraws.
+            // A view already running ends first, so only one entry is pinned.
+            endWatch(app, "Stopped following: another thread is being watched.");
+            const running = host.managed.hasRunningChild(status.child_id);
+            const now = io_mod.milliTimestamp();
+            const body = try renderBody(app.alloc, feed, follow_lines, running, 0);
+            defer app.alloc.free(body);
+            if (!running) {
+                // Nothing is changing, so there is nothing to follow.
+                try notice(app, .neutral, name, body);
+                return;
+            }
+            const entry_id = try app.appendReplaceableDomainNotice(.{ .topic = name, .tone = .neutral, .body = body });
+            if (status.child_id.len > app.thread_watch.child_id_buf.len) return;
+            app.thread_watch = .{ .active = true, .entry_id = entry_id, .host = @intFromPtr(host), .started_ms = now, .last_refresh_ms = now };
+            @memcpy(app.thread_watch.child_id_buf[0..status.child_id.len], status.child_id);
+            app.thread_watch.child_id_len = status.child_id.len;
+            @memcpy(app.thread_watch.name_buf[0..name.len], name);
+            app.thread_watch.name_len = name.len;
+            app.thread_watch.last_hash = std.hash.Wyhash.hash(0, body);
+        }
+
+        /// Redraws the live view from the thread's feed. Called every tick; it
+        /// does nothing unless a view is active and the interval has passed.
+        pub fn tickWatch(app: *App) void {
+            const state = &app.thread_watch;
+            if (!state.active) return;
+            const now = io_mod.milliTimestamp();
+            if (now - state.last_refresh_ms < follow_interval_ms) return;
+            state.last_refresh_ms = now;
+            const host = SessionRuntime.subagentHost(app);
+            const feed = if (host) |h|
+                if (@intFromPtr(h) == state.host) h.feedFor(state.childId()) else null
+            else
+                null;
+            const live_feed = feed orelse {
+                // The session changed under the view. Release it as history.
+                endWatch(app, "Stopped following: the session changed.");
+                return;
+            };
+            const running = host.?.managed.hasRunningChild(state.childId());
+            const elapsed_s: u64 = @intCast(@divTrunc(@max(now - state.started_ms, 0), 1000));
+            const body = renderBody(app.alloc, live_feed, follow_lines, running, elapsed_s) catch return;
+            defer app.alloc.free(body);
+            if (!running) {
+                // The last view says what the thread ended with and stays in the transcript.
+                endWatch(app, body);
+                return;
+            }
+            const hash = std.hash.Wyhash.hash(0, body);
+            if (hash == state.last_hash) return;
+            state.last_hash = hash;
+            const replaced = app.replaceDomainNoticeKeepingPin(state.entry_id, .{ .topic = state.name(), .tone = .neutral, .body = body }) catch false;
+            // The entry left the transcript, so there is nothing to redraw.
+            if (!replaced) state.active = false;
+            app.shell.render_requests.request(.transcript);
+        }
+
+        /// Ends the live view with `body` as its last text, which releases the
+        /// entry into the transcript as ordinary history.
+        fn endWatch(app: *App, body: []const u8) void {
+            const state = &app.thread_watch;
+            if (!state.active) return;
+            state.active = false;
+            _ = app.replaceDomainNotice(state.entry_id, .{ .topic = state.name(), .tone = .neutral, .body = body }) catch {};
+            app.shell.render_requests.request(.transcript);
+        }
+
+        /// Header plus the newest `max` lines of the feed. Caller owns the result.
+        fn renderBody(alloc: Allocator, feed: *thread_feed.Feed, max: usize, running: bool, elapsed_s: u64) ![]u8 {
+            const tail = try feed.tail(alloc, max);
+            defer tail.deinit(alloc);
+            var out: std.Io.Writer.Allocating = .init(alloc);
+            errdefer out.deinit();
+            try out.writer.writeAll(if (running) "running" else "idle");
+            if (running and elapsed_s > 0) try out.writer.print(" · {d}s", .{elapsed_s});
+            const hidden = tail.total_lines -| @as(u64, @intCast(tail.lines.len));
+            if (tail.lines.len == 0) {
+                try out.writer.writeAll("\n(no output yet)");
+            } else {
+                if (hidden > 0) try out.writer.print("\n… {d} earlier {s}", .{ hidden, if (hidden == 1) "line" else "lines" });
+                for (tail.lines) |line| try out.writer.print("\n{s}", .{line});
+            }
+            return out.toOwnedSlice();
         }
 
         fn stop(
@@ -459,8 +569,8 @@ test "thread command parses each verb" {
     try std.testing.expectEqualStrings("fix the login bug", new.task);
     const send = (try parse("send fix-auth  also check logout")).send;
     try std.testing.expectEqualStrings("also check logout", send.message);
-    try std.testing.expectEqual(@as(usize, 40), (try parse("watch a")).watch.lines);
-    try std.testing.expectEqual(@as(usize, 5), (try parse("watch a 5")).watch.lines);
+    try std.testing.expect((try parse("watch a")).watch.lines == null);
+    try std.testing.expectEqual(@as(usize, 5), (try parse("watch a 5")).watch.lines.?);
     try std.testing.expectEqualStrings("a", (try parse("stop a")).stop);
     try std.testing.expectEqualStrings("b", (try parse("rename a b")).rename.new);
     try std.testing.expectEqualStrings("a", (try parse("delete a")).delete);

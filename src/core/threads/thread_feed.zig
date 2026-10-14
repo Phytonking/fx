@@ -20,6 +20,9 @@ pub const Feed = struct {
     lines: std.ArrayList([]u8) = .empty,
     /// Text of a line the producer has not finished with a newline yet.
     partial: std.ArrayList(u8) = .empty,
+    /// Where the producer is inside an escape sequence, so one split across
+    /// two chunks is still dropped whole.
+    escape: EscapeState = .none,
     /// Sequence number of `lines.items[0]`.
     first_seq: u64 = 0,
     max_lines: usize = default_max_lines,
@@ -42,6 +45,7 @@ pub const Feed = struct {
         self.mutex.lockUncancelable(io_mod.getIo());
         defer self.mutex.unlock(io_mod.getIo());
         for (text) |byte| {
+            if (self.escape.consume(byte)) continue;
             if (byte == '\n') {
                 self.flushPartialLocked();
                 continue;
@@ -124,6 +128,42 @@ pub const Feed = struct {
         return .{ .lines = out, .next_seq = end, .dropped = dropped };
     }
 
+    pub const Tail = struct {
+        /// Owned by the caller; free each line and the slice. The last line
+        /// is the unfinished one when the producer is mid-line.
+        lines: [][]u8,
+        /// Complete lines the feed has held in all, including dropped ones.
+        total_lines: u64,
+
+        pub fn deinit(self: Tail, alloc: Allocator) void {
+            for (self.lines) |line| alloc.free(line);
+            alloc.free(self.lines);
+        }
+    };
+
+    /// The newest `max` lines for a live view, counting the unfinished line.
+    pub fn tail(self: *Feed, alloc: Allocator, max: usize) Allocator.Error!Tail {
+        self.mutex.lockUncancelable(io_mod.getIo());
+        defer self.mutex.unlock(io_mod.getIo());
+        const have_partial = self.partial.items.len > 0;
+        const available = self.lines.items.len + @intFromBool(have_partial);
+        const count = @min(max, available);
+        const out = try alloc.alloc([]u8, count);
+        var made: usize = 0;
+        errdefer {
+            for (out[0..made]) |line| alloc.free(line);
+            alloc.free(out);
+        }
+        const skip = available - count;
+        var index: usize = skip;
+        while (index < available) : (index += 1) {
+            const source = if (index < self.lines.items.len) self.lines.items[index] else self.partial.items;
+            out[made] = try alloc.dupe(u8, source);
+            made += 1;
+        }
+        return .{ .lines = out, .total_lines = self.first_seq + self.lines.items.len };
+    }
+
     /// Wall-clock milliseconds of the last append, or 0 before the first.
     pub fn lastActivityMs(self: *const Feed) i64 {
         return self.last_activity_ms.load(.monotonic);
@@ -140,9 +180,14 @@ pub const Feed = struct {
     }
 
     fn pushLineLocked(self: *Feed, line: []const u8) void {
-        const bounded = line[0..@min(line.len, max_line_bytes)];
-        const copy = self.alloc.alloc(u8, bounded.len) catch return;
-        for (bounded, copy) |byte, *slot| slot.* = safeByte(byte);
+        var cleaned: std.ArrayList(u8) = .empty;
+        defer cleaned.deinit(self.alloc);
+        var escape: EscapeState = .none;
+        for (line[0..@min(line.len, max_line_bytes)]) |byte| {
+            if (escape.consume(byte)) continue;
+            cleaned.append(self.alloc, safeByte(byte)) catch return;
+        }
+        const copy = self.alloc.dupe(u8, cleaned.items) catch return;
         if (self.lines.items.len >= self.max_lines) {
             self.alloc.free(self.lines.orderedRemove(0));
             self.first_seq += 1;
@@ -153,7 +198,53 @@ pub const Feed = struct {
     }
 };
 
-/// Control bytes, including ESC, never reach a terminal through the feed.
+/// Drops terminal escape sequences (CSI and OSC) whole, so styling the model
+/// or a tool emitted never reaches the screen and never shows as stray text.
+const EscapeState = enum {
+    none,
+    esc,
+    csi,
+    osc,
+    osc_esc,
+
+    /// True when `byte` belongs to an escape sequence and must be dropped.
+    fn consume(self: *EscapeState, byte: u8) bool {
+        switch (self.*) {
+            .none => {
+                if (byte == 0x1b) {
+                    self.* = .esc;
+                    return true;
+                }
+                return false;
+            },
+            .esc => {
+                self.* = switch (byte) {
+                    '[' => .csi,
+                    ']' => .osc,
+                    else => .none,
+                };
+                return true;
+            },
+            // A CSI sequence ends at its first final byte, 0x40 to 0x7e.
+            .csi => {
+                if (byte >= 0x40 and byte <= 0x7e) self.* = .none;
+                return true;
+            },
+            // An OSC string ends at BEL or ESC backslash.
+            .osc => {
+                if (byte == 0x07) self.* = .none;
+                if (byte == 0x1b) self.* = .osc_esc;
+                return true;
+            },
+            .osc_esc => {
+                self.* = if (byte == '\\') .none else .osc;
+                return true;
+            },
+        }
+    }
+};
+
+/// Control bytes never reach a terminal through the feed.
 fn safeByte(byte: u8) u8 {
     return if (byte < 0x20 and byte != '\t' or byte == 0x7f) '?' else byte;
 }
@@ -189,14 +280,14 @@ test "feed drops the oldest lines past its bound and reports the gap" {
     try std.testing.expectEqual(@as(u64, 5), read.next_seq);
 }
 
-test "feed replaces terminal control bytes" {
+test "feed replaces control bytes other than escape sequences" {
     const alloc = std.testing.allocator;
     var feed = Feed.init(alloc);
     defer feed.deinit();
-    feed.appendLine("a\x1b[31mred\x07");
+    feed.appendLine("a\x07b\x7fc");
     const read = try feed.readSince(alloc, 0);
     defer read.deinit(alloc);
-    try std.testing.expectEqualStrings("a?[31mred?", read.lines[0]);
+    try std.testing.expectEqualStrings("a?b?c", read.lines[0]);
 }
 
 test "feed records tool lifecycle and notices from worker events" {
@@ -208,4 +299,33 @@ test "feed records tool lifecycle and notices from worker events" {
     defer read.deinit(alloc);
     try std.testing.expectEqualStrings("model: slow", read.lines[0]);
     try std.testing.expect(feed.lastActivityMs() > 0);
+}
+
+test "feed drops escape sequences, even when a chunk boundary splits one" {
+    const alloc = std.testing.allocator;
+    var feed = Feed.init(alloc);
+    defer feed.deinit();
+    feed.appendText("\x1b[2m1.\x1b[22m Cross \x1b");
+    feed.appendText("[1;31mthe\x1b[0m line\n");
+    feed.appendText("link \x1b]8;;https://example.com\x07here\x1b]8;;\x07\n");
+    feed.appendLine("\x1b[31mred\x1b[0m");
+    const read = try feed.readSince(alloc, 0);
+    defer read.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 3), read.lines.len);
+    try std.testing.expectEqualStrings("1. Cross the line", read.lines[0]);
+    try std.testing.expectEqualStrings("link here", read.lines[1]);
+    try std.testing.expectEqualStrings("red", read.lines[2]);
+}
+
+test "feed tail includes the unfinished line and counts total lines" {
+    const alloc = std.testing.allocator;
+    var feed = Feed.init(alloc);
+    defer feed.deinit();
+    feed.appendText("one\ntwo\nthr");
+    const tail = try feed.tail(alloc, 2);
+    defer tail.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 2), tail.lines.len);
+    try std.testing.expectEqualStrings("two", tail.lines[0]);
+    try std.testing.expectEqualStrings("thr", tail.lines[1]);
+    try std.testing.expectEqual(@as(u64, 2), tail.total_lines);
 }

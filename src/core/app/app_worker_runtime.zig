@@ -2,6 +2,7 @@ const std = @import("std");
 const credentials = @import("../auth/credentials.zig");
 const activity_status = @import("../output/activity_status.zig");
 const app_session_runtime = @import("app_session_runtime.zig");
+const app_thread_runtime = @import("app_thread_runtime.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const diff_mod = @import("../output/diff.zig");
 const file_mutation_contract = @import("../tooling/file_mutation_contract.zig");
@@ -845,6 +846,8 @@ pub fn Runtime(comptime App: type) type {
             if (!try authorizeInteractiveAdmission(app)) return;
             try drainEvents(app, event_handlers);
             syncState(app, event_handlers.tool_lifecycle);
+
+            if (comptime @hasField(App, "thread_watch")) app_thread_runtime.Runtime(App).tickWatch(app);
 
             const now_ms = io_mod.milliTimestamp();
             if (app.shell.worker_status_state().expire_transient(now_ms)) {

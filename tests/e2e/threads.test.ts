@@ -701,3 +701,60 @@ test.skipIf(SKIP_TMUX)("/thread completes its verbs from the composer", async ()
     gateway.stop();
   }
 }, 60_000);
+
+test.skipIf(SKIP_TMUX)("/thread watch follows a running thread live and settles when it finishes", async () => {
+  const fixture = createFixture("follow");
+  const encoder = new TextEncoder();
+  const gateway = startDynamicFakeGateway(
+    raw => {
+      if (!String(raw).includes("write hello")) return fakeGatewayFinalText("MAIN_ANSWER_OK");
+      // A reply that arrives a line at a time, styled the way a model's markdown is.
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async start(controller) {
+            for (let step = 1; step <= 14; step++) {
+              const delta = `\u001b[2m${step}.\u001b[22m step number ${step} of the plan\n`;
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "text-delta", id: "a", delta })}\n\n`));
+              await Bun.sleep(350);
+            }
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+              type: "finish",
+              finishReason: { unified: "stop", raw: "stop" },
+              usage: { inputTokens: { total: 3 }, outputTokens: { total: 5 } },
+            })}\n\ndata: [DONE]\n\n`));
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    },
+    { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] },
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("/thread new alpha write hello");
+    await tui.waitForText("Started thread alpha", 20000);
+    await tui.sendText("/thread watch alpha");
+
+    // The same entry keeps updating while the thread works: new steps appear
+    // and old ones scroll out of the window, with no second copy of the view.
+    await tui.waitForText("running", 10000);
+    await tui.waitForText("step number 9 of the plan", 15000);
+    await tui.waitForText("earlier line", 5000);
+    const midway = (await tui.capturePaneGrid()).join("\n");
+    expect(midway).not.toContain("step number 1 of the plan");
+    expect((midway.match(/alpha: /g) ?? []).length).toBe(1);
+    // Styling from the model is dropped, not shown as stray characters.
+    expect(midway).not.toContain("?[2m");
+
+    // When the thread finishes the view settles as history and says so.
+    await tui.waitForText("step number 14 of the plan", 15000);
+    await tui.waitForText("alpha: idle", 10000);
+    const done = (await tui.capturePaneGrid()).join("\n");
+    expect(done).not.toContain("alpha: running");
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 120_000);
