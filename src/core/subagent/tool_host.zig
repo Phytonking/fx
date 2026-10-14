@@ -23,6 +23,7 @@ const session_store = @import("../session/session_store.zig");
 const tool_set_contract = @import("../tooling/tool_set.zig");
 const tool_result_limits = @import("../tooling/tool_result_limits.zig");
 const types = @import("../shared/types.zig");
+const thread_feed = @import("../threads/thread_feed.zig");
 
 const Allocator = std.mem.Allocator;
 /// Bounds how long a parent wait takes to observe cancellation or steering,
@@ -135,6 +136,10 @@ pub const Runtime = struct {
     admission_mutex: std.Io.Mutex = .init,
     yielded_mutex: std.Io.Mutex = .init,
     yielded: std.ArrayList(YieldedWork) = .empty,
+    /// Live feeds of the threads this host runs, by child id. A feed outlives
+    /// the turn that fills it so a watcher can read what a finished turn said.
+    feeds_mutex: std.Io.Mutex = .init,
+    feeds: std.StringHashMapUnmanaged(*thread_feed.Feed) = .empty,
 
     const YieldedWork = struct { child_id: []u8, work_id: []u8, max_result_bytes: usize, result: ?ManagedExecutionResult = null, delivered: bool = false };
     pub const YieldedResult = struct { child_id: []const u8, work_id: []const u8, body: []const u8, max_result_bytes: usize, delivered: bool, receipt_sequence: u64 = 0 };
@@ -206,6 +211,7 @@ pub const Runtime = struct {
         self.yielded.deinit(self.alloc);
         self.managed.deinit();
         self.approvals.deinit();
+        self.deinitFeeds();
         self.alloc.free(self.root_id);
         const alloc = self.alloc;
         self.* = undefined;
@@ -477,7 +483,170 @@ pub const Runtime = struct {
             },
             .authority_resolver = &self.authority_resolver,
             .approvals = &self.approvals,
+            .feed_context = self,
+            .feed_for_fn = feedForChild,
         };
+    }
+
+    fn feedForChild(raw: ?*anyopaque, child_id: []const u8) ?*thread_feed.Feed {
+        const self: *Runtime = @ptrCast(@alignCast(raw.?));
+        return self.feedFor(child_id);
+    }
+
+    fn deinitFeeds(self: *Runtime) void {
+        var it = self.feeds.iterator();
+        while (it.next()) |entry| {
+            self.alloc.free(entry.key_ptr.*);
+            entry.value_ptr.*.deinit();
+            self.alloc.destroy(entry.value_ptr.*);
+        }
+        self.feeds.deinit(self.alloc);
+    }
+
+    /// The feed of a thread, or null when the child is not a watched thread.
+    /// The pointer stays valid until the host is destroyed.
+    pub fn feedFor(self: *Runtime, child_id: []const u8) ?*thread_feed.Feed {
+        self.feeds_mutex.lockUncancelable(io_mod.getIo());
+        defer self.feeds_mutex.unlock(io_mod.getIo());
+        return self.feeds.get(child_id);
+    }
+
+    fn ensureFeed(self: *Runtime, child_id: []const u8) !*thread_feed.Feed {
+        self.feeds_mutex.lockUncancelable(io_mod.getIo());
+        defer self.feeds_mutex.unlock(io_mod.getIo());
+        if (self.feeds.get(child_id)) |existing| return existing;
+        const key = try self.alloc.dupe(u8, child_id);
+        errdefer self.alloc.free(key);
+        const feed = try self.alloc.create(thread_feed.Feed);
+        errdefer self.alloc.destroy(feed);
+        feed.* = thread_feed.Feed.init(self.alloc);
+        try self.feeds.put(self.alloc, key, feed);
+        return feed;
+    }
+
+    pub const ThreadSend = union(enum) {
+        /// A new work item started. Owned child id.
+        started: []u8,
+        /// The thread was mid-turn; the text joined it as steering.
+        steered,
+        /// Refused. The code is a static string.
+        rejected: []const u8,
+
+        pub fn deinit(self: ThreadSend, alloc: Allocator) void {
+            switch (self) {
+                .started => |id| alloc.free(id),
+                .steered, .rejected => {},
+            }
+        }
+    };
+
+    /// Starts or continues the named thread with `message` and returns at
+    /// once; the turn runs on its own agent thread. A thread that is already
+    /// running takes the text as steering. Unlike the model tool path this
+    /// never registers a yielded result, so the end of the root's turn leaves
+    /// the thread running.
+    pub fn sendThread(
+        self: *Runtime,
+        alloc: Allocator,
+        name: []const u8,
+        message: []const u8,
+        options: ExecuteOptions,
+    ) !ThreadSend {
+        if (!std.mem.eql(u8, options.caller_id, self.root_id)) return .{ .rejected = "caller_unavailable" };
+        var request = model_contract.validateRequest(alloc, .{ .message = .{
+            .agent = name,
+            .message = message,
+        } }) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.InvalidAgent => .{ .rejected = "invalid_thread_name" },
+            else => .{ .rejected = "invalid_message" },
+        };
+        defer request.deinit(alloc);
+        const identity_epoch = if (options.identity_epoch != 0)
+            options.identity_epoch
+        else
+            self.issueOperationIdentity(options.invocation_id);
+        const operation_id = try operationIdAlloc(alloc, options.invocation_id, identity_epoch);
+        defer alloc.free(operation_id);
+
+        var attempts: usize = 0;
+        while (attempts < 100) : (attempts += 1) {
+            var arena = std.heap.ArenaAllocator.init(self.alloc);
+            defer arena.deinit();
+            var admitted = blk: {
+                self.admission_mutex.lockUncancelable(io_mod.getIo());
+                defer self.admission_mutex.unlock(io_mod.getIo());
+                break :blk try self.admitManagedWork(arena.allocator(), request, operation_id, options, null);
+            };
+            defer admitted.deinit(arena.allocator());
+            switch (admitted) {
+                .ready => |ready| {
+                    _ = try self.ensureFeed(ready.child_id);
+                    _ = self.managed.start(ready.child_id) catch |err| {
+                        debug_trace.logf("subagent", "thread start failed child_id={s} err={s}", .{ ready.child_id, @errorName(err) });
+                        return .{ .rejected = "start_failed" };
+                    };
+                    return .{ .started = try alloc.dupe(u8, ready.child_id) };
+                },
+                .feedback => |target| {
+                    const result = try self.managed.steer(
+                        target.child_id,
+                        target.work_id,
+                        operation_id,
+                        model_contract.requestFingerprint(request),
+                        message,
+                    );
+                    switch (result) {
+                        .receipt => return .steered,
+                        // The turn ended between admission and steering; admit again.
+                        .waiting => io_mod.sleep(terminal_wait_pulse_ms * std.time.ns_per_ms),
+                        .capacity => return .{ .rejected = "steering_capacity" },
+                        .cancelled => return .{ .rejected = "thread_cancelled" },
+                        .conflict => return .{ .rejected = "operation_conflict" },
+                        .unavailable => return .{ .rejected = "state_unavailable" },
+                    }
+                },
+                .completed => return .{ .rejected = "duplicate_operation" },
+                .rejected => |failure| return .{ .rejected = failure.code },
+            }
+        }
+        return .{ .rejected = "thread_busy" };
+    }
+
+    pub const ThreadStatus = struct {
+        /// Owned.
+        child_id: []u8,
+        phase: child_state.Phase,
+        last_outcome: ?child_state.Outcome,
+        /// Present while a turn is queued or running. Owned.
+        active_message: ?[]u8,
+
+        pub fn deinit(self: ThreadStatus, alloc: Allocator) void {
+            alloc.free(self.child_id);
+            if (self.active_message) |m| alloc.free(m);
+        }
+    };
+
+    /// Current state of the named thread, or null when this host has none.
+    pub fn threadStatus(self: *Runtime, alloc: Allocator, name: []const u8) !?ThreadStatus {
+        var registry = try self.managed.state_store.load(alloc);
+        defer registry.deinit(alloc);
+        const child = registry.findPersistent(name) orelse return null;
+        const id = try alloc.dupe(u8, child.id);
+        errdefer alloc.free(id);
+        const message = if (child.active) |active| try alloc.dupe(u8, active.message) else null;
+        return .{
+            .child_id = id,
+            .phase = child.phase,
+            .last_outcome = child.last_outcome,
+            .active_message = message,
+        };
+    }
+
+    /// Stops the thread's running turn. The thread keeps its session and can
+    /// take new messages.
+    pub fn cancelThread(self: *Runtime, child_id: []const u8) !void {
+        try self.managed.cancel(child_id);
     }
 
     fn childStateStore(self: *Runtime) child_state.Store {

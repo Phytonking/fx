@@ -5021,6 +5021,9 @@ test {
     _ = @import("tools/web/html_to_markdown.zig");
     _ = @import("tools/filesystem/read_file.zig");
     _ = @import("tools/session/read_tool_result.zig");
+    _ = @import("core/threads/thread_registry.zig");
+    _ = @import("core/threads/thread_feed.zig");
+    _ = @import("core/app/app_thread_runtime.zig");
     _ = @import("tools/skills/install_skill.zig");
     _ = @import("tools/skills/skill.zig");
     _ = @import("core/upgrade/upgrade_helpers.zig");

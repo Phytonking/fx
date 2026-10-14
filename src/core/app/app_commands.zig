@@ -2,6 +2,7 @@ const std = @import("std");
 const runtime_profile = @import("../hosts/runtime_profile.zig");
 const app_permission_runtime = @import("app_permission_runtime.zig");
 const app_session_runtime = @import("app_session_runtime.zig");
+const app_thread_runtime = @import("app_thread_runtime.zig");
 const app_lifecycle = @import("app_lifecycle.zig");
 const app_bootstrap_runtime = @import("app_bootstrap_runtime.zig");
 const io_mod = @import("../shared/io.zig");
@@ -406,6 +407,7 @@ pub fn Handlers(comptime App: type) type {
                 .handle_notifications = commandHandleNotifications,
                 .handle_workspace = commandHandleWorkspace,
                 .handle_shell = commandHandleShell,
+                .handle_thread = commandHandleThread,
                 .show_version = commandShowVersion,
                 .unknown = commandUnknown,
             };
@@ -1981,6 +1983,11 @@ pub fn Handlers(comptime App: type) type {
         fn commandHandleNotifications(ctx: *anyopaque, rest: []const u8) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
             try handleNotificationsCommand(app, rest);
+        }
+
+        fn commandHandleThread(ctx: *anyopaque, rest: []const u8) !void {
+            const app: *App = @ptrCast(@alignCast(ctx));
+            try app_thread_runtime.Runtime(App).handle(app, rest);
         }
 
         fn commandHandleShell(ctx: *anyopaque, rest: []const u8) !void {

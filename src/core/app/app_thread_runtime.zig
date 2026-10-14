@@ -1,0 +1,361 @@
+//! `/thread`: named threads of work that run beside the current session.
+//!
+//! A thread is a persistent subagent child of the root session with its own
+//! saved session and context. This file parses the slash command and drives
+//! the subagent host; `core/threads` holds the pure parts.
+
+const std = @import("std");
+const io_mod = @import("../shared/io.zig");
+const app_permission_runtime = @import("app_permission_runtime.zig");
+const app_session_runtime = @import("app_session_runtime.zig");
+const provider_runtime = @import("provider_runtime.zig");
+const subagent_tool_host = @import("../subagent/tool_host.zig");
+const child_state = @import("../subagent/child_state.zig");
+const thread_registry = @import("../threads/thread_registry.zig");
+const thread_feed = @import("../threads/thread_feed.zig");
+
+const Allocator = std.mem.Allocator;
+
+pub const usage = "usage: /thread new NAME TASK | list | watch NAME [LINES] | send NAME MESSAGE | stop NAME | rename OLD NEW | delete NAME";
+const default_watch_lines: usize = 40;
+
+pub const Action = union(enum) {
+    list,
+    new: struct { name: []const u8, task: []const u8 },
+    watch: struct { name: []const u8, lines: usize },
+    send: struct { name: []const u8, message: []const u8 },
+    stop: []const u8,
+    rename: struct { old: []const u8, new: []const u8 },
+    delete: []const u8,
+};
+
+pub const ParseError = error{InvalidThreadCommand};
+
+/// Borrows from `rest`.
+pub fn parse(rest: []const u8) ParseError!Action {
+    const trimmed = std.mem.trim(u8, rest, " \t");
+    if (trimmed.len == 0) return .list;
+    const verb, const tail = splitWord(trimmed);
+    if (std.mem.eql(u8, verb, "list")) {
+        if (tail.len != 0) return error.InvalidThreadCommand;
+        return .list;
+    }
+    if (std.mem.eql(u8, verb, "new")) {
+        const name, const task = splitWord(tail);
+        if (name.len == 0 or task.len == 0) return error.InvalidThreadCommand;
+        return .{ .new = .{ .name = name, .task = task } };
+    }
+    if (std.mem.eql(u8, verb, "send")) {
+        const name, const message = splitWord(tail);
+        if (name.len == 0 or message.len == 0) return error.InvalidThreadCommand;
+        return .{ .send = .{ .name = name, .message = message } };
+    }
+    if (std.mem.eql(u8, verb, "watch")) {
+        const name, const count = splitWord(tail);
+        if (name.len == 0) return error.InvalidThreadCommand;
+        const lines = if (count.len == 0)
+            default_watch_lines
+        else
+            std.fmt.parseInt(usize, count, 10) catch return error.InvalidThreadCommand;
+        if (lines == 0 or lines > thread_feed.default_max_lines) return error.InvalidThreadCommand;
+        return .{ .watch = .{ .name = name, .lines = lines } };
+    }
+    if (std.mem.eql(u8, verb, "stop") or std.mem.eql(u8, verb, "delete")) {
+        const name, const extra = splitWord(tail);
+        if (name.len == 0 or extra.len != 0) return error.InvalidThreadCommand;
+        return if (verb[0] == 's') .{ .stop = name } else .{ .delete = name };
+    }
+    if (std.mem.eql(u8, verb, "rename")) {
+        const old, const new_tail = splitWord(tail);
+        const new, const extra = splitWord(new_tail);
+        if (old.len == 0 or new.len == 0 or extra.len != 0) return error.InvalidThreadCommand;
+        return .{ .rename = .{ .old = old, .new = new } };
+    }
+    return error.InvalidThreadCommand;
+}
+
+fn splitWord(text: []const u8) struct { []const u8, []const u8 } {
+    const trimmed = std.mem.trim(u8, text, " \t");
+    const end = std.mem.findAny(u8, trimmed, " \t") orelse return .{ trimmed, "" };
+    return .{ trimmed[0..end], std.mem.trim(u8, trimmed[end..], " \t") };
+}
+
+pub fn Runtime(comptime App: type) type {
+    const SessionRuntime = app_session_runtime.Runtime(App);
+
+    return struct {
+        pub fn handle(app: *App, rest: []const u8) !void {
+            const action = parse(rest) catch {
+                try notice(app, .@"error", "", usage);
+                return;
+            };
+            const host = SessionRuntime.subagentHost(app) orelse {
+                try notice(app, .@"error", "thread", "Threads need a saved session in the default session format.");
+                return;
+            };
+            const root_id = SessionRuntime.activeSessionId(app) orelse {
+                try notice(app, .@"error", "thread", "No active session.");
+                return;
+            };
+            const home = io_mod.homeDir() orelse {
+                try notice(app, .@"error", "thread", "No home directory for thread state.");
+                return;
+            };
+            var registry = thread_registry.load(app.alloc, home, root_id) catch |err| {
+                try noticeFmt(app, .@"error", "thread", "Thread list unreadable: {s}", .{@errorName(err)});
+                return;
+            };
+            defer registry.deinit(app.alloc);
+
+            switch (action) {
+                .list => try list(app, host, &registry),
+                .new => |a| try create(app, host, &registry, root_id, home, a.name, a.task),
+                .send => |a| try send(app, host, &registry, root_id, a.name, a.message),
+                .watch => |a| try watch(app, host, &registry, a.name, a.lines),
+                .stop => |name| try stop(app, host, &registry, name),
+                .rename => |a| try rename(app, &registry, home, a.old, a.new),
+                .delete => |name| try remove(app, host, &registry, home, name),
+            }
+        }
+
+        fn list(app: *App, host: *subagent_tool_host.Runtime, registry: *const thread_registry.Registry) !void {
+            if (registry.threads.items.len == 0) {
+                try notice(app, .neutral, "thread", "No threads yet. Start one with /thread new NAME TASK.");
+                return;
+            }
+            var out: std.Io.Writer.Allocating = .init(app.alloc);
+            defer out.deinit();
+            const now = io_mod.milliTimestamp();
+            for (registry.threads.items) |t| {
+                const status = try host.threadStatus(app.alloc, t.agent);
+                defer if (status) |s| s.deinit(app.alloc);
+                try out.writer.print("{s}  {s}", .{ t.name, if (status) |s| phaseLabel(s.phase) else "not started" });
+                if (status) |s| if (host.feedFor(s.child_id)) |feed| {
+                    const last = feed.lastActivityMs();
+                    if (last > 0) try out.writer.print("  active {d}s ago", .{@divTrunc(@max(now - last, 0), 1000)});
+                };
+                try out.writer.writeByte('\n');
+            }
+            try notice(app, .neutral, "threads", std.mem.trimEnd(u8, out.written(), "\n"));
+        }
+
+        fn create(
+            app: *App,
+            host: *subagent_tool_host.Runtime,
+            registry: *thread_registry.Registry,
+            root_id: []const u8,
+            home: []const u8,
+            name: []const u8,
+            task: []const u8,
+        ) !void {
+            thread_registry.validateName(name) catch |err| {
+                try notice(app, .@"error", "thread", nameProblem(err));
+                return;
+            };
+            if (registry.find(name) != null) {
+                try noticeFmt(app, .@"error", "thread", "A thread named {s} already exists.", .{name});
+                return;
+            }
+            const now = io_mod.milliTimestamp();
+            const agent = try thread_registry.agentNameFor(app.alloc, name, @intCast(now));
+            defer app.alloc.free(agent);
+            var id_buf: [96]u8 = undefined;
+            const outcome = try host.sendThread(app.alloc, agent, task, executeOptions(app, root_id, invocationId(&id_buf, "new")));
+            defer outcome.deinit(app.alloc);
+            switch (outcome) {
+                .started => {
+                    try registry.add(app.alloc, name, agent, now);
+                    thread_registry.save(app.alloc, home, registry) catch |err| {
+                        try noticeFmt(app, .warning, "thread", "Started {s}, but the thread list was not saved ({s}).", .{ name, @errorName(err) });
+                        return;
+                    };
+                    try noticeFmt(app, .success, "thread", "Started thread {s}.", .{name});
+                },
+                .steered => try notice(app, .@"error", "thread", "Thread already running."),
+                .rejected => |code| try noticeFmt(app, .@"error", "thread", "Could not start {s}: {s}", .{ name, code }),
+            }
+        }
+
+        fn send(
+            app: *App,
+            host: *subagent_tool_host.Runtime,
+            registry: *const thread_registry.Registry,
+            root_id: []const u8,
+            name: []const u8,
+            message: []const u8,
+        ) !void {
+            const t = registry.find(name) orelse return missing(app, name);
+            var id_buf: [96]u8 = undefined;
+            const outcome = try host.sendThread(app.alloc, t.agent, message, executeOptions(app, root_id, invocationId(&id_buf, "send")));
+            defer outcome.deinit(app.alloc);
+            switch (outcome) {
+                .started => try noticeFmt(app, .success, "thread", "Sent to {s}; it is working on it.", .{name}),
+                .steered => try noticeFmt(app, .success, "thread", "Sent to {s}; it was mid-turn, so the text joins that turn.", .{name}),
+                .rejected => |code| try noticeFmt(app, .@"error", "thread", "Could not send to {s}: {s}", .{ name, code }),
+            }
+        }
+
+        fn watch(
+            app: *App,
+            host: *subagent_tool_host.Runtime,
+            registry: *const thread_registry.Registry,
+            name: []const u8,
+            lines: usize,
+        ) !void {
+            const t = registry.find(name) orelse return missing(app, name);
+            const status = (try host.threadStatus(app.alloc, t.agent)) orelse {
+                try noticeFmt(app, .@"error", "thread", "Thread {s} has not started.", .{name});
+                return;
+            };
+            defer status.deinit(app.alloc);
+            const feed = host.feedFor(status.child_id) orelse {
+                try noticeFmt(app, .neutral, name, "{s}. Nothing recorded in this process yet.", .{phaseLabel(status.phase)});
+                return;
+            };
+            const read = try feed.readSince(app.alloc, 0);
+            defer read.deinit(app.alloc);
+            var out: std.Io.Writer.Allocating = .init(app.alloc);
+            defer out.deinit();
+            try out.writer.print("{s}\n", .{phaseLabel(status.phase)});
+            const from = read.lines.len -| lines;
+            for (read.lines[from..]) |line| try out.writer.print("{s}\n", .{line});
+            try notice(app, .neutral, name, std.mem.trimEnd(u8, out.written(), "\n"));
+        }
+
+        fn stop(
+            app: *App,
+            host: *subagent_tool_host.Runtime,
+            registry: *const thread_registry.Registry,
+            name: []const u8,
+        ) !void {
+            const t = registry.find(name) orelse return missing(app, name);
+            const status = (try host.threadStatus(app.alloc, t.agent)) orelse {
+                try noticeFmt(app, .neutral, "thread", "Thread {s} is not running.", .{name});
+                return;
+            };
+            defer status.deinit(app.alloc);
+            if (status.phase != .running and status.phase != .awaiting_approval) {
+                try noticeFmt(app, .neutral, "thread", "Thread {s} is not running.", .{name});
+                return;
+            }
+            host.cancelThread(status.child_id) catch |err| {
+                try noticeFmt(app, .@"error", "thread", "Could not stop {s}: {s}", .{ name, @errorName(err) });
+                return;
+            };
+            try noticeFmt(app, .success, "thread", "Stopping {s}.", .{name});
+        }
+
+        fn rename(app: *App, registry: *thread_registry.Registry, home: []const u8, old: []const u8, new: []const u8) !void {
+            registry.rename(app.alloc, old, new) catch |err| switch (err) {
+                error.ThreadNotFound => return missing(app, old),
+                error.DuplicateThreadName => {
+                    try noticeFmt(app, .@"error", "thread", "A thread named {s} already exists.", .{new});
+                    return;
+                },
+                error.InvalidThreadName, error.ReservedThreadName => {
+                    try notice(app, .@"error", "thread", nameProblem(err));
+                    return;
+                },
+                else => return err,
+            };
+            try thread_registry.save(app.alloc, home, registry);
+            try noticeFmt(app, .success, "thread", "Renamed {s} to {s}.", .{ old, new });
+        }
+
+        fn remove(
+            app: *App,
+            host: *subagent_tool_host.Runtime,
+            registry: *thread_registry.Registry,
+            home: []const u8,
+            name: []const u8,
+        ) !void {
+            const t = registry.find(name) orelse return missing(app, name);
+            if (try host.threadStatus(app.alloc, t.agent)) |status| {
+                defer status.deinit(app.alloc);
+                if (status.phase == .running or status.phase == .awaiting_approval) {
+                    try noticeFmt(app, .@"error", "thread", "Thread {s} is running. Stop it first with /thread stop {s}.", .{ name, name });
+                    return;
+                }
+            }
+            try registry.remove(app.alloc, name);
+            try thread_registry.save(app.alloc, home, registry);
+            try noticeFmt(app, .success, "thread", "Removed thread {s}. Its saved session stays on disk.", .{name});
+        }
+
+        fn missing(app: *App, name: []const u8) !void {
+            try noticeFmt(app, .@"error", "thread", "No thread named {s}. List them with /thread list.", .{name});
+        }
+
+        fn executeOptions(app: *App, root_id: []const u8, invocation_id: []const u8) subagent_tool_host.ExecuteOptions {
+            const settings = app.worker.effectiveAgentTurnSettings();
+            return .{
+                .caller_id = root_id,
+                .invocation_id = invocation_id,
+                .parent_permission_mode = app_permission_runtime.Runtime(App).livePermissionSnapshot(app).mode,
+                .defaults = .{
+                    .provider = provider_runtime.provider(app),
+                    .model = provider_runtime.model(app),
+                    .effort = settings.effort,
+                    .fast_mode = settings.fast_mode,
+                    .ultrafast_mode = settings.ultrafast_mode,
+                    .conversation_language = app.session.languageSnapshot(),
+                },
+                .max_result_bytes = settings.max_tool_result_bytes,
+                .timestamp_ms = io_mod.milliTimestamp(),
+            };
+        }
+
+        /// A fresh id per command, so each send is its own operation.
+        fn invocationId(buf: []u8, verb: []const u8) []const u8 {
+            return std.mem.print(buf, "thread-{s}-{d}", .{ verb, io_mod.nanoTimestamp() }) catch "thread-op";
+        }
+
+        fn notice(app: *App, tone: anytype, topic: []const u8, body: []const u8) !void {
+            try app.writeDomainNotice(.{ .topic = topic, .tone = tone, .body = body }, true);
+        }
+
+        fn noticeFmt(app: *App, tone: anytype, topic: []const u8, comptime fmt: []const u8, args: anytype) !void {
+            const body = try app.alloc.print(fmt, args);
+            defer app.alloc.free(body);
+            try notice(app, tone, topic, body);
+        }
+    };
+}
+
+fn phaseLabel(phase: child_state.Phase) []const u8 {
+    return switch (phase) {
+        .idle => "idle",
+        .running => "running",
+        .awaiting_approval => "waiting for approval",
+        .interrupted => "interrupted",
+        .finished => "finished",
+    };
+}
+
+fn nameProblem(err: anyerror) []const u8 {
+    return switch (err) {
+        error.ReservedThreadName => "main is the current session and cannot be a thread name.",
+        else => "Thread names use lowercase letters, digits, - and _, start with a letter or digit, and stay within 32 characters.",
+    };
+}
+
+test "thread command parses each verb" {
+    try std.testing.expect((try parse("")) == .list);
+    try std.testing.expect((try parse("list")) == .list);
+    const new = (try parse("new fix-auth fix the login bug")).new;
+    try std.testing.expectEqualStrings("fix-auth", new.name);
+    try std.testing.expectEqualStrings("fix the login bug", new.task);
+    const send = (try parse("send fix-auth  also check logout")).send;
+    try std.testing.expectEqualStrings("also check logout", send.message);
+    try std.testing.expectEqual(@as(usize, 40), (try parse("watch a")).watch.lines);
+    try std.testing.expectEqual(@as(usize, 5), (try parse("watch a 5")).watch.lines);
+    try std.testing.expectEqualStrings("a", (try parse("stop a")).stop);
+    try std.testing.expectEqualStrings("b", (try parse("rename a b")).rename.new);
+    try std.testing.expectEqualStrings("a", (try parse("delete a")).delete);
+}
+
+test "thread command rejects malformed input" {
+    for ([_][]const u8{ "new", "new a", "send a", "watch", "watch a 0", "watch a x", "stop", "stop a b", "rename a", "frob", "list x" }) |bad| {
+        try std.testing.expectError(error.InvalidThreadCommand, parse(bad));
+    }
+}
