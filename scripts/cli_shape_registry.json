@@ -379,6 +379,50 @@
     "--print": "Long form of -p, matched only to point to fx ask.",
     "--print=": "Inline form of --print, matched only to point to fx ask."
   },
+  "run_options": {
+    "_about": "One row per option a run can set, named on every surface: the agent-run flag, the setting, its FX_* variable, the ACP config option, and the libfx option. Names may differ by surface, as ACP's mode does, but each one is written here. check_cli_shape fails when ACP offers a config option or libfx's FxModelOptions declares a field that no row names, or when a row names something that doesn't exist.",
+    "effort": {
+      "flag": "--effort",
+      "setting": "effort",
+      "env": "FX_EFFORT",
+      "acp": "effort",
+      "libfx": "model.effort"
+    },
+    "fast": {
+      "flag": "--fast",
+      "setting": "fast_mode",
+      "env": "FX_FAST",
+      "acp": "fast",
+      "libfx": "model.fast"
+    },
+    "model": {
+      "flag": "--model",
+      "setting": "models",
+      "env": "FX_MODEL",
+      "acp": "model",
+      "libfx": "model.id"
+    },
+    "permission_mode": {
+      "flag": "--permission-mode",
+      "setting": "permission_mode",
+      "env": "FX_PERMISSION_MODE",
+      "acp": "mode"
+    },
+    "provider": {
+      "flag": "--provider",
+      "setting": "provider",
+      "env": "FX_PROVIDER",
+      "acp": "provider",
+      "libfx": "provider"
+    },
+    "ultrafast": {
+      "flag": "--ultrafast",
+      "setting": "ultrafast_mode",
+      "env": "FX_ULTRAFAST",
+      "acp": "ultrafast",
+      "libfx": "model.ultrafast"
+    }
+  },
   "exceptions": {
     "flag_names": {
       "--resume-": "Prefix of the removed --resume-<id> alias, kept so the removed spelling fails with a hint."

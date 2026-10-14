@@ -37,6 +37,8 @@ CLI_SURFACE = "src/core/cli/cli_surface.zig"
 CLI_ASK = "src/core/cli/cli_ask.zig"
 CONFIG_RUNTIME = "src/core/config/config_runtime.zig"
 SETTINGS_KEYS = "src/core/config/settings_keys.zig"
+ACP_SESSIONS = "src/acp/sessions.zig"
+LIBFX_TYPES = "sdk/types/libfx.d.cts"
 
 JOBS = {
     "setting-override",
@@ -57,6 +59,9 @@ FX_LITERAL = re.compile(r'"(FX_[A-Z0-9_]+)"')
 GETENV_LITERAL = re.compile(r'getenv\("([A-Za-z_][A-Za-z0-9_]*)"\)')
 FLAG_LITERAL = re.compile(r'"(--?[A-Za-z0-9][A-Za-z0-9_<>-]*)=?"')
 KEY_READ = re.compile(r'\.(?:get|getPtr|contains)\("([^"]+)"\)')
+# An ACP config option as sessions.zig writes it: {\"id\":\"model\",\"name\":...
+ACP_CONFIG_ID = re.compile(r'\\"id\\":\\"([a-z_]+)\\",\\"name\\"')
+LIBFX_MODEL_FIELD = re.compile(r"^\s+([a-z][A-Za-z]*)\??:")
 TOP_LEVEL_KEY_READ = re.compile(r'\broot\.object\.(?:get|getPtr|contains)\("([^"]+)"\)')
 SETTING_ENTRY = re.compile(r'\.name = "([^"]+)", \.where = \.([a-z_]+)')
 TEST_START = re.compile(r"^\s*test\b")
@@ -188,6 +193,7 @@ class Checker:
         self.check_flags()
         self.check_parsing()
         self.check_settings()
+        self.check_run_options()
         for kind, entries in self.exceptions.items():
             for value in entries:
                 if (kind, value) not in self.used_exceptions:
@@ -350,6 +356,61 @@ class Checker:
                     "doesn't read it. Mark it .profile, or read it there.",
                     SETTINGS_KEYS,
                 )
+
+    def check_run_options(self) -> None:
+        """Each option a run can set has one row naming it on every surface,
+        so an ACP config option or a libfx model option can't drift from the
+        flag, setting, and variable it stands for."""
+        rows = {name: row for name, row in self.registry.get("run_options", {}).items() if not name.startswith("_")}
+        if not rows:
+            self.report(None, "names", "the registry needs a run_options table")
+            return
+        commands = "\n".join(line.text for line in self.lines(COMMANDS))
+        settings = {match.group(1) for line in self.lines(SETTINGS_KEYS) if (match := SETTING_ENTRY.search(line.text))}
+        env = self.registry.get("env", {})
+        libfx = (self.root / LIBFX_TYPES).read_text()
+        for name, row in sorted(rows.items()):
+            if not re.search(rf'"{re.escape(str(row.get("flag")))}(?=[ ",])', commands):
+                self.report(None, "names", f'run_options "{name}" names flag {row.get("flag")}, which {COMMANDS} doesn\'t list')
+            if row.get("setting") not in settings:
+                self.report(None, "names", f'run_options "{name}" names setting {row.get("setting")}, which {SETTINGS_KEYS} doesn\'t list')
+            # check_env reports a malformed entry; this reports only a
+            # variable that is missing or does another job.
+            job = env.get(row.get("env"), {}).get("job")
+            if job != "setting-override" and (job is None or job in JOBS):
+                self.report(None, "names", f'run_options "{name}" names {row.get("env")}, which the registry doesn\'t list as a setting-override')
+            option = row.get("libfx")
+            if option and not option.startswith("model.") and not re.search(rf"\b{re.escape(option)}\??:", libfx):
+                self.report(None, "names", f'run_options "{name}" names libfx option {option}, which {LIBFX_TYPES} doesn\'t declare')
+
+        acp_ids: dict[str, Line] = {}
+        for line in self.lines(ACP_SESSIONS):
+            for config_id in ACP_CONFIG_ID.findall(line.text):
+                acp_ids.setdefault(config_id, line)
+        named_acp = {row["acp"] for row in rows.values() if "acp" in row}
+        for config_id, line in sorted(acp_ids.items()):
+            if config_id not in named_acp:
+                self.report(line, "names", f'ACP config option "{config_id}" needs a run_options row in {REGISTRY} naming its flag, setting, and variable')
+        for config_id in sorted(named_acp - acp_ids.keys()):
+            self.report(None, "names", f'run_options names ACP config option "{config_id}", which {ACP_SESSIONS} doesn\'t offer')
+
+        fields = libfx_model_fields(libfx)
+        if fields is None:
+            raise ShapeSourceError(f"cannot find FxModelOptions in {LIBFX_TYPES}")
+        named_fields = {row["libfx"].removeprefix("model.") for row in rows.values() if row.get("libfx", "").startswith("model.")}
+        for field in sorted(fields - named_fields):
+            self.report(None, "names", f'libfx model option "{field}" needs a run_options row in {REGISTRY}', LIBFX_TYPES)
+        for field in sorted(named_fields - fields):
+            self.report(None, "names", f'run_options names libfx model option "{field}", which FxModelOptions doesn\'t declare')
+
+def libfx_model_fields(text: str) -> set[str] | None:
+    """The fields of `FxModelOptions`, or None when the interface is missing."""
+    start = text.find("export interface FxModelOptions {")
+    if start < 0:
+        return None
+    end = text.find("\n}", start)
+    body = text[start:end].splitlines()[1:]
+    return {match.group(1) for line in body if (match := LIBFX_MODEL_FIELD.match(line))}
 
 
 def main(argv: list[str] | None = None) -> int:

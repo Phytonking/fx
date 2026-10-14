@@ -89,6 +89,18 @@ fn parseProjectSafeFields(root: std.json.Value) void {
 }
 """
 
+ACP_SESSIONS = r"""fn writeModelOption(w: *std.Io.Writer) !void {
+    try w.writeAll("{\"id\":\"model\",\"name\":\"Model\",\"type\":\"select\"}");
+}
+"""
+
+LIBFX_TYPES = """\
+export interface FxModelOptions {
+  /** Model ID. */
+  id: string;
+}
+"""
+
 ENV = """\
 const model = io_mod.getenv("FX_MODEL");
 const home = io_mod.getenv("HOME");
@@ -101,6 +113,9 @@ def registry() -> dict:
         "not_env": {},
         "external_env": ["HOME"],
         "hand_parsed_flags": {"--json": "picks the error format"},
+        "run_options": {
+            "model": {"flag": "--model", "setting": "model", "env": "FX_MODEL", "acp": "model", "libfx": "model.id"},
+        },
         "exceptions": {"flag_names": {}, "setting_keys": {}},
     }
 
@@ -115,6 +130,8 @@ class CheckCliShapeTests(unittest.TestCase):
             check_cli_shape.CLI_ASK: CLI_ASK,
             check_cli_shape.CONFIG_RUNTIME: CONFIG_RUNTIME,
             check_cli_shape.SETTINGS_KEYS: SETTINGS_KEYS,
+            check_cli_shape.ACP_SESSIONS: ACP_SESSIONS,
+            check_cli_shape.LIBFX_TYPES: LIBFX_TYPES,
             "src/env.zig": ENV,
         }
         self.registry = registry()
@@ -289,6 +306,26 @@ class CheckCliShapeTests(unittest.TestCase):
     def test_real_tree_passes(self) -> None:
         problems = check_cli_shape.Checker(REPO_ROOT).run()
         self.assertEqual([], [problem.render() for problem in problems])
+
+    def test_acp_config_option_needs_a_run_options_row(self) -> None:
+        self.edit(
+            check_cli_shape.ACP_SESSIONS,
+            "}\n",
+            '}\n\nfn writeFastOption(w: *std.Io.Writer) !void {\n    try w.writeAll("{\\\"id\\\":\\\"fast\\\",\\\"name\\\":\\\"Fast\\\"}");\n}\n',
+        )
+        self.assertOnly(self.run_check(), "names", 'ACP config option "fast" needs a run_options row')
+
+    def test_libfx_model_option_needs_a_run_options_row(self) -> None:
+        self.edit(check_cli_shape.LIBFX_TYPES, "  id: string;\n", "  id: string;\n  fast?: boolean;\n")
+        self.assertOnly(self.run_check(), "names", 'libfx model option "fast" needs a run_options row')
+
+    def test_run_options_row_must_name_a_listed_flag(self) -> None:
+        self.registry["run_options"]["model"]["flag"] = "--modle"
+        self.assertOnly(self.run_check(), "names", "names flag --modle")
+
+    def test_run_options_row_must_name_a_setting_override_variable(self) -> None:
+        self.registry["env"]["FX_MODEL"]["job"] = "internal"
+        self.assertOnly(self.run_check(), "names", "names FX_MODEL, which the registry doesn't list as a setting-override")
 
 
 if __name__ == "__main__":
