@@ -218,6 +218,23 @@ pub const top_level_specs = [_]TopLevelSpec{
         },
     },
     .{
+        .kind = .thread,
+        .token = "thread",
+        .usage = "thread [list] [<session|last>] [--json] | thread show <name> [<session|last>] [--json]",
+        .summary = "List or inspect the saved threads of a session",
+        .options = &.{
+            .{ .flag = "list [<session|last>]", .description = "List the threads of a saved session (default: the latest workspace session)" },
+            .{ .flag = "show <name> [<session|last>]", .description = "Show one thread's saved state, last reply, and turn count" },
+            json_option,
+        },
+        .details = &.{
+            "Reads saved state only. Threads run inside an interactive fx process, so this command cannot show live state.",
+            "The state shown is the one last saved on disk, such as idle, running, awaiting_approval, interrupted, or finished. A thread that was running when its fx process exited can still read running.",
+            "Use /thread inside fx to start, watch, send to, or stop threads.",
+            "Requires the default session format; it is not available with --sessions-v2.",
+        },
+    },
+    .{
         .kind = .@"resume",
         .token = "resume",
         .aliases = &.{ "--resume", "--resume-last", "--continue", "-c", "-r" },
@@ -313,6 +330,7 @@ pub const top_level_help_groups = [_]TopLevelHelpGroup{
         .{ .usage = "session resume [last|id]", .summary = "Resume the latest workspace session or a session by id" },
         .{ .usage = "session migrate <id>", .summary = "Migrate a saved session to the current format" },
         .{ .usage = "session recover <id>", .summary = "Copy a recoverable corrupt session" },
+        .{ .kind = .thread, .usage = "thread [list|show <name>]", .summary = "List or inspect the saved threads of a session" },
     } },
     .{ .entries = &.{
         .{ .kind = .login, .usage = "login [vercel|codex|grok]", .summary = "Sign in to a model provider" },

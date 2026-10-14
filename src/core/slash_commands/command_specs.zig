@@ -28,6 +28,7 @@ pub const TopLevelKind = enum {
     teams,
     session,
     sessions,
+    thread,
     @"resume",
     credits,
     usage,
