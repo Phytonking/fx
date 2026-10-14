@@ -132,7 +132,7 @@ Each env var has one job and that job's namespace:
 ## Output, errors, and exit codes
 
 - Results go to stdout; progress and diagnostics go to stderr.
-- Every command that prints data accepts `--json`. Failures share one shape: `{"kind": ..., "error": ..., "code": ...}`, as `fx session last --json` already does.
+- Every command that prints data accepts `--json`. Failures share one shape: `{"kind": ..., "error": ..., "code": ...}`, as `fx session last --json` already does. That includes usage errors: when `--json` is anywhere in the arguments, a bad flag or extra argument prints that shape on stdout with exit 2 and nothing on stderr. `writeUsageOrJsonError` in `cli_surface.zig` does this.
 - JSON fields are only added. If a shape must change, the new shape is opt-in behind a versioned flag such as `--json=v2`, following git's `--porcelain=v2`. Don't add a `schema_version` field. Commands such as `fx status`, `fx sessions`, and `fx session` already name their JSON shape with `kind`.
 - Exit codes: 0 for success, 1 when the work fails, 2 when the command line is wrong. `output_contracts.usage_exit_code` is the 2.
 - An error says what happened, which input caused it, and what to do, and suggests the closest match for a typo. A flag error names the flag and the closest documented flag, such as `fx status: unknown flag --jsno (did you mean --json?)`. A mistyped command or global flag gets the same: `fx stauts` suggests `status`, and `fx --modle` suggests `--model`.

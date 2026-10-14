@@ -1303,6 +1303,36 @@ describe("cli: status", () => {
   );
 
   test(
+    "fx mcp list reports bad arguments as JSON when --json is given",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "fx-mcp-list-json-"));
+      try {
+        for (const args of [
+          ["mcp", "list", "--bogus", "--json"],
+          ["mcp", "list", "--json", "--bogus"],
+          ["mcp", "list", "extra", "--json"],
+        ]) {
+          const result = await runFx(args, { env: { HOME: home } });
+          expect(result.code).toBe(2);
+          expect(result.stderr).toBe("");
+          expect(JSON.parse(result.stdout)).toEqual({
+            kind: "mcp_list",
+            error: "invalid arguments",
+            code: "InvalidLocalSurfaceArgs",
+          });
+        }
+        const text = await runFx(["mcp", "list", "--bogus"], { env: { HOME: home } });
+        expect(text.code).toBe(2);
+        expect(text.stdout).toBe("");
+        expect(text.stderr).toStartWith("fx mcp: unknown flag --bogus\nusage: fx mcp");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
     "fx upgrade names a channel that does not exist and saves nothing",
     async () => {
       const home = mkdtempSync(join(tmpdir(), "fx-upgrade-channel-"));

@@ -2937,8 +2937,7 @@ fn runTopLevelMcp(
     }
     if (std.mem.eql(u8, operation, "list")) {
         const list_args = parseMcpListArgs(rest[1..]) orelse {
-            try writeFlagFailure(alloc, deps, .mcp, rest[1..]);
-            try writeTopLevelUsage(cfg.command_catalog, deps, .mcp);
+            try writeUsageOrJsonError(alloc, cfg.command_catalog, deps, .mcp, "mcp_list", error.InvalidLocalSurfaceArgs, rest[1..]);
             return usage_failure;
         };
         var loaded = loadMcpCommandRuntime(alloc, cfg, deps) catch |err| {
@@ -6303,6 +6302,24 @@ test "runIfRequested invalid local flags write usage" {
     try std.testing.expectEqual(usage_failure, result);
     try std.testing.expectEqualStrings("", capture.stdout.written());
     try std.testing.expectEqualStrings("fx status: unknown flag --wat\nusage: fx status [--json]\n", capture.stderr.written());
+}
+
+test "mcp list usage errors print the JSON failure shape when --json is present" {
+    var capture = CaptureOutput.init(std.testing.allocator);
+    defer capture.deinit();
+
+    const result = try runIfRequestedWithDeps(
+        std.testing.allocator,
+        &.{ @constCast("mcp"), @constCast("list"), @constCast("--bogus"), @constCast("--json") },
+        testConfig(),
+        capture.deps(),
+    );
+    try std.testing.expectEqual(usage_failure, result);
+    try std.testing.expectEqualStrings("", capture.stderr.written());
+    try std.testing.expectEqualStrings(
+        "{\"kind\":\"mcp_list\",\"error\":\"invalid arguments\",\"code\":\"InvalidLocalSurfaceArgs\"}",
+        std.mem.trimEnd(u8, capture.stdout.written(), "\n"),
+    );
 }
 
 test "runIfRequested names the bad flag after a session id that starts with a dash" {
