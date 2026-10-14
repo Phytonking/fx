@@ -378,9 +378,30 @@ pub fn Runtime(comptime App: type) type {
                     return;
                 }
             }
+            // The session and child entry go first and the name last, so a
+            // crash between them leaves a name that delete can finish.
+            const outcome = host.deleteThread(app.alloc, t.agent, t.session_id) catch |err| {
+                try noticeFmt(app, .@"error", "thread", "Could not delete {s}: {s}", .{ name, @errorName(err) });
+                return;
+            };
+            switch (outcome) {
+                .deleted => {},
+                .running => {
+                    try noticeFmt(app, .@"error", "thread", "Thread {s} is running. Stop it first with /thread stop {s}.", .{ name, name });
+                    return;
+                },
+                .in_use => {
+                    try noticeFmt(app, .@"error", "thread", "Thread {s} is open in another process. Close it there, then delete.", .{name});
+                    return;
+                },
+                .failed => {
+                    try noticeFmt(app, .@"error", "thread", "Could not delete the saved session of {s}. Run /thread delete {s} again.", .{ name, name });
+                    return;
+                },
+            }
             try registry.remove(app.alloc, name);
             try thread_registry.save(app.alloc, home, registry);
-            try noticeFmt(app, .success, "thread", "Removed thread {s}. Its saved session stays on disk.", .{name});
+            try noticeFmt(app, .success, "thread", "Deleted thread {s} and its saved session.", .{name});
         }
 
         fn missing(app: *App, name: []const u8) !void {

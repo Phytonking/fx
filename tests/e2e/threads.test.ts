@@ -513,6 +513,114 @@ test.skipIf(SKIP_TMUX)("threads survive a restart: resuming the session lists th
   }
 }, 120_000);
 
+function threadSessionIds(fixture: Fixture): string[] {
+  const threadsDir = join(fixture.home, ".fx", "threads");
+  const ids: string[] = [];
+  for (const file of readdirSync(threadsDir).filter(f => f.endsWith(".json"))) {
+    const registry = JSON.parse(readFileSync(join(threadsDir, file), "utf8"));
+    for (const t of registry.threads) if (t.session_id) ids.push(t.session_id);
+  }
+  return ids;
+}
+
+test.skipIf(SKIP_TMUX)("/thread delete removes the session for good and the name restarts with no history", async () => {
+  const fixture = createFixture("delete");
+  const bodies: string[] = [];
+  const gateway = startDynamicFakeGateway(
+    raw => {
+      const body = String(raw);
+      bodies.push(body);
+      if (body.includes("write again")) return fakeGatewayFinalText("SECOND_ANSWER_OK");
+      if (body.includes("write hello")) return fakeGatewayFinalText("THREAD_ANSWER_OK");
+      return fakeGatewayFinalText("MAIN_ANSWER_OK");
+    },
+    { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] },
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("/thread new alpha write hello");
+    await tui.waitForText("Started thread alpha", 20000);
+    await waitForThreadIdle(tui, "alpha");
+
+    const [oldSession] = threadSessionIds(fixture);
+    expect(oldSession).toBeTruthy();
+    const oldDir = join(fixture.home, ".fx", "sessions", oldSession);
+    expect(existsSync(oldDir)).toBe(true);
+
+    await tui.sendText("/thread delete alpha");
+    await tui.waitForText("Deleted thread alpha", 20000);
+    expect(existsSync(oldDir)).toBe(false);
+    expect(threadSessionIds(fixture)).toEqual([]);
+
+    await tui.sendText("/thread list");
+    await tui.waitForText("No threads yet", 10000);
+
+    // The name is free, and the new thread starts clean.
+    await tui.sendText("/thread new alpha write again");
+    await tui.waitForText("Started thread alpha", 20000);
+    await waitForThreadIdle(tui, "alpha");
+    let seen = false;
+    for (let attempt = 0; attempt < 20 && !seen; attempt++) {
+      await tui.sendText("/thread watch alpha");
+      try {
+        await tui.waitForText("SECOND_ANSWER_OK", 1500);
+        seen = true;
+      } catch {
+        // Not there yet.
+      }
+    }
+    expect(seen).toBe(true);
+    const [newSession] = threadSessionIds(fixture);
+    expect(newSession).not.toBe(oldSession);
+    const last = bodies.filter(b => b.includes("write again")).at(-1) ?? "";
+    expect(last.includes("write hello")).toBe(false);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 120_000);
+
+test.skipIf(SKIP_TMUX)("/thread delete is refused while the thread is running and works after it is stopped", async () => {
+  const fixture = createFixture("delete-busy");
+  const gateway = startDynamicFakeGateway(
+    async raw => {
+      if (!String(raw).includes("write hello")) return fakeGatewayFinalText("MAIN_ANSWER_OK");
+      await Bun.sleep(15000);
+      return fakeGatewayFinalText("SLOW_THREAD_DONE");
+    },
+    { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] },
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("/thread new slow write hello");
+    await tui.waitForText("Started thread slow", 20000);
+    const [session] = threadSessionIds(fixture);
+    await tui.sendText("/thread delete slow");
+    await tui.waitForText("is running. Stop it first", 10000);
+    expect(existsSync(join(fixture.home, ".fx", "sessions", session))).toBe(true);
+
+    await tui.sendText("/thread stop slow");
+    await tui.waitForText("Stopping slow", 10000);
+    let deleted = false;
+    for (let attempt = 0; attempt < 30 && !deleted; attempt++) {
+      await tui.sendText("/thread delete slow");
+      try {
+        await tui.waitForText("Deleted thread slow", 1500);
+        deleted = true;
+      } catch {
+        // Still stopping.
+      }
+    }
+    expect(deleted).toBe(true);
+    expect(existsSync(join(fixture.home, ".fx", "sessions", session))).toBe(false);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 120_000);
+
 test.skipIf(SKIP_TMUX)("/thread completes its verbs from the composer", async () => {
   const fixture = createFixture("complete");
   const gateway = startGateway();
