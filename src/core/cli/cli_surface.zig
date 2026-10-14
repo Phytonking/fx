@@ -9,6 +9,7 @@ const acp_runner = @import("acp_runner.zig");
 const cli_ask = @import("cli_ask.zig");
 const cli_replay = @import("cli_replay.zig");
 const cli_flags = @import("cli_flags.zig");
+const completion = @import("completion.zig");
 const agent_run_flags = @import("agent_run_flags.zig");
 const flag_placement = @import("flag_placement.zig");
 const cli_config = @import("cli_config.zig");
@@ -99,6 +100,7 @@ pub const Command = union(enum) {
     replay: []const [:0]const u8,
     workspace: []const [:0]const u8,
     config: []const [:0]const u8,
+    completion: []const [:0]const u8,
     unknown: []const u8,
 };
 
@@ -734,6 +736,7 @@ pub fn parse(command_catalog: CommandCatalog, args: []const [:0]const u8) Comman
         'c' => {
             if (command_specs.matchesTopLevel(command_catalog, command, .credits)) return .{ .credits = args[1..] };
             if (command_specs.matchesTopLevel(command_catalog, command, .config)) return .{ .config = args[1..] };
+            if (command_specs.matchesTopLevel(command_catalog, command, .completion)) return .{ .completion = args[1..] };
         },
         'd' => {
             if (command_specs.matchesTopLevel(command_catalog, command, .doctor)) return .{ .doctor = args[1..] };
@@ -2301,6 +2304,21 @@ fn runNonInteractiveWithDeps(
             try writeStdout(deps, text);
             if (opts.format == .json) try writeStdout(deps, "\n");
             return if (result.snapshot.status == .failed) .handled_failure else .handled_success;
+        },
+        .completion => |rest| {
+            const shell = if (rest.len == 1) completion.parseShell(rest[0]) else null;
+            if (shell == null) {
+                if (rest.len == 1) {
+                    try writeStderrLine(alloc, deps, "fx completion: unknown shell {s}; choose bash, zsh, or fish\n", rest[0]);
+                }
+                try writeTopLevelUsage(cfg.command_catalog, deps, .completion);
+                return usage_failure;
+            }
+            var out: std.Io.Writer.Allocating = .init(alloc);
+            defer out.deinit();
+            try completion.writeScript(alloc, &out.writer, shell.?, cfg.command_catalog, &builtin_commands.launch_options);
+            try writeStdout(deps, out.written());
+            return .handled_success;
         },
         .config => |rest| {
             var unknown_key: ?settings_keys.UnknownPart = null;

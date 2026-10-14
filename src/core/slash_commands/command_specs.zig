@@ -35,6 +35,7 @@ pub const TopLevelKind = enum {
     replay,
     workspace,
     config,
+    completion,
 };
 
 pub const SlashKind = enum {
@@ -85,6 +86,36 @@ pub const OptionDoc = struct {
     /// Help omits it, but the parser still reads it: a deprecated spelling
     /// that keeps working with a warning, such as `--sessions-v2`.
     hidden: bool = false,
+    /// The fixed values the flag takes, which `fx completion` offers. A value
+    /// written in the flag itself, such as `--period <today|7d|month>`, needs no
+    /// list here. Leave it empty for free-form values.
+    values: []const []const u8 = &.{},
+};
+
+/// A word that may follow a command, such as `set` in `fx config set`. Help
+/// lists these under "Commands:", and `fx completion` offers them.
+pub const SubcommandDoc = struct {
+    /// The word, then its arguments as help shows them: `set <key> <value>`.
+    /// A `<key>` right after the word means the next argument is a setting
+    /// key, which completion offers.
+    usage: []const u8,
+    description: []const u8,
+    /// Words that may follow this one, such as `approve` after `mcp trust`.
+    subcommands: []const SubcommandDoc = &.{},
+    /// Flags only this word takes, in addition to the command's own.
+    options: []const OptionDoc = &.{},
+
+    /// The word itself: `set` in `set <key> <value>`.
+    pub fn name(self: SubcommandDoc) []const u8 {
+        const end = std.mem.findScalar(u8, self.usage, ' ') orelse self.usage.len;
+        return self.usage[0..end];
+    }
+
+    /// Whether the argument after the word is a setting key.
+    pub fn takesSettingKey(self: SubcommandDoc) bool {
+        const rest = self.usage[self.name().len..];
+        return std.mem.startsWith(u8, rest, " <key>");
+    }
 };
 
 pub const TopLevelSpec = struct {
@@ -94,6 +125,8 @@ pub const TopLevelSpec = struct {
     usage: []const u8,
     summary: []const u8,
     options: []const OptionDoc = &.{},
+    /// The words that may follow the command, listed under "Commands:".
+    subcommands: []const SubcommandDoc = &.{},
     details: []const []const u8 = &.{},
     hidden_from_top_level_help: bool = false,
     /// Set on a deprecated command: the spelling that replaces it. Running the
@@ -370,6 +403,11 @@ pub fn renderTopLevelCommandHelp(alloc: Allocator, registry: TopLevelRegistry, k
     try out.writer.writeAll(spec.usage);
     try out.writer.writeByte('\n');
 
+    if (spec.subcommands.len > 0) {
+        try out.writer.writeAll("\nCommands:\n");
+        try writeSubcommandRows(&out.writer, spec.subcommands, "", subcommandUsageWidth(spec.subcommands, 0));
+    }
+
     if (spec.options.len > 0) {
         var flag_width: usize = 0;
         for (spec.options) |opt| {
@@ -396,6 +434,36 @@ pub fn renderTopLevelCommandHelp(alloc: Allocator, registry: TopLevelRegistry, k
     }
 
     return try out.toOwnedSlice();
+}
+
+/// The widest `prefix usage` among the rows `writeSubcommandRows` prints.
+fn subcommandUsageWidth(subcommands: []const SubcommandDoc, prefix_len: usize) usize {
+    var width: usize = 0;
+    for (subcommands) |sub| {
+        if (sub.description.len > 0) width = @max(width, prefix_len + sub.usage.len);
+        width = @max(width, subcommandUsageWidth(sub.subcommands, prefix_len + sub.name().len + 1));
+    }
+    return width;
+}
+
+/// One row per word that has a description, then its own words prefixed
+/// with it, so `trust` lists `trust approve NAME`.
+fn writeSubcommandRows(writer: *std.Io.Writer, subcommands: []const SubcommandDoc, prefix: []const u8, width: usize) std.Io.Writer.Error!void {
+    for (subcommands) |sub| {
+        if (sub.description.len > 0) {
+            try writer.writeAll("  ");
+            try writer.writeAll(prefix);
+            try writer.writeAll(sub.usage);
+            try writePadding(writer, width - prefix.len - sub.usage.len + 2);
+            try writer.writeAll(sub.description);
+            try writer.writeByte('\n');
+        }
+        if (sub.subcommands.len > 0) {
+            var buffer: [128]u8 = undefined;
+            const nested = std.mem.print(&buffer, "{s}{s} ", .{ prefix, sub.name() }) catch prefix;
+            try writeSubcommandRows(writer, sub.subcommands, nested, width);
+        }
+    }
 }
 
 pub fn topLevelKindFromToken(registry: TopLevelRegistry, token: []const u8) ?TopLevelKind {
@@ -1727,6 +1795,35 @@ test "top-level help renders flags as compact aligned rows" {
     try expectAllLinesFit(narrow, 60);
 }
 
+test "command help lists subcommands under Commands, nested words with their parent" {
+    const specs = [_]TopLevelSpec{.{
+        .kind = .mcp,
+        .token = "mcp",
+        .usage = "mcp <command> ...",
+        .summary = "Manage MCP servers",
+        .subcommands = &.{
+            .{ .usage = "list", .description = "List servers" },
+            .{ .usage = "trust", .description = "", .subcommands = &.{
+                .{ .usage = "approve NAME", .description = "Approve a server" },
+                .{ .usage = "reset", .description = "Forget approvals" },
+            } },
+        },
+    }};
+    const registry: TopLevelRegistry = .{ .specs = &specs, .description = "", .interactive_hint = "" };
+    const text = try renderTopLevelCommandHelp(std.testing.allocator, registry, .mcp);
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.find(u8, text,
+        \\Commands:
+        \\  list                List servers
+        \\  trust approve NAME  Approve a server
+        \\  trust reset         Forget approvals
+        \\
+    ) != null);
+    try std.testing.expectEqualStrings("set", (SubcommandDoc{ .usage = "set <key> <value>", .description = "" }).name());
+    try std.testing.expect((SubcommandDoc{ .usage = "get <key>", .description = "" }).takesSettingKey());
+    try std.testing.expect(!(SubcommandDoc{ .usage = "add PATH", .description = "" }).takesSettingKey());
+}
+
 test "top-level help hides developer recording surfaces" {
     const text = try renderTopLevelHelp(std.testing.allocator, testTopLevelRegistry(), 120, "9.8.7");
     defer std.testing.allocator.free(text);
@@ -2239,6 +2336,11 @@ pub const slack_install_spec: TopLevelSpec = .{
     .token = "slack",
     .usage = "slack <install|status|refresh> [--json]",
     .summary = "Install and manage the workspace Slack bot locally",
+    .subcommands = &.{
+        .{ .usage = "install", .description = "Authorize the bot through fx.sh and save its credentials" },
+        .{ .usage = "status", .description = "Show the local installation" },
+        .{ .usage = "refresh", .description = "Renew the bot's tokens without the browser" },
+    },
     .options = &.{.{ .flag = "--json", .description = "Emit installation metadata without credentials" }},
     .details = &.{
         "install opens Slack authorization through fx.sh and saves the bot credentials on this computer.",

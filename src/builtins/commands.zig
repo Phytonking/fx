@@ -23,6 +23,12 @@ const json_option = command_specs.OptionDoc{ .flag = "--json", .description = "E
 /// Options for local commands that only take `--json`.
 pub const json_only_options = [_]command_specs.OptionDoc{json_option};
 
+const login_providers = [_]command_specs.SubcommandDoc{
+    .{ .usage = "vercel", .description = "Vercel AI Gateway (the default)" },
+    .{ .usage = "codex", .description = "ChatGPT subscription" },
+    .{ .usage = "grok", .description = "Grok subscription" },
+};
+
 pub const login_options = [_]command_specs.OptionDoc{
     .{ .flag = "--api-key", .description = "Paste a Vercel AI Gateway API key instead of signing in through the browser" },
 };
@@ -44,31 +50,38 @@ pub const upgrade_options = [_]command_specs.OptionDoc{
     json_option,
 };
 
-pub const workspace_options = [_]command_specs.OptionDoc{
-    .{ .flag = "list", .description = "List the primary and additional directories (default)" },
-    .{ .flag = "add PATH", .description = "Persist an existing additional directory" },
-    .{ .flag = "remove PATH", .description = "Remove an additional directory" },
-    .{ .flag = "clear", .description = "Remove all additional directories" },
-    json_option,
+pub const workspace_options = [_]command_specs.OptionDoc{json_option};
+
+const workspace_subcommands = [_]command_specs.SubcommandDoc{
+    .{ .usage = "list", .description = "List the primary and additional directories (default)" },
+    .{ .usage = "add PATH", .description = "Persist an existing additional directory" },
+    .{ .usage = "remove PATH", .description = "Remove an additional directory" },
+    .{ .usage = "clear", .description = "Remove all additional directories" },
+};
+
+const config_subcommands = [_]command_specs.SubcommandDoc{
+    .{ .usage = "list", .description = "List the values set in each settings file (default)" },
+    .{ .usage = "get <key>", .description = "Print the value fx uses for a setting" },
+    .{ .usage = "set <key> <value>", .description = "Save a preference in ~/.fx/settings.json" },
+    .{ .usage = "unset <key>", .description = "Remove a preference from ~/.fx/settings.json" },
 };
 
 pub const config_options = [_]command_specs.OptionDoc{
-    .{ .flag = "list", .description = "List the values set in each settings file (default)" },
-    .{ .flag = "get <key>", .description = "Print the value fx uses for a setting" },
-    .{ .flag = "set <key> <value>", .description = "Save a preference in ~/.fx/settings.json" },
-    .{ .flag = "unset <key>", .description = "Remove a preference from ~/.fx/settings.json" },
     .{ .flag = "--global", .description = "Only the profile's own settings" },
     .{ .flag = "--workspace", .description = "Only this workspace's override in the profile (list and get)" },
     .{ .flag = "--show-origin", .description = "Start each line with where the value is set" },
     json_option,
 };
 
+const session_subcommands = [_]command_specs.SubcommandDoc{
+    .{ .usage = "last", .description = "Inspect the current workspace session" },
+    .{ .usage = "resume [last|<id>]", .description = "Resume the latest workspace session or a session by id" },
+    .{ .usage = "migrate <id>", .description = "Migrate a saved session to the current format" },
+    .{ .usage = "recover <id>", .description = "Copy a recoverable corrupt session into a new session" },
+};
+
 pub const session_options = [_]command_specs.OptionDoc{
-    .{ .flag = "last", .description = "Inspect the current workspace session" },
     .{ .flag = "--id <id>", .description = "Inspect a saved session by exact id" },
-    .{ .flag = "resume [last|<id>]", .description = "Resume the latest workspace session or a session by id" },
-    .{ .flag = "migrate <id>", .description = "Migrate a saved session to the current format" },
-    .{ .flag = "recover <id>", .description = "Copy a recoverable corrupt session into a new session" },
     .{ .flag = "--allow-large", .description = "Permit migrating an oversized session" },
     json_option,
 };
@@ -95,10 +108,38 @@ pub const replay_options = [_]command_specs.OptionDoc{
 };
 
 /// `fx mcp list` options; `fx mcp --help` shows them in its usage line.
+const mcp_subcommands = [_]command_specs.SubcommandDoc{
+    .{
+        .usage = "add NAME COMMAND [ARGS...]",
+        .description = "Add a server that fx starts with COMMAND",
+        .subcommands = &.{.{ .usage = "slack", .description = "Configure Slack and open authorization" }},
+        .options = &.{.{ .flag = "--transport <http>", .description = "Add a remote server: --transport http NAME URL" }},
+    },
+    .{ .usage = "auth NAME", .description = "Sign in to a server" },
+    .{ .usage = "list", .description = "List configured servers", .options = &mcp_list_options },
+    .{ .usage = "logout NAME", .description = "Sign out of a server and delete its login" },
+    .{ .usage = "path", .description = "Print the path of ~/.fx/mcp.json" },
+    .{ .usage = "remove NAME", .description = "Remove a server" },
+    .{
+        .usage = "trust",
+        .description = "",
+        .subcommands = &.{
+            .{ .usage = "approve NAME", .description = "Approve a project server from .mcp.json in this workspace" },
+            .{ .usage = "reject NAME", .description = "Reject a project server in this workspace" },
+            .{ .usage = "approve-all", .description = "Approve every project server in this workspace" },
+            .{ .usage = "reset", .description = "Forget this workspace's approvals and rejections" },
+        },
+    },
+};
+
 pub const mcp_list_options = [_]command_specs.OptionDoc{
     .{ .flag = "--connect", .description = "Connect to each server and list its tools" },
     json_option,
 };
+
+const permission_modes = [_][]const u8{ "ask", "auto", "full-access" };
+/// The built-in providers. A configured connection's name is also accepted.
+const builtin_providers = [_][]const u8{ "gateway", "codex", "grok" };
 
 /// The flags that shape an agent run, the same on every command that runs the
 /// agent: `fx ask`, `fx pr`, `fx issue`, and `fx acp`. `scope` names what they
@@ -107,12 +148,12 @@ pub const mcp_list_options = [_]command_specs.OptionDoc{
 /// don't apply gateway provider routing.
 fn agentRunOptions(comptime scope: []const u8, comptime routing: bool) [if (routing) 15 else 12]command_specs.OptionDoc {
     const all = [_]command_specs.OptionDoc{
-        .{ .flag = "--permission-mode <mode>", .description = "Set the permission mode for " ++ scope ++ ": ask, auto, or full-access" },
+        .{ .flag = "--permission-mode <mode>", .description = "Set the permission mode for " ++ scope ++ ": ask, auto, or full-access", .values = &permission_modes },
         .{ .flag = "--ask", .description = "Ask before each action that needs permission" },
         .{ .flag = "--auto", .description = "Automatically review unresolved permission requests" },
         .{ .flag = "--full-access", .description = "Disable fx permission checks" },
         .{ .flag = "--yolo", .description = "Alias for --full-access" },
-        .{ .flag = "--provider <name>", .description = "Override the model provider for " ++ scope ++ " (gateway, codex, grok, or a configured name)" },
+        .{ .flag = "--provider <name>", .description = "Override the model provider for " ++ scope ++ " (gateway, codex, grok, or a configured name)", .values = &builtin_providers },
         .{ .flag = "--model <id>", .description = "Override the model for " ++ scope },
         .{ .flag = "--effort <level>", .description = "Override the reasoning effort for " ++ scope },
         .{ .flag = "--fast", .description = "Enable Fast mode for " ++ scope ++ " when the model supports it" },
@@ -200,6 +241,7 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "login",
         .usage = "login [vercel|codex|grok] [--api-key]",
         .summary = "Sign in to Vercel or a selected provider",
+        .subcommands = &login_providers,
         .options = &login_options,
     },
     .{
@@ -207,6 +249,7 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "logout",
         .usage = "logout [vercel|codex|grok]",
         .summary = "Sign out of Vercel or a selected provider session",
+        .subcommands = &login_providers,
     },
     .{
         .kind = .setup,
@@ -245,19 +288,9 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "mcp",
         .usage = "mcp <command> ...",
         .summary = "Manage MCP servers without opening the interactive shell",
+        .subcommands = &mcp_subcommands,
         .details = &.{
-            "Commands:",
-            "  fx mcp add slack                   Configure Slack and open authorization",
-            "  fx mcp add NAME COMMAND [ARGS...]",
-            "  fx mcp add --transport http NAME URL",
-            "  fx " ++ command_specs.mcp_auth_usage,
-            "  fx mcp list [--connect] [--json]",
-            "  fx mcp logout NAME",
-            "  fx mcp path",
-            "  fx mcp remove NAME",
-            "  fx mcp trust approve|reject NAME",
-            "  fx mcp trust approve-all|reset",
-            "",
+            "A remote server takes fx mcp add --transport http NAME URL.",
             "By default, list reads configuration without opening MCP transports.",
             "Use --connect to connect and discover servers before rendering health.",
         },
@@ -293,6 +326,7 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "session",
         .usage = "session <last|id>|--id <id> [--json] | session resume [last|<id>] | session migrate <id>|--id <id> [--allow-large] [--json] | session recover <id>|--id <id> [--json]",
         .summary = "Inspect, resume, migrate, or recover saved sessions",
+        .subcommands = &session_subcommands,
         .options = &session_options,
     },
     .{
@@ -359,9 +393,25 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "workspace",
         .usage = "workspace [list|add PATH|remove PATH|clear] [--json]",
         .summary = "Manage additional workspace directories",
+        .subcommands = &workspace_subcommands,
         .options = &workspace_options,
         .details = &.{
             "Additional directories are stored for the current primary workspace.",
+        },
+    },
+    .{
+        .kind = .completion,
+        .token = "completion",
+        .usage = "completion bash|zsh|fish",
+        .summary = "Print a shell completion script",
+        .subcommands = &.{
+            .{ .usage = "bash", .description = "Load it with: source <(fx completion bash)" },
+            .{ .usage = "zsh", .description = "Load it after compinit with: source <(fx completion zsh)" },
+            .{ .usage = "fish", .description = "Load it with: fx completion fish | source" },
+        },
+        .details = &.{
+            "Add the load line to ~/.bashrc, ~/.zshrc, or ~/.config/fish/config.fish to keep it in new shells.",
+            "Tab completes commands, flags, setting keys after fx config get, set, and unset, and fixed flag values.",
         },
     },
     .{
@@ -369,6 +419,7 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "config",
         .usage = "config [list|get <key>|set <key> <value>|unset <key>] [--global|--workspace] [--show-origin] [--json]",
         .summary = "Show and change fx settings",
+        .subcommands = &config_subcommands,
         .options = &config_options,
         .details = &.{
             "Values come from .fx.json, ~/.fx/settings.json, and this workspace's override in it. When a key repeats, the last line is the one fx uses.",
@@ -420,6 +471,7 @@ pub const top_level_help_groups = [_]TopLevelHelpGroup{
         .{ .kind = .config, .usage = "config" },
         .{ .kind = .upgrade, .usage = "upgrade", .summary = "Upgrade fx on the selected release channel" },
         .{ .kind = .acp, .usage = "acp" },
+        .{ .kind = .completion, .usage = "completion <shell>" },
         .{ .kind = .help, .usage = "help" },
     } },
 };
@@ -431,7 +483,7 @@ pub const launch_options = [_]command_specs.OptionDoc{
     .{ .flag = "--context-limit <spec>", .description = "" },
     .{ .flag = "--add-dir <path>", .description = "" },
     .{ .flag = "--no-additional-dirs", .description = "" },
-    .{ .flag = "--provider <name>", .description = "" },
+    .{ .flag = "--provider <name>", .description = "", .values = &builtin_providers },
     .{ .flag = "--provider-order <a,b,...>", .description = "" },
     .{ .flag = "--provider-strict", .description = "" },
     .{ .flag = "--no-provider-strict", .description = "" },
@@ -441,7 +493,7 @@ pub const launch_options = [_]command_specs.OptionDoc{
     .{ .flag = "--no-fast", .description = "" },
     .{ .flag = "--ultrafast", .description = "" },
     .{ .flag = "--no-ultrafast", .description = "" },
-    .{ .flag = "--permission-mode <mode>", .description = "" },
+    .{ .flag = "--permission-mode <mode>", .description = "", .values = &permission_modes },
     .{ .flag = "--ask", .description = "" },
     .{ .flag = "--auto", .description = "" },
     .{ .flag = "--full-access", .description = "" },

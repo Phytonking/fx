@@ -62,7 +62,7 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 
 | Concept | Name |
 |---|---|
-| Shell completion | `fx completion bash\|zsh\|fish` (planned) |
+| Shell completion | `fx completion bash\|zsh\|fish` |
 | MCP servers | `fx mcp` (stays the command) |
 | Usage and spend | `fx usage`, `/usage` (`/cost`) |
 | In-session token and turn statistics | `/stats` |

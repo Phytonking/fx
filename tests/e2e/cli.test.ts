@@ -5958,14 +5958,18 @@ describe("cli: MCP profile add", () => {
       });
       expect(help.code).toBe(0);
       for (const command of [
-        "fx mcp add NAME COMMAND [ARGS...]",
-        "fx mcp auth NAME",
-        "fx mcp list",
-        "fx mcp logout NAME",
-        "fx mcp path",
-        "fx mcp remove NAME",
-        "fx mcp trust approve|reject NAME",
-        "fx mcp trust approve-all|reset",
+        "  add NAME COMMAND [ARGS...]",
+        "  add slack ",
+        "  auth NAME ",
+        "  list ",
+        "  logout NAME ",
+        "  path ",
+        "  remove NAME ",
+        "  trust approve NAME ",
+        "  trust reject NAME ",
+        "  trust approve-all ",
+        "  trust reset ",
+        "fx mcp add --transport http NAME URL",
       ]) expect(help.stdout).toContain(command);
 
       const local = await runFx(
@@ -6096,4 +6100,121 @@ describe("cli: MCP profile add", () => {
     expect(invalid.code).not.toBe(0);
     expect(invalid.stderr).toContain("mcp add NAME COMMAND");
   });
+});
+
+function shellAvailable(shell: string): boolean {
+  return spawnSync("sh", ["-c", `command -v ${shell}`]).status === 0;
+}
+
+describe("cli: completion", () => {
+  // The words on the command line, the last one under the cursor, and what
+  // Tab offers there.
+  const cases: [string[], string][] = [
+    [["fx", "con"], "config"],
+    [["fx", "config", ""], "list get set unset"],
+    [["fx", "config", "get", "status_line.c"], "status_line.context"],
+    [["fx", "config", "get", "theme", ""], ""],
+    [["fx", "ask", "--permission-mode", ""], "ask auto full-access"],
+    [["fx", "--model", "gpt-5", "ask", "--permission-m"], "--permission-mode"],
+    [["fx", "mcp", "trust", ""], "approve reject approve-all reset"],
+    [["fx", "mcp", "list", "--con"], "--connect"],
+    [["fx", "usage", "--period", ""], "today 7d month"],
+    [["fx", "login", ""], "vercel codex grok"],
+    [["fx", "completion", ""], "bash zsh fish"],
+    [["fx", "-r", ""], "last"],
+  ];
+
+  async function writeScript(shell: string, dir: string): Promise<string> {
+    const result = await runFx(["completion", shell], { env: { HOME: dir } });
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    const path = join(dir, `fx.${shell}`);
+    writeFileSync(path, result.stdout);
+    return path;
+  }
+
+  function quoted(words: string[]): string {
+    return words.map((word) => `'${word}'`).join(" ");
+  }
+
+  test("fx completion takes one shell name", async () => {
+    const home = mkdtempSync(join(tmpdir(), "fx-completion-usage-"));
+    try {
+      const unknown = await runFx(["completion", "tcsh"], { env: { HOME: home } });
+      expect(unknown.code).toBe(2);
+      expect(unknown.stdout).toBe("");
+      expect(unknown.stderr).toBe("fx completion: unknown shell tcsh; choose bash, zsh, or fish\nusage: fx completion bash|zsh|fish\n");
+      const none = await runFx(["completion"], { env: { HOME: home } });
+      expect(none.code).toBe(2);
+      expect(none.stderr).toBe("usage: fx completion bash|zsh|fish\n");
+      const help = await runFx(["completion", "--help"], { env: { HOME: home } });
+      expect(help.code).toBe(0);
+      expect(help.stdout).toContain("Commands:\n  bash  Load it with: source <(fx completion bash)\n");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, TIMEOUT);
+
+  test("fx completion bash completes words, flags, values, and setting keys", async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "fx-completion-bash-")));
+    try {
+      const script = await writeScript("bash", home);
+      const harness = join(home, "harness.bash");
+      writeFileSync(harness, [
+        `source '${script}'`,
+        'comp() { COMP_WORDS=("$@"); COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 )); COMPREPLY=(); _fx; echo "${COMPREPLY[*]}"; }',
+        ...cases.map(([words]) => `comp ${quoted(words)}`),
+        "",
+      ].join("\n"));
+      const run = spawnSync("bash", [harness], { cwd: home, encoding: "utf8" });
+      expect(run.stderr).toBe("");
+      expect(run.stdout.split("\n").slice(0, cases.length)).toEqual(cases.map(([, want]) => want));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, TIMEOUT);
+
+  test.skipIf(!shellAvailable("zsh"))("fx completion zsh offers the same candidates", async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "fx-completion-zsh-")));
+    try {
+      const script = await writeScript("zsh", home);
+      const harness = join(home, "harness.zsh");
+      // compsys filters by the typed prefix itself, so the stubs do too.
+      writeFileSync(harness, [
+        "compdef() { :; }",
+        `source '${script}'`,
+        '_fx_test_print() { local prefix=${words[CURRENT]}; local -a out; out=(${(M)@:#${prefix}*}); print -r -- "${out[*]}"; }',
+        '_describe() { local -a items; items=("${(@P)4}"); _fx_test_print "${(@)items%%:*}"; }',
+        'compadd() { if [[ $1 == -a ]]; then _fx_test_print "${(@P)2}"; else _fx_test_print "$@"; fi; }',
+        '_files() { print -r -- ""; }',
+        'comp() { words=("$@"); CURRENT=${#words}; _fx; }',
+        ...cases.map(([words]) => `comp ${quoted(words)}`),
+        "",
+      ].join("\n"));
+      const run = spawnSync("zsh", ["-f", harness], { cwd: home, encoding: "utf8" });
+      expect(run.stderr).toBe("");
+      expect(run.stdout.split("\n").slice(0, cases.length)).toEqual(cases.map(([, want]) => want));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, TIMEOUT);
+
+  test.skipIf(!shellAvailable("fish"))("fx completion fish offers the same candidates", async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "fx-completion-fish-")));
+    try {
+      const script = await writeScript("fish", home);
+      for (const [words, want] of cases) {
+        const line = words.join(" ");
+        const run = spawnSync("fish", ["--no-config", "-c", `source '${script}'; complete -C '${line}'`], {
+          cwd: home,
+          encoding: "utf8",
+        });
+        expect(run.stderr).toBe("");
+        const got = run.stdout.split("\n").filter(Boolean).map((row) => row.split("\t")[0]).sort();
+        expect(got).toEqual(want.split(" ").filter(Boolean).sort());
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, TIMEOUT);
 });

@@ -154,7 +154,7 @@ Each env var has one job and that job's namespace:
 
 ## One source of truth
 
-- The command specs in `src/builtins/commands.zig` drive both help and parsing: each command's `OptionDoc` list is what `cli_flags.Parser` reads. The target adds value types, placement, and stability to those entries so completion and the fx.sh tables can come from the same lists.
+- The command specs in `src/builtins/commands.zig` drive help, parsing, and `fx completion`: each command's `OptionDoc` list is what `cli_flags.Parser` reads, and `src/core/cli/completion.zig` builds the bash, zsh, and fish scripts from the same lists. A command's words, such as `config set` or `login codex`, go in its spec's `subcommands`, which help prints under "Commands:"; a `<key>` right after the word makes completion offer setting keys. A flag with fixed values writes them in its placeholder (`--period <today|7d|month>`) or lists them in `values` (`--permission-mode <mode>`). Never list a subcommand as an `OptionDoc`, and never add completion data anywhere else. The fx.sh tables stay hand-written.
 - The target adds a settings registry: key, type, default, scopes, project-safe or not, env var, flag, slash command, JSON field, libfx and ACP name, stability. Parsing, help, the fx.sh tables, `fx completion <shell>`, a JSON Schema for settings files, and libfx and ACP names all come from it.
 - CI is to fail when code reads an `FX_*` env var, accepts a flag, or parses a setting that the registries don't list.
 - A new top-level command, a new stable env var, or a new project-safe setting needs a maintainer's explicit approval in the PR.
