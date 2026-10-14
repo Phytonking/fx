@@ -876,7 +876,18 @@ fn activateProviderSelectionFallible(
     defer settings.deinit(alloc);
 
     if (target == .configured) {
-        const bound = try target.bind(settings.providers orelse .{});
+        const bound = target.bind(settings.providers orelse .{}) catch |err| switch (err) {
+            error.UnknownConfiguredProvider => {
+                const detail = try alloc.print(
+                    "unknown provider {s}; expected gateway, codex, grok, or a name under \"providers\" in ~/.fx/settings.json",
+                    .{target.label()},
+                );
+                defer alloc.free(detail);
+                try writeProviderActivationError(alloc, deps, caller, detail);
+                return false;
+            },
+            error.ConfiguredProviderChanged => return err,
+        };
         const selected_model = settings.models.get(bound) orelse return error.ConfiguredModelNotSelected;
         var attempt = config_runtime.attemptUserPreferences(alloc, .{
             .provider = bound,
