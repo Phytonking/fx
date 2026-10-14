@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
 const io_mod = @import("core/shared/io.zig");
+const profile_paths = @import("core/shared/profile_paths.zig");
 const terminal_env = @import("core/shared/terminal_env.zig");
 const env_settings = @import("core/config/env_settings.zig");
 
@@ -540,7 +541,7 @@ const App = struct {
     provider_selection: provider_runtime.Runtime = provider_runtime.Runtime.init(std.heap.c_allocator),
     model_cache: model_cache_runtime.Runtime = model_cache_runtime.Runtime.init(std.heap.c_allocator, builtin_gateway.models_path),
     /// Replaced in `init` with the real home directory.
-    usage_dashboard: usage.Dashboard = usage.Dashboard.init(std.heap.c_allocator, usage_host.host("")),
+    usage_dashboard: usage.Dashboard = usage.Dashboard.init(std.heap.c_allocator, usage_host.unset),
     workspace_root: []u8 = &.{},
     workspace_identity: statusline_identity.Runtime = .{},
     workspace_host: WorkspaceHostRuntime = .{},
@@ -3495,6 +3496,8 @@ pub fn main(c_argc: c_int, c_argv: [*][*:0]c_char, c_envp: [*:null]?[*:0]c_char)
 fn mainC(c_argc: c_int, c_argv: [*][*:0]c_char, c_envp: [*:null]?[*:0]c_char) !void {
     const raw_args = rawArgs(c_argc, c_argv);
     const raw_env: RawEnviron = @ptrCast(c_envp);
+    // Before any mode runs, since terminal helpers write under fx's folder too.
+    try useFxHomeFromEnv(raw_env);
 
     if (comptime terminal_native_session.isSupported()) {
         if (terminal_native_session.isControlModeRaw(raw_args)) {
@@ -3549,6 +3552,19 @@ fn mainC(c_argc: c_int, c_argv: [*][*:0]c_char, c_envp: [*:null]?[*:0]c_char) !v
         exitFast(0);
     }
     try runNonBenchmark(raw_args, raw_env, cli_args);
+}
+
+/// `FX_HOME` replaces `~/.fx` for the whole process. A bad value stops
+/// fx before it reads or writes anything there.
+fn useFxHomeFromEnv(raw_env: RawEnviron) !void {
+    const value = rawEnvValue(raw_env, "FX_HOME") orelse return;
+    profile_paths.useFxHome(value) catch |err| {
+        try writeStderrFast(switch (err) {
+            error.FxHomeNotAbsolute => "fx: FX_HOME must be an absolute path\n",
+            error.FxHomeIsRoot => "fx: FX_HOME can't be the root folder\n",
+        });
+        exitFast(1);
+    };
 }
 
 fn writeTopLevelHelpFast(raw_env: RawEnviron) !void {

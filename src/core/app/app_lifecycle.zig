@@ -1134,10 +1134,10 @@ fn writeLastShutdownReportInner(alloc: Allocator, trace: *const ShutdownStageTra
     try out.writer.writeAll("]}");
 
     var home_dir = io_mod.VerifiedDir{
-        .dir = try std.Io.Dir.openDirAbsolute(io_mod.getIo(), home, .{ .iterate = true }),
+        .dir = try std.Io.Dir.openDirAbsolute(io_mod.getIo(), profile_paths.rootParent(home), .{ .iterate = true }),
     };
     defer home_dir.close();
-    var fx_dir = try io_mod.openOrCreateVerifiedPrivateDir(&home_dir, profile_paths.root_dir_name);
+    var fx_dir = try io_mod.openOrCreateVerifiedPrivateDir(&home_dir, profile_paths.rootName());
     defer fx_dir.close();
     var diagnostics = try io_mod.openOrCreateVerifiedPrivateDir(&fx_dir, profile_paths.diagnostics_dir_name);
     defer diagnostics.close();

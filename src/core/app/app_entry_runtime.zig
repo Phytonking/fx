@@ -1,4 +1,5 @@
 const std = @import("std");
+const profile_paths = @import("../shared/profile_paths.zig");
 const builtin = @import("builtin");
 const app_lifecycle = @import("app_lifecycle.zig");
 const app_process_runtime = @import("app_process_runtime.zig");
@@ -560,7 +561,7 @@ fn formatUnexpectedError(buffer: []u8, err: anyerror) ![]const u8 {
 /// for any other error.
 fn v2StorageFaultMessage(err: anyerror) ?[]const u8 {
     return switch (err) {
-        error.AccessDenied => "fx: this session cannot be opened for writing: permission denied. Check the permissions under ~/.fx/sessions/v2, then resume again.\n",
+        error.AccessDenied => profile_paths.displayText("fx: this session cannot be opened for writing: permission denied. Check the permissions under ~/.fx/sessions/v2, then resume again.\n"),
         error.ReadOnlyFileSystem => "fx: this session cannot be opened for writing: the disk is read-only.\n",
         error.NoSpaceLeft => "fx: this session cannot be saved: the disk is full. Free some space, then resume again.\n",
         error.FileTooBig => "fx: this session cannot be saved: a file-size limit was reached.\n",

@@ -13,6 +13,7 @@
 const std = @import("std");
 const debug_trace = @import("debug_trace.zig");
 const io_mod = @import("io.zig");
+const profile_paths = @import("profile_paths.zig");
 const text_utils = @import("text_utils.zig");
 
 pub const Rgb = struct { r: u8, g: u8, b: u8 };
@@ -829,7 +830,7 @@ pub fn loadNamed(alloc: std.mem.Allocator, name: []const u8, options: ParseOptio
     if (!validThemeName(name)) return error.InvalidName;
 
     const home = io_mod.homeDir() orelse return error.ThemeNotFound;
-    const dir_path = try alloc.print("{s}/.fx/themes", .{home});
+    const dir_path = try profile_paths.rootPath(alloc, home, &.{"themes"});
     defer alloc.free(dir_path);
     var dir = std.Io.Dir.openDirAbsolute(io_mod.getIo(), dir_path, .{}) catch return error.ThemeNotFound;
     defer dir.close(io_mod.getIo());

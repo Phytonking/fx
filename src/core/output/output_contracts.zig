@@ -1,4 +1,5 @@
 const std = @import("std");
+const profile_paths = @import("../shared/profile_paths.zig");
 const auth_runtime = @import("../auth/auth_runtime.zig");
 const credentials = @import("../auth/credentials.zig");
 const doctor_runtime = @import("../cli/doctor_runtime.zig");
@@ -460,7 +461,7 @@ pub const ConfigSnapshot = struct {
             if (self.show_origin) {
                 switch (entry.origin) {
                     .project => try out.writer.writeAll("file:.fx.json"),
-                    .global => try out.writer.writeAll("file:~/.fx/settings.json"),
+                    .global => try out.writer.writeAll(profile_paths.displayText("file:~/.fx/settings.json")),
                     .workspace => {
                         try out.writer.writeAll("workspace:");
                         try writeTerminalSafe(&out.writer, alloc, self.workspace_root);
@@ -495,7 +496,7 @@ pub const ConfigSnapshot = struct {
                 try std.json.Stringify.value(entry.variable.?, .{}, &out.writer);
             } else {
                 try out.writer.writeAll(",\"file\":");
-                try std.json.Stringify.value(if (entry.origin == .project) ".fx.json" else "~/.fx/settings.json", .{}, &out.writer);
+                try std.json.Stringify.value(if (entry.origin == .project) ".fx.json" else profile_paths.displayText("~/.fx/settings.json"), .{}, &out.writer);
             }
             if (entry.origin == .workspace) {
                 try out.writer.writeAll(",\"workspace\":");
@@ -539,11 +540,11 @@ pub const ConfigChangeSnapshot = struct {
             .text => {
                 try writeTerminalSafe(&out.writer, alloc, self.key);
                 if (self.unset) {
-                    try out.writer.writeAll(if (self.changed) " removed from ~/.fx/settings.json.\n" else " isn't set in ~/.fx/settings.json.\n");
+                    try out.writer.writeAll(if (self.changed) profile_paths.displayText(" removed from ~/.fx/settings.json.\n") else profile_paths.displayText(" isn't set in ~/.fx/settings.json.\n"));
                 } else {
                     try out.writer.writeAll(if (self.changed) " set to " else " is already ");
                     try writeConfigValue(&out.writer, alloc, self.value orelse .null);
-                    try out.writer.writeAll(if (self.changed) " in ~/.fx/settings.json.\n" else ".\n");
+                    try out.writer.writeAll(if (self.changed) profile_paths.displayText(" in ~/.fx/settings.json.\n") else ".\n");
                 }
             },
             .json => {
@@ -551,7 +552,9 @@ pub const ConfigChangeSnapshot = struct {
                 try std.json.Stringify.value(self.key, .{}, &out.writer);
                 try out.writer.writeAll(",\"value\":");
                 try std.json.Stringify.value(self.value orelse .null, .{}, &out.writer);
-                try out.writer.print(",\"changed\":{},\"file\":\"~/.fx/settings.json\"}}", .{self.changed});
+                try out.writer.print(",\"changed\":{},\"file\":", .{self.changed});
+                try std.json.Stringify.value(profile_paths.displayText("~/.fx/settings.json"), .{}, &out.writer);
+                try out.writer.writeByte('}');
             },
         }
         return try out.toOwnedSlice();
@@ -844,6 +847,8 @@ pub const StatusSnapshot = struct {
     /// when the caller has a mode registry with modes.
     modes: ?SessionModes = null,
     workspace_root: []const u8,
+    /// fx's folder: `$FX_HOME`, or `~/.fx` expanded. Shown when set.
+    fx_home: ?[]const u8 = null,
     history_turns: usize,
     session_permission_grants: usize,
     agent_step_limit: usize,
@@ -911,6 +916,7 @@ pub const StatusSnapshot = struct {
         }
         try out.writer.print("[status] permission_mode={s}\n", .{permissions.permissionModeDisplayLabel(self.permission_mode)});
         try out.writer.print("[status] workspace={s}\n", .{self.workspace_root});
+        if (self.fx_home) |path| try out.writer.print("[status] fx_home={s}\n", .{path});
         try out.writer.print("[status] history_turns={d}\n", .{self.history_turns});
         try out.writer.print("[status] session_permission_grants={d}\n", .{self.session_permission_grants});
         try out.writer.print("[status] agent_step_limit={d}\n", .{self.agent_step_limit});
@@ -945,6 +951,7 @@ pub const StatusSnapshot = struct {
         if (self.auth.team) |team| try out.writer.print("team={s}\n", .{team});
         try out.writer.print("permission_mode={s}\n", .{permissions.permissionModeDisplayLabel(self.permission_mode)});
         try out.writer.print("workspace={s}\n", .{self.workspace_root});
+        if (self.fx_home) |path| try out.writer.print("fx_home={s}\n", .{path});
         try out.writer.print("history_turns={d}\n", .{self.history_turns});
         try out.writer.print("session_permission_grants={d}\n", .{self.session_permission_grants});
         try out.writer.print("agent_step_limit={d}\nultrafast_requested={}", .{ self.agent_step_limit, self.ultrafast_requested });
@@ -1066,6 +1073,10 @@ pub const StatusSnapshot = struct {
         }
         try writer.writeAll(",\"workspace\":");
         try std.json.Stringify.value(self.workspace_root, .{}, writer);
+        if (self.fx_home) |path| {
+            try writer.writeAll(",\"fx_home\":");
+            try std.json.Stringify.value(path, .{}, writer);
+        }
         try writer.print(",\"history_turns\":{d}", .{self.history_turns});
         try writer.print(",\"session_permission_grants\":{d}", .{self.session_permission_grants});
         try writer.print(",\"agent_step_limit\":{d}", .{self.agent_step_limit});

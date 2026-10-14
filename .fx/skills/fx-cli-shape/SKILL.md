@@ -9,7 +9,7 @@ fx follows git and Unix conventions for how people and scripts control it. Each 
 
 ## Current versus target
 
-Several pieces the rules rely on aren't built yet: `FX_HOME`, `fx completion`, and the Experimental section of `/settings`. Design new work toward them, but never tell a user to run something that doesn't exist yet. Check `./zig-out/bin/fx help` and `./zig-out/bin/fx <command> --help` when unsure. When a target piece is missing, use the nearest current pattern and say what's missing.
+Two pieces the rules rely on aren't built yet: `fx completion` and the Experimental section of `/settings`. Design new work toward them, but never tell a user to run something that doesn't exist yet. Check `./zig-out/bin/fx help` and `./zig-out/bin/fx <command> --help` when unsure. When a target piece is missing, use the nearest current pattern and say what's missing.
 
 ## Decision order
 

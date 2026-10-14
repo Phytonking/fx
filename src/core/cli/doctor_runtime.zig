@@ -1,4 +1,5 @@
 const std = @import("std");
+const profile_paths = @import("../shared/profile_paths.zig");
 const auth_runtime = @import("../auth/auth_runtime.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
@@ -165,7 +166,7 @@ fn appendUnknownSettingChecks(
     alloc: Allocator,
     paths: config_runtime.Paths,
 ) !void {
-    if (paths.user_settings) |path| try appendUnknownSettingChecksFor(checks, alloc, path, "~/.fx/settings.json", .profile);
+    if (paths.user_settings) |path| try appendUnknownSettingChecksFor(checks, alloc, path, profile_paths.displayText("~/.fx/settings.json"), .profile);
     try appendUnknownSettingChecksFor(checks, alloc, paths.workspace_settings, ".fx.json", .project);
 }
 
@@ -555,15 +556,15 @@ fn recoveryActionForSessionDiagnostic(
         .invalid_commit_intent,
         => std.mem.print(
             buffer,
-            "back up ~/.fx/sessions, then inspect this session with fx session {s} --json",
-            .{session_id},
+            "back up {s}/sessions, then inspect this session with fx session {s} --json",
+            .{ profile_paths.displayRoot(), session_id },
         ),
 
         .missing_authority,
         .invalid_authority,
         .invalid_authority_transition,
         .unsafe_path,
-        => "back up ~/.fx/sessions and avoid opening this session until the path is repaired",
+        => profile_paths.displayText("back up ~/.fx/sessions and avoid opening this session until the path is repaired"),
     };
 }
 
@@ -626,8 +627,8 @@ fn appendMcpConfigCheck(
             var out: std.Io.Writer.Allocating = .init(alloc);
             defer out.deinit();
             try out.writer.print(
-                "~/.fx/mcp.json warning: {s}",
-                .{@tagName(warning.cause)},
+                "{s}/mcp.json warning: {s}",
+                .{ profile_paths.displayRoot(), @tagName(warning.cause) },
             );
             if (warning.key()) |key| try out.writer.print(" key={s}", .{key});
             try out.writer.print(
@@ -645,8 +646,8 @@ fn appendMcpConfigCheck(
         },
         .failed => |err| {
             const detail = try alloc.print(
-                "failed to load ~/.fx/mcp.json: {s}",
-                .{@errorName(err)},
+                "failed to load {s}/mcp.json: {s}",
+                .{ profile_paths.displayRoot(), @errorName(err) },
             );
             try appendCheckOwned(checks, alloc, "mcp_config", .fail, detail);
             return;
@@ -663,7 +664,7 @@ fn formatConfigPresence(alloc: Allocator, user_exists: bool, repo_exists: bool) 
     if (user_exists) {
         if (!first) try out.writer.writeAll(", ");
         first = false;
-        try out.writer.writeAll("~/.fx/settings.json");
+        try out.writer.writeAll(profile_paths.displayText("~/.fx/settings.json"));
     }
     if (repo_exists) {
         if (!first) try out.writer.writeAll(", ");

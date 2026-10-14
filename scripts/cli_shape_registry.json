@@ -53,6 +53,10 @@
       "job": "integration",
       "stability": "stable"
     },
+    "FX_HOME": {
+      "job": "location",
+      "stability": "stable"
+    },
     "FX_MAX_AGENT_STEPS": {
       "job": "setting-override",
       "stability": "stable"

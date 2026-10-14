@@ -148,12 +148,7 @@ pub const Store = struct {
             break :blk try alloc.dupe(u8, home);
         };
         errdefer alloc.free(owned_home);
-        const root = try std.Io.Dir.path.join(alloc, &.{
-            home,
-            profile_paths.root_dir_name,
-            profile_paths.sessions_dir_name,
-            session_layout.sessions_v2_dir,
-        });
+        const root = try profile_paths.rootPath(alloc, home, &.{ profile_paths.sessions_dir_name, session_layout.sessions_v2_dir });
         defer alloc.free(root);
         const manager = try sm.Manager.init(alloc, io_mod.getIo(), .{
             .root = root,
@@ -183,22 +178,22 @@ pub const Store = struct {
     /// install script keeps the default mode, and refusing it would refuse
     /// every resume.
     fn openProfileFolder(store: *Store, name: []const u8) !?io_mod.VerifiedDir {
-        var home = try openHome(store.home);
+        var home = try openHome(profile_paths.rootParent(store.home));
         defer home.close();
-        _ = home.dir.statFile(io_mod.getIo(), profile_paths.root_dir_name, .{ .follow_symlinks = false }) catch |err| switch (err) {
+        _ = home.dir.statFile(io_mod.getIo(), profile_paths.rootName(), .{ .follow_symlinks = false }) catch |err| switch (err) {
             error.FileNotFound => return null,
             else => return err,
         };
-        var fx = try io_mod.openOrCreateVerifiedPrivateDir(&home, profile_paths.root_dir_name);
+        var fx = try io_mod.openOrCreateVerifiedPrivateDir(&home, profile_paths.rootName());
         defer fx.close();
         return io_mod.openVerifiedPrivateDirIfPresent(&fx, name);
     }
 
     /// `~/.fx/{name}`, made `0700` when missing.
     fn makeProfileFolder(store: *Store, name: []const u8) !io_mod.VerifiedDir {
-        var home = try openHome(store.home);
+        var home = try openHome(profile_paths.rootParent(store.home));
         defer home.close();
-        var fx = try io_mod.openOrCreateVerifiedPrivateDir(&home, profile_paths.root_dir_name);
+        var fx = try io_mod.openOrCreateVerifiedPrivateDir(&home, profile_paths.rootName());
         defer fx.close();
         return io_mod.openOrCreateVerifiedPrivateDir(&fx, name);
     }
@@ -1051,7 +1046,7 @@ pub const Session = struct {
     }
 
     fn init(alloc: Allocator, store: *Store, handle: sm.Session, fresh: bool) !*Session {
-        const files_path = try std.Io.Dir.path.join(alloc, &.{ store.home, profile_paths.root_dir_name, files_dir_name, handle.id() });
+        const files_path = try profile_paths.rootPath(alloc, store.home, &.{ files_dir_name, handle.id() });
         errdefer alloc.free(files_path);
         const host = try BlobHost.create(alloc, store, handle);
         errdefer BlobHost.release(host);
@@ -1118,13 +1113,7 @@ pub const Session = struct {
 
     /// The session's folder under `~/.fx/sessions/v2`, for display. Caller owns it.
     pub fn folderPath(self: *const Session, alloc: Allocator) ![]u8 {
-        return std.Io.Dir.path.join(alloc, &.{
-            self.store.home,
-            profile_paths.root_dir_name,
-            profile_paths.sessions_dir_name,
-            session_layout.sessions_v2_dir,
-            self.id(),
-        });
+        return profile_paths.rootPath(alloc, self.store.home, &.{ profile_paths.sessions_dir_name, session_layout.sessions_v2_dir, self.id() });
     }
 
     /// Closes the session and frees the adapter. Every child thread of this
@@ -1203,7 +1192,7 @@ pub const Session = struct {
 
     fn capabilityLocked(self: *Session) !*session_child_store.SessionChildCapability {
         if (self.capability) |*capability| return capability;
-        const terminal_path = try std.Io.Dir.path.join(self.alloc, &.{ self.store.home, profile_paths.root_dir_name, terminal_dir_name, self.id() });
+        const terminal_path = try profile_paths.rootPath(self.alloc, self.store.home, &.{ terminal_dir_name, self.id() });
         defer self.alloc.free(terminal_path);
         self.capability = try session_child_store.SessionChildCapability.initBlobs(self.alloc, self.host.blobs(), terminal_path, .writable);
         return &self.capability.?;

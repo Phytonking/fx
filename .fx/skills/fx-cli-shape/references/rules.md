@@ -109,7 +109,7 @@ Each env var has one job and that job's namespace:
 |---|---|---|
 | Override a setting for one process | `FX_<SETTING>`, same name and values as the setting | `FX_MODEL` |
 | CI credentials | The provider's own name | `AI_GATEWAY_API_KEY` |
-| Location of fx's home | `FX_HOME` (planned) | |
+| Location of fx's home | `FX_HOME` | `FX_HOME=/tmp/fx-test` |
 | Integration with the surroundings | `FX_<INTEGRATION>` | `FX_HERDR=0`, `FX_NO_OPEN_BROWSER=1` |
 | Diagnostics | `FX_TRACE*`, `FX_RECORD*`, `FX_DEBUG_*` | `FX_TRACE=1` |
 | Test hooks | `FX_TEST_*` | Every test hook uses it, and the shape check rejects a test hook without it or another variable with it |
@@ -121,6 +121,7 @@ Each env var has one job and that job's namespace:
 - Every `FX_*` name in `src/` is registered in `scripts/cli_shape_registry.json` with its job and stability; the ones documented on fx.sh are `stable`. CI's `python3 -m scripts.check_cli_shape` fails on an unregistered or stale name.
 - An env var shapes context. It never changes what a command does.
 - Env vars documented on fx.sh are stable.
+- `FX_HOME` is fx's folder itself, an absolute path that replaces `~/.fx` for everything fx keeps there; the OS keychain stays shared. `main` checks it once at startup through `profile_paths.useFxHome`. Code reaches the folder only through `src/core/shared/profile_paths.zig`: `rootPath` and the named helpers build paths, and code that opens the folder without following symlinks opens `rootParent(home)` and then `rootName()`. Never join `HOME` with `.fx`. A message that names a file there writes `~/.fx/...` through `displayText`, or formats `displayRoot()`, so it says `$FX_HOME/...` when the variable is set. Help text documents the default and keeps `~/.fx`.
 - Respect `NO_COLOR` and `TERM=dumb` on every output path, through `src/core/shared/terminal_env.zig` (`NO_COLOR` counts only when non-empty). Help and `fx ask` drop color for either. The interactive session drops color for `NO_COLOR` by turning off `engine.colors_enabled` before startup, so cells never take a color while bold, dim, and reverse stay; it refuses `TERM=dumb` with a message that points to `fx ask`. New output that styles text should go through the terminal engine, or check `terminal_env.colorDisabled()` itself.
 
 ## Slash commands

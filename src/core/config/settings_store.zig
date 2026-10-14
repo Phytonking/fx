@@ -363,7 +363,7 @@ pub const Store = struct {
 
     pub fn initFromHome(alloc: Allocator, home_path: []const u8, mode: OpenMode) !Store {
         const zio = io_mod.getIo();
-        var home = std.Io.Dir.openDirAbsolute(zio, home_path, .{ .iterate = true }) catch |err| switch (err) {
+        var home = std.Io.Dir.openDirAbsolute(zio, profile_paths.rootParent(home_path), .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => {
                 if (mode == .read_only) return initReadOnlyAbsent(alloc, home_path);
                 return err;
@@ -372,7 +372,7 @@ pub const Store = struct {
         };
         defer home.close(zio);
 
-        var durable_home = home.openDir(zio, profile_paths.root_dir_name, .{
+        var durable_home = home.openDir(zio, profile_paths.rootName(), .{
             .iterate = true,
             .follow_symlinks = false,
         }) catch |err| switch (err) {
@@ -380,10 +380,10 @@ pub const Store = struct {
                 if (mode == .read_only) return initReadOnlyAbsent(alloc, home_path);
 
                 var verified_home = io_mod.VerifiedDir{
-                    .dir = try std.Io.Dir.openDirAbsolute(zio, home_path, .{ .iterate = true }),
+                    .dir = try std.Io.Dir.openDirAbsolute(zio, profile_paths.rootParent(home_path), .{ .iterate = true }),
                 };
                 defer verified_home.close();
-                const created = try io_mod.openOrCreateVerifiedPrivateDir(&verified_home, profile_paths.root_dir_name);
+                const created = try io_mod.openOrCreateVerifiedPrivateDir(&verified_home, profile_paths.rootName());
                 break :blk created.dir;
             },
             error.NotDir, error.SymLinkLoop => return error.DurablePathUnsafe,

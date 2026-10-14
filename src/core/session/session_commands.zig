@@ -8,6 +8,7 @@ const config_runtime = @import("../config/config_runtime.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const host = @import("../hosts/host.zig");
 const io_mod = @import("../shared/io.zig");
+const profile_paths = @import("../shared/profile_paths.zig");
 const model_capabilities = @import("../config/model_capabilities.zig");
 const model_provider = @import("../config/model_provider.zig");
 const output_contracts = @import("../output/output_contracts.zig");
@@ -287,6 +288,8 @@ pub fn Commands(comptime App: type) type {
                 preferred = settings.credential_source;
             }
             const auth = app.auth.statusSnapshot(provider, preferred);
+            const fx_home = try profile_paths.activeRoot(app.alloc, io_mod.getenv("HOME"));
+            defer if (fx_home) |path| app.alloc.free(path);
             const text = try (output_contracts.StatusSnapshot{
                 .model = provider_runtime.model(app),
                 .provider = provider,
@@ -301,6 +304,7 @@ pub fn Commands(comptime App: type) type {
                 .auth_help = auth.missingHelp(.interactive),
                 .permission_mode = app.permission_engine.mode,
                 .workspace_root = app.workspace_root,
+                .fx_home = fx_home,
                 .history_turns = app.session.historyLen(),
                 .session_permission_grants = permissions.liveSessionGrantCount(app.permission_engine.grants.items),
                 .agent_step_limit = app.agent_step_limit,

@@ -44,7 +44,7 @@ Names the maintainers already settled. Reuse them; don't add another spelling. "
 | Sound | `sound.turn_end`, `sound.attention_required`, `sound.max` (the older `notifications.*` is still read); `/sound on\|off\|max` and `FX_SOUND` are presets for the group |
 | Status line | `status_line.*` (the older `statusLine` is still read) |
 | Experiments | `experimental.<name>`, for example `experimental.sessions_v2` |
-| Home | `FX_HOME` (planned; default `~/.fx`) |
+| Home | `FX_HOME` (default `~/.fx`) |
 | Test hooks | `FX_TEST_*` |
 | Release channel | `update_channel`; `fx upgrade --channel <name>` saves it, the way a setter command does |
 | Save a default model | `/model` in a session saves it to the profile. `fx config set` refuses the model keys and points there |

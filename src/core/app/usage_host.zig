@@ -9,6 +9,7 @@ const credentials = @import("../auth/credentials.zig");
 const oauth_session = @import("../auth/oauth_session.zig");
 const debug_trace = @import("../shared/debug_trace.zig");
 const io_mod = @import("../shared/io.zig");
+const profile_paths = @import("../shared/profile_paths.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -17,8 +18,19 @@ const vercel_api_origin = "https://api.vercel.com";
 /// driver can move `/usage`'s clock. Unset in normal use.
 const clock_file_env = "FX_TEST_USAGE_CLOCK_FILE";
 
+/// A host with no home directory, for a dashboard that `host` replaces once
+/// the home is known.
+pub const unset: usage.Host = .{ .fetch_fn = fetch, .now_fn = now, .io_fn = io, .home = "" };
+
+/// `home` is the user's home directory; the cache follows `$FX_HOME`.
 pub fn host(home: []const u8) usage.Host {
-    return .{ .fetch_fn = fetch, .now_fn = now, .io_fn = io, .home = home };
+    return .{
+        .fetch_fn = fetch,
+        .now_fn = now,
+        .io_fn = io,
+        .home = profile_paths.rootParent(home),
+        .fx_dir_name = profile_paths.rootName(),
+    };
 }
 
 fn io(_: ?*anyopaque) std.Io {

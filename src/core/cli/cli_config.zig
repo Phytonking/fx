@@ -8,6 +8,7 @@ const config_runtime = @import("../config/config_runtime.zig");
 const env_settings = @import("../config/env_settings.zig");
 const model_provider = @import("../config/model_provider.zig");
 const output_contracts = @import("../output/output_contracts.zig");
+const profile_paths = @import("../shared/profile_paths.zig");
 const settings_entries = @import("../config/settings_entries.zig");
 const settings_keys = @import("../config/settings_keys.zig");
 const settings_messages = @import("settings_messages.zig");
@@ -20,7 +21,9 @@ const tool_result_limits = @import("../tooling/tool_result_limits.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const profile_display = "~/.fx/settings.json";
+fn profileDisplay() []const u8 {
+    return profile_paths.displayText("~/.fx/settings.json");
+}
 pub const project_display = ".fx.json";
 
 pub const Action = enum { list, get, set, unset };
@@ -160,10 +163,10 @@ pub fn change(options: Options, problem: *WriteProblem) error{ RefusedConfigSett
             return .{ .patch = patch, .value = .{ .string = patch.update_channel.?.label() } };
         },
         .theme => {
-            const saved: []const u8 = switch (theme.classifyValue(raw) orelse return invalid(problem, theme_values)) {
+            const saved: []const u8 = switch (theme.classifyValue(raw) orelse return invalid(problem, profile_paths.displayText(theme_values))) {
                 .pin_light => "light",
                 .pin_dark => "dark",
-                .custom => |name| if (theme.validThemeName(name)) name else return invalid(problem, theme_values),
+                .custom => |name| if (theme.validThemeName(name)) name else return invalid(problem, profile_paths.displayText(theme_values)),
             };
             patch.theme = saved;
             return .{ .patch = patch, .value = .{ .string = saved } };
@@ -237,11 +240,11 @@ fn ownerHint(key: []const u8) []const u8 {
         .{ .keys = &.{"permission_mode"}, .hint = "use /permissions in a session, or --permission-mode for one run" },
         .{ .keys = &.{"permission"}, .hint = "use /permissions in a session" },
         .{ .keys = &.{"credential_source"}, .hint = "use fx login" },
-        .{ .keys = &.{"review_model"}, .hint = "edit ~/.fx/settings.json, or set FX_REVIEW_MODEL for one run" },
+        .{ .keys = &.{"review_model"}, .hint = profile_paths.displayText("edit ~/.fx/settings.json, or set FX_REVIEW_MODEL for one run") },
         .{ .keys = &.{ "workspaces", "additional_directories" }, .hint = "use fx workspace" },
         .{ .keys = &.{ "enabledMcpjsonServers", "disabledMcpjsonServers", "enableAllProjectMcpServers" }, .hint = "use fx mcp trust" },
-        .{ .keys = &.{"context_limits"}, .hint = "use --context-limit for one run, or edit ~/.fx/settings.json" },
-        .{ .keys = &.{"provider_order"}, .hint = "use --provider-order for one run, or edit ~/.fx/settings.json" },
+        .{ .keys = &.{"context_limits"}, .hint = profile_paths.displayText("use --context-limit for one run, or edit ~/.fx/settings.json") },
+        .{ .keys = &.{"provider_order"}, .hint = profile_paths.displayText("use --provider-order for one run, or edit ~/.fx/settings.json") },
         .{ .keys = &.{ "yolo_acknowledged", "fast_mode_model_bound", "skill_match_fuzzy" }, .hint = "fx manages it" },
         .{ .keys = &.{"status_line"}, .hint = "set status_line.context, status_line.session, or status_line.workspace" },
         .{ .keys = &.{"sound"}, .hint = "set sound.turn_end, sound.attention_required, or sound.max" },
@@ -252,7 +255,7 @@ fn ownerHint(key: []const u8) []const u8 {
             if (std.mem.eql(u8, name, head)) return entry.hint;
         }
     }
-    return "edit ~/.fx/settings.json";
+    return profile_paths.displayText("edit ~/.fx/settings.json");
 }
 
 /// `can't change permission_mode with fx config; use /permissions ...` or
@@ -338,7 +341,7 @@ pub fn load(
     var profile: ?std.json.Parsed(std.json.Value) = null;
     errdefer if (profile) |*parsed| parsed.deinit();
     if (paths.user_settings) |path| {
-        failed_file.* = profile_display;
+        failed_file.* = profileDisplay();
         profile = try config_runtime.readSettingsFileJson(alloc, path);
     }
     var project: ?std.json.Parsed(std.json.Value) = null;
@@ -373,7 +376,7 @@ pub fn load(
                 scope != .global and std.mem.eql(u8, workspace, workspace_root)
             else
                 scope != .workspace;
-            if (shown) try unknown.append(alloc, unknownSetting(key, profile_display));
+            if (shown) try unknown.append(alloc, unknownSetting(key, profileDisplay()));
         }
     }
     if (project) |parsed| {
@@ -650,7 +653,7 @@ test "load names the file it can't parse" {
         unexpected.deinit(alloc);
         return error.TestExpectedError;
     } else |err| {
-        try std.testing.expectEqualStrings(profile_display, failed.?);
+        try std.testing.expectEqualStrings(profileDisplay(), failed.?);
         try std.testing.expectEqualStrings("isn't valid JSON", loadFailureReason(err));
     }
 }

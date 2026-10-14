@@ -1719,6 +1719,9 @@ fn runNonInteractiveWithDeps(
             snapshot.mcp = localMcpView(&mcp_inspection);
             snapshot.provider_endpoint = startup.provider_endpoint;
             snapshot.modes = statusModes(cfg.mode_registry, snapshot.permission_mode);
+            const fx_home = try profile_paths.activeRoot(alloc, io_mod.getenv("HOME"));
+            defer if (fx_home) |path| alloc.free(path);
+            snapshot.fx_home = fx_home;
             if (opts.format == .json) {
                 try writeStatusJsonLine(alloc, deps, snapshot);
                 return .handled_success;
@@ -3363,8 +3366,8 @@ fn writeMcpProfileWarning(
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
     try out.writer.print(
-        "fx: ~/.fx/mcp.json warning: {s}",
-        .{@tagName(warning.cause)},
+        "fx: {s}/mcp.json warning: {s}",
+        .{ profile_paths.displayRoot(), @tagName(warning.cause) },
     );
     if (warning.key()) |key| {
         var encoded = try text_utils.encodeTerminalSafe(alloc, key, 128);
@@ -4418,9 +4421,11 @@ fn runConfigWrite(alloc: Allocator, deps: RunDeps, opts: cli_config.Options) !Ru
 
     var outcome = config_runtime.setUserPreferences(alloc, planned.patch) catch |err| {
         if (opts.format == .json) {
-            try writeJsonCommandFailure(alloc, deps, "config", err, "failed to save ~/.fx/settings.json");
+            try writeJsonCommandFailure(alloc, deps, "config", err, profile_paths.displayText("failed to save ~/.fx/settings.json"));
         } else {
-            try writeStderrLine(alloc, deps, "fx config: failed to save ~/.fx/settings.json ({s})\n", @errorName(err));
+            const line = try alloc.print("fx config: failed to save {s}/settings.json ({s})\n", .{ profile_paths.displayRoot(), @errorName(err) });
+            defer alloc.free(line);
+            try writeStderr(deps, line);
         }
         return .handled_failure;
     };
@@ -4484,7 +4489,7 @@ fn channelSavedLine(
 ) ![]u8 {
     return switch (outcome) {
         .unchanged => alloc.print("Release channel is already {s}.\n", .{channel.label()}),
-        .committed => alloc.print("Release channel set to {s} in ~/.fx/settings.json.\n", .{channel.label()}),
+        .committed => alloc.print("Release channel set to {s} in {s}/settings.json.\n", .{ channel.label(), profile_paths.displayRoot() }),
     };
 }
 

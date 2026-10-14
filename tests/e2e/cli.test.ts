@@ -1005,6 +1005,57 @@ describe("cli: status", () => {
     );
   }
 
+  test("FX_HOME holds settings and sessions in place of ~/.fx", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "fx-home-")));
+    const gateway = startFakeGateway([fakeGatewayFinalText("SAVED_UNDER_FX_HOME")]);
+    try {
+      const home = join(root, "home");
+      const workspace = join(root, "workspace");
+      const fxHome = join(root, "profile");
+      mkdirSync(home);
+      mkdirSync(workspace);
+      const options = {
+        cwd: workspace,
+        env: {
+          HOME: home,
+          FX_HOME: fxHome,
+          AI_GATEWAY_API_KEY: "fx-home-key",
+          VERCEL_OIDC_TOKEN: undefined,
+          FX_MODEL: FAKE_GATEWAY_MODEL,
+          FX_DISABLE_KEYCHAIN: "1",
+          FX_GATEWAY_BASE_URL: gateway.baseUrl,
+          FX_GATEWAY_CHAT_URL: gateway.chatUrl,
+          FX_TEST_GATEWAY_MODELS_URL: `${gateway.baseUrl}/coding-agent/v1/models`,
+        },
+      };
+
+      const set = await runFx(["config", "set", "theme", "light"], options);
+      expect(set.code).toBe(0);
+      expect(set.stdout).toBe("theme set to light in $FX_HOME/settings.json.\n");
+      expect(JSON.parse(readFileSync(join(fxHome, "settings.json"), "utf8")).theme).toBe("light");
+
+      const status = await runFx(["status", "--json"], options);
+      expect(status.code).toBe(0);
+      expect(JSON.parse(status.stdout).fx_home).toBe(fxHome);
+
+      const asked = await runFx(["ask", "--json", "Say something."], options);
+      expect(asked.code).toBe(0);
+      const sessionId = JSON.parse(asked.stdout).session_id;
+      expect(existsSync(join(fxHome, "sessions"))).toBe(true);
+      const sessions = await runFx(["sessions", "--json"], options);
+      expect(sessions.stdout).toContain(sessionId);
+
+      expect(existsSync(join(home, ".fx"))).toBe(false);
+
+      const relative = await runFx(["status"], { ...options, env: { ...options.env, FX_HOME: "profile" } });
+      expect(relative.code).toBe(1);
+      expect(relative.stderr).toBe("fx: FX_HOME must be an absolute path\n");
+    } finally {
+      gateway.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, TIMEOUT);
+
   test("fresh and resumed asks retain an unavailable exact login with an environment key", async () => {
     const root = mkdtempSync(join(tmpdir(), "fx-ask-exact-source-"));
     const gateway = startFakeGateway([
@@ -1726,6 +1777,24 @@ describe("cli: usage", () => {
         expect(text.code).toBe(0);
         expect(text.stdout).toContain("Budget        $12.00 of $50.00 this month");
         expect(text.stdout).not.toContain(SEEDED_GATEWAY_TOKEN);
+      } finally {
+        fixture.stop();
+      }
+    },
+    TIMEOUT,
+  );
+
+  test(
+    "fx usage keeps its cache in FX_HOME",
+    async () => {
+      const fixture = usageFixture("fx-e2e-usage-fx-home-");
+      const fxHome = join(realpathSync(fixture.root), "profile");
+      const env = { ...fixture.env, AI_GATEWAY_API_KEY: "e2e-usage-key", FX_HOME: fxHome };
+      try {
+        const json = await runFx(["usage", "--json"], { env });
+        expect(json.code).toBe(0);
+        expect(readdirSync(join(fxHome, "usage-cache")).length).toBeGreaterThan(0);
+        expect(existsSync(join(fixture.home, ".fx"))).toBe(false);
       } finally {
         fixture.stop();
       }

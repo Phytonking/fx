@@ -318,9 +318,9 @@ fn describe(err: anyerror) []const u8 {
         error.HomeNotSet => "HOME isn't set",
         error.AccessDenied => "permission denied",
         error.Timeout, error.LockTimeout => "another fx is changing the MCP config; try again",
-        error.McpConfigInvalidJson => "~/.fx/mcp.json isn't valid JSON",
-        error.McpConfigInvalidHeaders => "a server in ~/.fx/mcp.json has headers fx won't send; put a token in bearer_token_env, or sign in with login",
-        else => if (std.mem.startsWith(u8, @errorName(err), "McpConfig")) "~/.fx/mcp.json has a server entry fx can't read" else "something went wrong",
+        error.McpConfigInvalidJson => profile_paths.displayText("~/.fx/mcp.json isn't valid JSON"),
+        error.McpConfigInvalidHeaders => profile_paths.displayText("a server in ~/.fx/mcp.json has headers fx won't send; put a token in bearer_token_env, or sign in with login"),
+        else => if (std.mem.startsWith(u8, @errorName(err), "McpConfig")) profile_paths.displayText("~/.fx/mcp.json has a server entry fx can't read") else "something went wrong",
     };
 }
 
@@ -335,7 +335,7 @@ fn paths(c: Context, arena: Allocator) !Paths {
 
 fn fileLabel(file: config_file.File) []const u8 {
     return switch (file) {
-        .profile => "~/.fx/mcp.json",
+        .profile => profile_paths.displayText("~/.fx/mcp.json"),
         .project => ".mcp.json",
     };
 }
@@ -575,7 +575,7 @@ fn add(c: Context, arena: Allocator, name: []const u8, file: config_file.File, e
     try c.out.print("Added {s} to {s}.\n", .{ name, fileLabel(file) });
     const other: config_file.File = if (file == .project) .profile else .project;
     if (try defines(c, arena, other, if (other == .project) p.project else p.profile, name)) {
-        try c.out.print("{s} is also in {s}; the one in ~/.fx/mcp.json is used.\n", .{ name, fileLabel(other) });
+        try c.out.print("{s} is also in {s}; the one in {s}/mcp.json is used.\n", .{ name, fileLabel(other), profile_paths.displayRoot() });
     }
     return 0;
 }
@@ -591,11 +591,11 @@ fn remove(c: Context, arena: Allocator, name: []const u8, only: ?config_file.Fil
     const in_profile = (only == null or only == .profile) and try defines(c, arena, .profile, p.profile, name);
     const in_project = (only == null or only == .project) and try defines(c, arena, .project, p.project, name);
     if (in_profile and in_project) {
-        try c.err.print("{s} is in both ~/.fx/mcp.json and .mcp.json. Add --global or --project.\n", .{try safe(arena, name)});
+        try c.err.print("{s} is in both {s}/mcp.json and .mcp.json. Add --global or --project.\n", .{ try safe(arena, name), profile_paths.displayRoot() });
         return 2;
     }
     if (!in_profile and !in_project) {
-        const where = if (only) |f| fileLabel(f) else "~/.fx/mcp.json or .mcp.json";
+        const where = if (only) |f| fileLabel(f) else profile_paths.displayText("~/.fx/mcp.json or .mcp.json");
         try c.err.print("No MCP server named {s} in {s}.\n", .{ try safe(arena, name), where });
         return 1;
     }
