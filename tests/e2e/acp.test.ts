@@ -8222,7 +8222,8 @@ describe("acp: model-independent", () => {
         const resp = await client.request("initialize", { protocolVersion: 1 }, 1) as any;
         expect(resp.error).toBeDefined();
         expect(resp.error.message).toContain("fx login");
-        expect(resp.error.message).toContain("fx setup");
+        expect(resp.error.message).toContain("fx login vercel --api-key");
+        expect(resp.error.message).not.toContain("fx setup");
         expect(resp.error.message).toContain("AI_GATEWAY_API_KEY");
         expect(client.stderr).toBe("");
       } finally {
