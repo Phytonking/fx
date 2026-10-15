@@ -132,7 +132,8 @@ test.skipIf(SKIP_TMUX)("/thread rejects bad names, duplicates, and unknown threa
     await tui.sendText("/thread new beta write hello");
     await tui.waitForText("already exists", 10000);
 
-    await tui.sendText("/thread nonsense");
+    // A command word used wrongly reports usage; it never starts a thread.
+    await tui.sendText("/thread stop");
     await tui.waitForText("usage: /thread", 10000);
   } finally {
     await tui?.kill();
@@ -841,6 +842,44 @@ test.skipIf(SKIP_TMUX)("thread_new refuses a name that already exists and tells 
     await tui.waitForText("TOOL_ROUND_DONE", 30000);
     expect(bodies.some(b => b.includes("A thread named alpha already exists"))).toBe(true);
     expect(bodies.some(b => b.includes("use thread_send"))).toBe(true);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 120_000);
+
+test.skipIf(SKIP_TMUX)("/thread with plain instructions starts a thread named from them", async () => {
+  const fixture = createFixture("instructions");
+  const gateway = startGateway();
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("/thread write hello for the docs page");
+    await tui.waitForText("Started thread write-hello-for-the-docs", 20000);
+
+    await tui.sendText("/thread list");
+    await tui.waitForText("write-hello-for-the-docs", 10000);
+
+    // The thread was given the instructions as its task and answered them.
+    let seen = false;
+    for (let attempt = 0; attempt < 20 && !seen; attempt++) {
+      await tui.sendText("/thread watch write-hello-for-the-docs 10");
+      try {
+        await tui.waitForText("THREAD_ANSWER_OK", 2000);
+        seen = true;
+      } catch {
+        // Not there yet.
+      }
+    }
+    expect(seen).toBe(true);
+
+    // The same words again make a second, distinct thread.
+    await tui.sendText("/thread write hello for the docs page");
+    await tui.waitForText("Started thread write-hello-for-the-docs-2", 20000);
+
+    // A command word used wrongly is a usage error and starts nothing.
+    await tui.sendText("/thread list everything");
+    await tui.waitForText("usage: /thread", 10000);
   } finally {
     await tui?.kill();
     gateway.stop();

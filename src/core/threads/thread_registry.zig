@@ -128,6 +128,55 @@ pub fn validateName(name: []const u8) Error!void {
     if (std.mem.eql(u8, name, root_thread_name)) return error.ReservedThreadName;
 }
 
+const suggest_max_words: usize = 5;
+
+/// A thread name for free-form instructions: the first few words as a slug,
+/// made unique among `registry`'s threads and never `main`. Caller owns the
+/// result.
+pub fn suggestName(alloc: Allocator, registry: *const Registry, instructions: []const u8) Allocator.Error![]u8 {
+    var base: std.ArrayList(u8) = .empty;
+    defer base.deinit(alloc);
+    var words: usize = 0;
+    var it = std.mem.tokenizeAny(u8, instructions, " \t\r\n");
+    while (it.next()) |raw| {
+        if (words == suggest_max_words) break;
+        var word: [max_name_bytes]u8 = undefined;
+        var len: usize = 0;
+        for (raw) |c| {
+            if (len == word.len) break;
+            if (std.ascii.isAlphanumeric(c)) {
+                word[len] = std.ascii.toLower(c);
+                len += 1;
+            } else if (len > 0 and word[len - 1] != '-') {
+                word[len] = '-';
+                len += 1;
+            }
+        }
+        while (len > 0 and word[len - 1] == '-') len -= 1;
+        if (len == 0) continue;
+        const separator: usize = if (base.items.len == 0) 0 else 1;
+        if (base.items.len + separator + len > max_name_bytes) break;
+        if (separator == 1) try base.append(alloc, '-');
+        try base.appendSlice(alloc, word[0..len]);
+        words += 1;
+    }
+    if (base.items.len == 0) try base.appendSlice(alloc, "thread");
+
+    // Leave room for a "-N" suffix when the plain name is taken.
+    var candidate = try alloc.dupe(u8, base.items);
+    errdefer alloc.free(candidate);
+    var n: usize = 1;
+    while (registry.find(candidate) != null or std.mem.eql(u8, candidate, root_thread_name)) {
+        n += 1;
+        alloc.free(candidate);
+        var suffix_buf: [16]u8 = undefined;
+        const suffix = std.mem.print(&suffix_buf, "-{d}", .{n}) catch unreachable;
+        const keep = @min(base.items.len, max_name_bytes - suffix.len);
+        candidate = try std.mem.concat(alloc, u8, &.{ std.mem.trimEnd(u8, base.items[0..keep], "-"), suffix });
+    }
+    return candidate;
+}
+
 /// The agent name behind a thread. `unique` is any short string unique per
 /// creation, such as a timestamp in hex. Caller owns the result.
 pub fn agentNameFor(alloc: Allocator, name: []const u8, unique: u64) ![]u8 {
@@ -318,4 +367,50 @@ test "agent names are valid subagent names" {
     const agent = try agentNameFor(alloc, "fix-auth", 0xabc123);
     defer alloc.free(agent);
     try std.testing.expectEqualStrings("th-abc123-fix-auth", agent);
+}
+
+test "suggested names are a slug of the first words and stay valid" {
+    const alloc = std.testing.allocator;
+    var registry = try Registry.init(alloc, "root1");
+    defer registry.deinit(alloc);
+
+    const plain = try suggestName(alloc, &registry, "Fix the login bug after a token refresh");
+    defer alloc.free(plain);
+    try std.testing.expectEqualStrings("fix-the-login-bug-after", plain);
+    try validateName(plain);
+
+    const punctuated = try suggestName(alloc, &registry, "  ...Add `foo.bar` & tests!!  ");
+    defer alloc.free(punctuated);
+    try std.testing.expectEqualStrings("add-foo-bar-tests", punctuated);
+    try validateName(punctuated);
+
+    const empty = try suggestName(alloc, &registry, "!!! ???");
+    defer alloc.free(empty);
+    try std.testing.expectEqualStrings("thread", empty);
+
+    const long = try suggestName(alloc, &registry, "internationalization-and-localization-infrastructure-overhaul now");
+    defer alloc.free(long);
+    try std.testing.expect(long.len <= max_name_bytes);
+    try validateName(long);
+}
+
+test "suggested names avoid taken names and main" {
+    const alloc = std.testing.allocator;
+    var registry = try Registry.init(alloc, "root1");
+    defer registry.deinit(alloc);
+    try registry.add(alloc, "fix-the-bug", "th-1-fix-the-bug", 1);
+
+    const second = try suggestName(alloc, &registry, "fix the bug");
+    defer alloc.free(second);
+    try std.testing.expectEqualStrings("fix-the-bug-2", second);
+    try registry.add(alloc, second, "th-2-x", 2);
+
+    const third = try suggestName(alloc, &registry, "fix the bug");
+    defer alloc.free(third);
+    try std.testing.expectEqualStrings("fix-the-bug-3", third);
+
+    const main_named = try suggestName(alloc, &registry, "main");
+    defer alloc.free(main_named);
+    try std.testing.expectEqualStrings("main-2", main_named);
+    try validateName(main_named);
 }

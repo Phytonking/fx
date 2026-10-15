@@ -17,7 +17,7 @@ const thread_tools = @import("../threads/thread_tools.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const usage = "usage: /thread new NAME TASK | list | switch NAME | watch NAME [LINES] | send NAME MESSAGE | stop NAME | rename OLD NEW | delete NAME";
+pub const usage = "usage: /thread INSTRUCTIONS | new NAME TASK | list | switch NAME | watch NAME [LINES] | send NAME MESSAGE | stop NAME | rename OLD NEW | delete NAME";
 /// Lines a live view keeps on screen; older ones scroll out of it.
 const follow_lines: usize = 12;
 const follow_interval_ms: i64 = 120;
@@ -49,6 +49,8 @@ pub const WatchState = struct {
 
 pub const Action = union(enum) {
     list,
+    /// Free-form instructions: start a thread named from them.
+    start: []const u8,
     new: struct { name: []const u8, task: []const u8 },
     /// `lines` null follows the thread live; a count prints that many once.
     watch: struct { name: []const u8, lines: ?usize },
@@ -101,7 +103,10 @@ pub fn parse(rest: []const u8) ParseError!Action {
         if (old.len == 0 or new.len == 0 or extra.len != 0) return error.InvalidThreadCommand;
         return .{ .rename = .{ .old = old, .new = new } };
     }
-    return error.InvalidThreadCommand;
+    // Anything that is not a command word is instructions for a new thread.
+    // Command words always parse as commands, so a typo such as `/thread stop`
+    // reports its usage instead of starting a model run.
+    return .{ .start = trimmed };
 }
 
 fn splitWord(text: []const u8) struct { []const u8, []const u8 } {
@@ -177,6 +182,11 @@ pub fn Runtime(comptime App: type) type {
             }
             switch (action) {
                 .new => |a| try create(app, host, &registry, root_id, home, a.name, a.task),
+                .start => |instructions| {
+                    const name = try thread_registry.suggestName(app.alloc, &registry, instructions);
+                    defer app.alloc.free(name);
+                    try create(app, host, &registry, root_id, home, name, instructions);
+                },
                 .send => |a| try send(app, host, &registry, root_id, a.name, a.message),
                 .watch => |a| try watch(app, host, &registry, a.name, a.lines),
                 .stop => |name| try stop(app, host, &registry, name),
@@ -288,7 +298,7 @@ pub fn Runtime(comptime App: type) type {
             );
             switch (outcome) {
                 .started => |s| if (s.saved)
-                    try noticeFmt(app, .success, "thread", "Started thread {s}.", .{name})
+                    try noticeFmt(app, .success, "thread", "Started thread {s}. Follow it with /thread watch {s}.", .{ name, name })
                 else
                     try noticeFmt(app, .warning, "thread", "Started {s}, but the thread list was not saved.", .{name}),
                 .invalid_name => |err| try notice(app, .@"error", "thread", nameProblem(err)),
@@ -553,6 +563,17 @@ fn nameProblem(err: anyerror) []const u8 {
     };
 }
 
+test "thread command treats text that is not a command as instructions" {
+    const start = (try parse("fix the login bug after a token refresh")).start;
+    try std.testing.expectEqualStrings("fix the login bug after a token refresh", start);
+    try std.testing.expectEqualStrings("review @thread:boon", (try parse("  review @thread:boon ")).start);
+    // A command word keeps its meaning, and misusing it is an error, not a thread.
+    try std.testing.expectError(error.InvalidThreadCommand, parse("stop"));
+    try std.testing.expectError(error.InvalidThreadCommand, parse("list all the TODOs"));
+    // `new NAME TASK` is the way to start from words that begin like a command.
+    try std.testing.expectEqualStrings("todos", (try parse("new todos list all the TODOs")).new.name);
+}
+
 test "thread command parses each verb" {
     try std.testing.expect((try parse("")) == .list);
     try std.testing.expect((try parse("list")) == .list);
@@ -570,7 +591,7 @@ test "thread command parses each verb" {
 }
 
 test "thread command rejects malformed input" {
-    for ([_][]const u8{ "new", "new a", "send a", "watch", "watch a 0", "watch a x", "stop", "stop a b", "rename a", "frob", "list x" }) |bad| {
+    for ([_][]const u8{ "new", "new a", "send a", "watch", "watch a 0", "watch a x", "stop", "stop a b", "rename a", "list x" }) |bad| {
         try std.testing.expectError(error.InvalidThreadCommand, parse(bad));
     }
 }
