@@ -26,28 +26,15 @@ const watch_interval_ms: u64 = 25;
 const terminate_grace_ms: u64 = 3000;
 const text_separator = "\n\n";
 
-/// Environment variables that make the CLI bill an API account instead of the
-/// subscription the user signed in with.
-const billing_overrides = [_][]const u8{ "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN" };
-
 const appended_system_prompt =
     "You are running as the model behind fx, a terminal coding agent. " ++
     "fx shows your replies and the tools you run to the user. " ++
     "Reply concisely and use your own tools to inspect and change the workspace.";
 
-pub const Error = error{
-    ClaudeCliMissing,
-    ClaudeCliLaunchFailed,
-    ClaudeCliNotSignedIn,
-    ClaudeCliFailed,
-    InvalidClaudeModel,
-    EmptyClaudePrompt,
-};
-
 // Prompt construction.
 
 /// What `claude -p` receives: the prompt text and the CLI session to continue.
-pub const Turn = struct {
+const Turn = struct {
     prompt: []u8,
     /// Borrowed from the request's replay state.
     resume_session: ?[]const u8,
@@ -97,7 +84,7 @@ fn appendMessage(out: *std.Io.Writer.Allocating, label: []const u8, content: []c
 /// conversation as text. Continuing sends only the user messages that came after
 /// the last assistant reply, which keeps Claude's own tool history intact.
 /// The returned prompt is owned by `alloc`; `resume_session` borrows `arena`.
-pub fn buildTurn(
+fn buildTurn(
     alloc: Allocator,
     arena: Allocator,
     messages: []const types.ChatMessage,
@@ -170,7 +157,7 @@ pub fn buildTurn(
 /// `ask` read-only. `auto` uses Claude Code's own reviewed mode, the counterpart
 /// of fx's automatic review. `full-access` is the user's explicit choice to run
 /// everything without asking.
-pub fn claudePermissionMode(mode: types.PermissionMode) []const u8 {
+fn claudePermissionMode(mode: types.PermissionMode) []const u8 {
     return switch (mode) {
         .ask => "manual",
         .auto => "auto",
@@ -178,7 +165,7 @@ pub fn claudePermissionMode(mode: types.PermissionMode) []const u8 {
     };
 }
 
-pub const ArgvOptions = struct {
+const ArgvOptions = struct {
     model: []const u8,
     resume_session: ?[]const u8 = null,
     permission_mode: types.PermissionMode = .ask,
@@ -190,7 +177,7 @@ pub const ArgvOptions = struct {
 /// Builds the command line. The prompt travels on stdin, so no user text reaches
 /// argv. Claude Code reads no settings files, so repository settings cannot run
 /// hooks.
-pub fn buildArgv(
+fn buildArgv(
     arena: Allocator,
     binary: []const u8,
     options: ArgvOptions,
@@ -247,7 +234,7 @@ const BlockKind = union(enum) {
     tool: usize,
 };
 
-pub const Outcome = struct {
+const Outcome = struct {
     session_id: ?[]u8 = null,
     is_error: bool = false,
     error_text: ?[]u8 = null,
@@ -259,7 +246,7 @@ pub const Outcome = struct {
 /// Folds the CLI's JSON lines into one completion while relaying text, thinking,
 /// and tool starts to `events` as they arrive. Everything it keeps lives in its
 /// own arena until `finish` copies the completion out.
-pub const Reducer = struct {
+const Reducer = struct {
     arena: std.heap.ArenaAllocator,
     events: stream_provider.EventSink,
     content: std.ArrayList(u8) = .empty,
@@ -267,6 +254,9 @@ pub const Reducer = struct {
     block: ?BlockKind = null,
     outcome: Outcome = .{},
     saw_stream_text: bool = false,
+    /// A plain completion is not saved by the CLI, so its session id must not
+    /// become replay state for the next turn.
+    completion_only: bool = false,
     /// Context size of the most recent model call. The final result sums every
     /// call in the turn, which overstates how full the context is.
     last_call_usage: ?types.Usage = null,
@@ -440,8 +430,8 @@ pub const Reducer = struct {
         }
     }
 
-    /// Builds the owned completion. A turn the CLI ended with an error returns
-    /// `ClaudeCliFailed` text through `Failure` instead; see `failureFrom`.
+    /// Builds the owned completion. A turn the CLI ended with an error is turned
+    /// into a failure by the caller instead.
     pub fn finish(self: *Reducer, alloc: Allocator) !types.ModelCompletion {
         // The CLI's final `result` text is the answer when no text streamed, for
         // example when the model replied only through tools.
@@ -453,7 +443,7 @@ pub const Reducer = struct {
         for (self.tools.items) |record| {
             const result = record.result orelse "";
             const output = if (record.failed)
-                try std.fmt.allocPrint(self.a(), "Tool {s} failed: {s}", .{ record.name, result })
+                try self.a().print("Tool {s} failed: {s}", .{ record.name, result })
             else
                 result;
             try calls.append(self.a(), .{
@@ -469,10 +459,11 @@ pub const Reducer = struct {
         errdefer types.freeToolCallSlice(alloc, owned_calls);
         const content = try alloc.dupe(u8, self.content.items);
         errdefer alloc.free(content);
-        const state = if (self.outcome.session_id) |session|
-            try std.fmt.allocPrint(alloc, "{{\"claude_session_id\":\"{s}\"}}", .{session})
-        else
-            null;
+        const state: ?[]u8 = blk: {
+            if (self.completion_only) break :blk null;
+            const session = self.outcome.session_id orelse break :blk null;
+            break :blk try alloc.print("{{\"claude_session_id\":\"{s}\"}}", .{session});
+        };
         errdefer if (state) |value| alloc.free(value);
 
         return .{
@@ -570,7 +561,7 @@ fn projectReplay(
 
 // Failure mapping.
 
-pub const FailureText = struct {
+const FailureText = struct {
     kind: stream_provider.FailureKind,
     detail: []const u8,
 };
@@ -583,7 +574,7 @@ pub const FailureText = struct {
 /// limit cannot succeed until its window resets, so another attempt would only
 /// repeat the wait. The CLI's own message, which names the reset time, is the
 /// detail.
-pub fn classifyFailure(text: []const u8) FailureText {
+fn classifyFailure(text: []const u8) FailureText {
     const signed_out_needles = [_][]const u8{ "not logged in", "please run /login", "invalid api key", "oauth token has expired", "authentication_error" };
     for (signed_out_needles) |needle| {
         if (std.ascii.findIgnoreCase(text, needle) != null) {
@@ -745,25 +736,12 @@ const RunResult = struct {
     resume_missing: bool = false,
 };
 
-/// The child's environment without variables that would bill an API account.
 /// Claude Code works in the session's workspace, which is not always the
 /// directory fx was started in.
 fn workingDirectory(workspace_root: ?[]const u8) std.process.Child.Cwd {
     const root = workspace_root orelse return .inherit;
     if (root.len == 0 or !std.Io.Dir.path.isAbsolute(root)) return .inherit;
     return .{ .path = root };
-}
-
-/// Failing to copy the environment fails the launch: inheriting it unchanged
-/// could charge the wrong account.
-fn spawnEnvironment(alloc: Allocator) !std.process.Environ.Map {
-    var map = io_mod.cloneEnvironMap(alloc) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.ClaudeCliLaunchFailed,
-    };
-    errdefer map.deinit();
-    for (billing_overrides) |name| _ = map.swapRemove(name);
-    return map;
 }
 
 fn runOnce(
@@ -781,7 +759,10 @@ fn runOnce(
         .completion_only = turn.completion_only,
     });
 
-    var environment = try spawnEnvironment(alloc);
+    var environment = claude_cli_auth.scrubbedEnvironment(alloc) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.EnvironmentUnavailable => return error.ClaudeCliLaunchFailed,
+    };
     defer environment.deinit();
 
     const io = io_mod.getIo();
@@ -827,10 +808,11 @@ fn runOnce(
 
     var stdin_file = child.stdin orelse return error.ClaudeCliLaunchFailed;
     child.stdin = null;
+    // A command that exits at once, for example on a sign-in failure, closes the
+    // pipe before the prompt is written. Its own output explains why, so carry on
+    // to read it instead of reporting a bare launch failure.
     stdin_file.writeStreamingAll(io, turn.prompt) catch |err| {
-        stdin_file.close(io);
         debug_trace.logf("gateway", "claude cli prompt write failed err={s}", .{@errorName(err)});
-        return error.ClaudeCliLaunchFailed;
     };
     stdin_file.close(io);
 
@@ -840,6 +822,7 @@ fn runOnce(
 
     var reducer = Reducer.init(alloc, request.events);
     defer reducer.deinit();
+    reducer.completion_only = turn.completion_only;
 
     var line: std.Io.Writer.Allocating = .init(alloc);
     defer line.deinit();
@@ -876,7 +859,7 @@ fn runOnce(
     if (watch.interrupted.load(.acquire)) return error.Timeout;
 
     const exited_cleanly = term == .exited and term.exited == 0;
-    if (reducer.outcome.is_error or (!reducer.outcome.saw_result and !exited_cleanly)) {
+    if (reducer.outcome.is_error or !reducer.outcome.saw_result or !exited_cleanly) {
         const diagnostics = if (reducer.outcome.error_text == null and stderr_tail != null)
             try stderr_tail.?.text(alloc)
         else
@@ -888,14 +871,14 @@ fn runOnce(
         }
         const classified = classifyFailure(text);
         const base_detail = if (classified.kind == .provider_error and diagnostics != null)
-            try std.fmt.allocPrint(alloc, "Claude Code failed: {s}", .{classified.detail[0..@min(classified.detail.len, max_diagnostic_detail_bytes)]})
+            try alloc.print("Claude Code failed: {s}", .{classified.detail[0..@min(classified.detail.len, max_diagnostic_detail_bytes)]})
         else
             try alloc.dupe(u8, classified.detail);
         errdefer alloc.free(base_detail);
         const detail = if (try reducer.toolSummary(alloc)) |summary| joined: {
             defer alloc.free(summary);
             defer alloc.free(base_detail);
-            break :joined try std.fmt.allocPrint(alloc, "{s} {s}", .{ base_detail, summary });
+            break :joined try alloc.print("{s} {s}", .{ base_detail, summary });
         } else base_detail;
         return .{ .failure = .{
             .kind = classified.kind,
@@ -1168,8 +1151,7 @@ test "reducer truncates an oversized tool result" {
     const big = try std.testing.allocator.alloc(u8, max_tool_result_bytes + 10);
     defer std.testing.allocator.free(big);
     @memset(big, 'x');
-    const line = try std.fmt.allocPrint(
-        std.testing.allocator,
+    const line = try std.testing.allocator.print(
         "{{\"type\":\"user\",\"message\":{{\"content\":[{{\"tool_use_id\":\"t1\",\"type\":\"tool_result\",\"content\":\"{s}\"}}]}}}}",
         .{big},
     );
@@ -1235,7 +1217,7 @@ fn containsPair(argv: []const []const u8, flag: []const u8, value: []const u8) b
 }
 
 fn testReplay(session: []const u8, model: []const u8) !types.ProviderReplay {
-    const json = try std.fmt.allocPrint(std.testing.allocator, "{{\"claude_session_id\":\"{s}\"}}", .{session});
+    const json = try std.testing.allocator.print("{{\"claude_session_id\":\"{s}\"}}", .{session});
     return .{ .source = .{ .provider = .claude, .model = model }, .parts_json = json };
 }
 
@@ -1384,8 +1366,7 @@ test "a failed turn names the tools Claude Code already ran" {
     defer reducer.deinit();
     try std.testing.expect((try reducer.toolSummary(std.testing.allocator)) == null);
     for ([_][]const u8{ "Read", "Edit", "Bash", "Write", "Glob", "Grep", "Task" }, 0..) |name, index| {
-        const line = try std.fmt.allocPrint(
-            std.testing.allocator,
+        const line = try std.testing.allocator.print(
             "{{\"type\":\"stream_event\",\"event\":{{\"type\":\"content_block_start\",\"index\":{d},\"content_block\":{{\"type\":\"tool_use\",\"id\":\"t{d}\",\"name\":\"{s}\"}}}}}}",
             .{ index, index, name },
         );
@@ -1406,3 +1387,25 @@ test "the child works in the session's workspace only when the root is absolute"
     try std.testing.expect(workingDirectory("relative/dir") == .inherit);
     try std.testing.expectEqualStrings("/Users/example/project", workingDirectory("/Users/example/project").path);
 }
+
+test "a plain completion never leaves replay state for the next turn" {
+    var sink: TestSink = .{};
+    defer sink.deinit();
+    for ([_]bool{ false, true }) |completion_only| {
+        var reducer = Reducer.init(std.testing.allocator, sink.sink());
+        defer reducer.deinit();
+        reducer.completion_only = completion_only;
+        try feedAll(&reducer, textTurnFixture);
+        const completion = try reducer.finish(std.testing.allocator);
+        var owned = stream_provider.Result{ .completed = .{ .completion = completion, .ownership = .owned } };
+        defer owned.deinit(std.testing.allocator);
+        try std.testing.expectEqual(!completion_only, completion.provider_state_json != null);
+    }
+}
+
+const textTurnFixture =
+    \\{"type":"system","subtype":"init","session_id":"sess-9"}
+    \\{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}
+    \\{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}}
+    \\{"type":"result","subtype":"success","is_error":false,"result":"hi","session_id":"sess-9"}
+;

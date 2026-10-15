@@ -10,7 +10,11 @@ import { TmuxSession, tmuxAvailable } from "./tmux-helpers";
 // be checked without a Claude account or the network.
 const FAKE_CLAUDE = `#!/bin/sh
 dir="$FAKE_CLAUDE_DIR"
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then cat "$dir/status.json"; exit 0; fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  # Like the real CLI, an API key in the environment hides the subscription login.
+  if [ -n "$ANTHROPIC_API_KEY" ]; then echo '{"loggedIn":true,"authMethod":"api_key"}'; exit 0; fi
+  cat "$dir/status.json"; exit 0
+fi
 if [ "$1" = "auth" ] && [ "$2" = "login" ]; then
   echo login >> "$dir/calls.log"
   cp "$dir/status-after-login.json" "$dir/status.json"
@@ -26,6 +30,7 @@ if [ -n "$ANTHROPIC_API_KEY" ]; then echo present > "$dir/apikey.$n"; else echo 
 echo "$$" > "$dir/pid.$n"
 pwd -P > "$dir/cwd.$n"
 if [ -f "$dir/bgerr" ]; then (sleep 8 >/dev/null &); fi
+if [ -f "$dir/exit-early" ]; then cat "$dir/stream.default"; exit 0; fi
 if [ -f "$dir/stderr" ]; then cat "$dir/stderr" >&2; exit 3; fi
 if [ -f "$dir/stream.$n" ]; then cat "$dir/stream.$n"; else cat "$dir/stream.default"; fi
 if [ -f "$dir/hold" ]; then
@@ -220,6 +225,45 @@ describe("claude provider (delegated Claude Code)", () => {
       expect(f.argv(3)).not.toContain("--resume");
       expect(f.stdin(3)).toContain("First question");
       expect(f.stdin(3)).toContain("Second question");
+    } finally {
+      f.cleanup();
+    }
+  }, 45000);
+
+  test("an API key in the environment does not hide the subscription sign-in", async () => {
+    const f = createFixture();
+    try {
+      const run = await runFx(["ask", "--json", "--no-save", "hello"], {
+        cwd: f.workspace,
+        env: { ...f.env, ANTHROPIC_API_KEY: "sk-ant-test-env-key", ANTHROPIC_BASE_URL: "https://proxy.example.com" },
+        timeoutMs: 20000,
+      });
+      if (run.code !== 0) throw new Error(run.stdout + run.stderr);
+      expect(JSON.parse(run.stdout).output).toBe("pong");
+    } finally {
+      f.cleanup();
+    }
+  }, 30000);
+
+  test("a clean exit with no result is a failure, not an empty answer", async () => {
+    const f = createFixture({ stream: init("sess-trunc-1") + textStart() + textDelta("half an ans") });
+    try {
+      const run = await runFx(["ask", "--no-save", "hello"], { cwd: f.workspace, env: f.env, timeoutMs: 20000 });
+      expect(run.code).not.toBe(0);
+      expect(run.stdout + run.stderr).toContain("ended without a result");
+    } finally {
+      f.cleanup();
+    }
+  }, 30000);
+
+  test("a command that exits before reading the prompt still reports its own error", async () => {
+    const f = createFixture({ stream: line({ type: "result", subtype: "error_during_execution", is_error: true, result: "Not logged in. Please run /login" }) });
+    try {
+      writeFileSync(join(f.dir, "exit-early"), "");
+      const run = await runFx(["ask", "--no-save"], { cwd: f.workspace, env: f.env, stdin: "y".repeat(2_000_000), timeoutMs: 30000 });
+      expect(run.code).not.toBe(0);
+      // The CLI's own sign-in error, not a bare launch failure.
+      expect(run.stdout + run.stderr).toContain("authentication failed");
     } finally {
       f.cleanup();
     }
