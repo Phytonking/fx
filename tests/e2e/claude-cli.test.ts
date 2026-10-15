@@ -24,6 +24,8 @@ printf '%s\\n' "$@" > "$dir/argv.$n"
 cat > "$dir/stdin.$n"
 if [ -n "$ANTHROPIC_API_KEY" ]; then echo present > "$dir/apikey.$n"; else echo absent > "$dir/apikey.$n"; fi
 echo "$$" > "$dir/pid.$n"
+if [ -f "$dir/bgerr" ]; then (sleep 8 >/dev/null &); fi
+if [ -f "$dir/stderr" ]; then cat "$dir/stderr" >&2; exit 3; fi
 if [ -f "$dir/stream.$n" ]; then cat "$dir/stream.$n"; else cat "$dir/stream.default"; fi
 if [ -f "$dir/hold" ]; then sleep 30; fi
 `;
@@ -223,6 +225,40 @@ describe("claude provider (delegated Claude Code)", () => {
       f.cleanup();
     }
   }, 45000);
+
+  test("a Claude Code crash without a result shows what it wrote to stderr", async () => {
+    const f = createFixture();
+    try {
+      writeFileSync(join(f.dir, "stderr"), "claude: unexpected failure code E_TEST_CRASH\u0007\n");
+      const run = await runFx(["ask", "--no-save", "hello"], { cwd: f.workspace, env: f.env, timeoutMs: 30000 });
+      expect(run.code).not.toBe(0);
+      const output = run.stdout + run.stderr;
+      expect(output).toContain("E_TEST_CRASH");
+      expect(output).not.toContain("\u0007");
+      expect(f.runs()).toBe(1);
+    } finally {
+      f.cleanup();
+    }
+  }, 30000);
+
+  test("a background process holding stderr open does not delay or hang the turn", async () => {
+    const f = createFixture();
+    try {
+      writeFileSync(join(f.dir, "bgerr"), "");
+      const run = await runFx(["ask", "--json", "--no-save", "hello"], { cwd: f.workspace, env: f.env, timeoutMs: 20000 });
+      if (run.code !== 0) throw new Error(run.stdout + run.stderr);
+      expect(JSON.parse(run.stdout).output).toBe("pong");
+      expect(run.elapsedMs).toBeLessThan(6000);
+
+      writeFileSync(join(f.dir, "stderr"), "claude: failed while a helper held stderr\n");
+      const failed = await runFx(["ask", "--no-save", "hello"], { cwd: f.workspace, env: f.env, timeoutMs: 20000 });
+      expect(failed.code).not.toBe(0);
+      expect(failed.stdout + failed.stderr).toContain("failed while a helper held stderr");
+      expect(failed.elapsedMs).toBeLessThan(6000);
+    } finally {
+      f.cleanup();
+    }
+  }, 40000);
 
   test("fx provider claude selects it and fx models lists the aliases", async () => {
     const f = createFixture();

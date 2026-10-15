@@ -579,6 +579,86 @@ fn terminateGroup(pid: i32) void {
     };
 }
 
+const max_stderr_bytes: usize = 8 * 1024;
+const max_diagnostic_detail_bytes: usize = 1024;
+const stderr_settle_ms: u64 = 200;
+
+/// Keeps the start of the CLI's stderr for error messages. A drain thread reads
+/// it so the CLI never blocks on a full pipe. The thread can outlive the turn when
+/// a command Claude started still holds the pipe, so the thread and the turn each
+/// hold one reference and the last to let go frees it.
+const StderrTail = struct {
+    file: std.Io.File,
+    bytes: [max_stderr_bytes]u8 = undefined,
+    len: std.atomic.Value(usize) = .init(0),
+    finished: std.atomic.Value(bool) = .init(false),
+    refs: std.atomic.Value(u8) = .init(2),
+
+    fn start(file: std.Io.File) ?*StderrTail {
+        const self = std.heap.c_allocator.create(StderrTail) catch {
+            file.close(io_mod.getIo());
+            return null;
+        };
+        self.* = .{ .file = file };
+        const thread = std.Thread.spawn(.{}, run, .{self}) catch {
+            file.close(io_mod.getIo());
+            std.heap.c_allocator.destroy(self);
+            return null;
+        };
+        thread.detach();
+        return self;
+    }
+
+    fn run(self: *StderrTail) void {
+        defer {
+            self.finished.store(true, .release);
+            self.file.close(io_mod.getIo());
+            self.release();
+        }
+        var scratch: [1024]u8 = undefined;
+        var reader = self.file.readerStreaming(io_mod.getIo(), &scratch);
+        while (true) {
+            // Take whatever has arrived rather than waiting to fill a buffer, so
+            // text written before a helper keeps the pipe open is still captured.
+            const available = reader.interface.peekGreedy(1) catch return;
+            const kept = self.len.load(.acquire);
+            const room = max_stderr_bytes - kept;
+            if (room > 0) {
+                const take = @min(room, available.len);
+                @memcpy(self.bytes[kept..][0..take], available[0..take]);
+                self.len.store(kept + take, .release);
+            }
+            reader.interface.toss(available.len);
+        }
+    }
+
+    fn release(self: *StderrTail) void {
+        if (self.refs.fetchSub(1, .acq_rel) == 1) std.heap.c_allocator.destroy(self);
+    }
+
+    /// The captured text with control bytes replaced, trimmed. The caller owns it.
+    fn text(self: *StderrTail, alloc: Allocator) !?[]u8 {
+        var waited: u64 = 0;
+        while (!self.finished.load(.acquire) and waited < stderr_settle_ms) : (waited += 10) {
+            io_mod.sleep(10 * std.time.ns_per_ms);
+        }
+        const count = self.len.load(.acquire);
+        const copy = try alloc.dupe(u8, self.bytes[0..count]);
+        for (copy) |*byte| {
+            if (byte.* < 0x20 and byte.* != '\n') byte.* = ' ';
+            if (byte.* == 0x7f) byte.* = ' ';
+        }
+        const trimmed = std.mem.trim(u8, copy, " \t\r\n");
+        if (trimmed.len == 0) {
+            alloc.free(copy);
+            return null;
+        }
+        const owned = try alloc.dupe(u8, trimmed);
+        alloc.free(copy);
+        return owned;
+    }
+};
+
 const RunResult = struct {
     completion: ?types.ModelCompletion = null,
     failure: ?stream_provider.Failure = null,
@@ -616,7 +696,7 @@ fn runOnce(
         .argv = argv,
         .stdin = .pipe,
         .stdout = .pipe,
-        .stderr = .ignore,
+        .stderr = .pipe,
         .environ_map = &environment,
         .pgid = if (builtin.target.os.tag == .windows) null else 0,
     }) catch |err| switch (err) {
@@ -629,6 +709,11 @@ fn runOnce(
     };
     var child_reaped = false;
     defer if (!child_reaped) child.kill(io);
+    const stderr_tail: ?*StderrTail = if (child.stderr) |file| blk: {
+        child.stderr = null;
+        break :blk StderrTail.start(file);
+    } else null;
+    defer if (stderr_tail) |tail| tail.release();
 
     var watch: Watch = .{ .cancel_flag = request.cancel_flag, .deadline = request.deadline };
     if (child.id) |id| {
@@ -697,14 +782,23 @@ fn runOnce(
 
     const exited_cleanly = term == .exited and term.exited == 0;
     if (reducer.outcome.is_error or (!reducer.outcome.saw_result and !exited_cleanly)) {
-        const text = reducer.outcome.error_text orelse "Claude Code ended without a result.";
+        const diagnostics = if (reducer.outcome.error_text == null and stderr_tail != null)
+            try stderr_tail.?.text(alloc)
+        else
+            null;
+        defer if (diagnostics) |value| alloc.free(value);
+        const text = reducer.outcome.error_text orelse diagnostics orelse "Claude Code ended without a result.";
         if (turn.resume_session != null and resumeMissing(text) and reducer.content.items.len == 0) {
             return .{ .resume_missing = true };
         }
         const classified = classifyFailure(text);
+        const detail = if (classified.kind == .provider_error and diagnostics != null)
+            try std.fmt.allocPrint(alloc, "Claude Code failed: {s}", .{classified.detail[0..@min(classified.detail.len, max_diagnostic_detail_bytes)]})
+        else
+            try alloc.dupe(u8, classified.detail);
         return .{ .failure = .{
             .kind = classified.kind,
-            .detail = try alloc.dupe(u8, classified.detail),
+            .detail = detail,
             .ownership = .owned,
         } };
     }
