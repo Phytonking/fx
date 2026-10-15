@@ -12,6 +12,7 @@ pub const binary_env = "FX_CLAUDE_BIN";
 
 const max_status_bytes: usize = 64 * 1024;
 const probe_ttl_ms: i64 = 30 * 1000;
+const probe_timeout_ms: i64 = 10 * 1000;
 const max_cached_account_bytes = 256;
 
 pub fn binaryPath() []const u8 {
@@ -78,6 +79,8 @@ pub fn probe(alloc: Allocator) ProbeError!?Status {
         .argv = &.{ binaryPath(), "auth", "status", "--json" },
         .stdout_limit = .limited(max_status_bytes),
         .stderr_limit = .limited(max_status_bytes),
+        // A CLI stuck on a keychain prompt or the network must not freeze fx.
+        .timeout = .{ .duration = .{ .clock = .awake, .raw = .fromMilliseconds(probe_timeout_ms) } },
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.FileNotFound => return error.ClaudeCliMissing,
@@ -142,14 +145,24 @@ fn fresh() ?bool {
     return cache.signed_in;
 }
 
+fn cachedAccountId(alloc: Allocator) Allocator.Error!?[]u8 {
+    const io = io_mod.getIo();
+    cache.mutex.lockUncancelable(io);
+    defer cache.mutex.unlock(io);
+    if (!cache.valid or !cache.signed_in or cache.account_len == 0) return null;
+    if (io_mod.milliTimestamp() - cache.checked_at_ms >= probe_ttl_ms) return null;
+    return try alloc.dupe(u8, cache.account[0..cache.account_len]);
+}
+
 /// Whether the CLI is signed in, answered from a short-lived cache. A missing
 /// or broken CLI reads as signed out, so callers never fail on this probe.
 pub fn presence() host.SecretStorePresence {
     if (comptime host_target.is_wasm) return .missing;
     if (fresh()) |signed_in| return if (signed_in) .present else .missing;
     var status = probe(std.heap.page_allocator) catch |err| {
+        // A failed probe says nothing about the sign-in, so it is not remembered:
+        // a passing hiccup must not read as signed out for the next 30 seconds.
         debug_trace.logf("auth", "source probe failed source=claude_cli err={s}", .{@errorName(err)});
-        remember(null);
         return .missing;
     };
     defer if (status) |*value| value.deinit(std.heap.page_allocator);
@@ -160,6 +173,7 @@ pub fn presence() host.SecretStorePresence {
 /// The signed-in organization, or null when signed out. The caller owns the
 /// result.
 pub fn loadAccountId(alloc: Allocator) ProbeError!?[]u8 {
+    if (try cachedAccountId(alloc)) |cached| return cached;
     var status = (try probe(alloc)) orelse {
         remember(null);
         return null;

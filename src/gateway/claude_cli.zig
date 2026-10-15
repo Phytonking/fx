@@ -51,6 +51,7 @@ pub const Turn = struct {
     prompt: []u8,
     /// Borrowed from the request's replay state.
     resume_session: ?[]const u8,
+    completion_only: bool = false,
 
     pub fn deinit(self: *Turn, alloc: Allocator) void {
         alloc.free(self.prompt);
@@ -177,16 +178,25 @@ pub fn claudePermissionMode(mode: types.PermissionMode) []const u8 {
     };
 }
 
+pub const ArgvOptions = struct {
+    model: []const u8,
+    resume_session: ?[]const u8 = null,
+    permission_mode: types.PermissionMode = .ask,
+    /// A plain text completion, such as a summary: no tools, and no session is
+    /// resumed or saved.
+    completion_only: bool = false,
+};
+
 /// Builds the command line. The prompt travels on stdin, so no user text reaches
 /// argv. Claude Code reads no settings files, so repository settings cannot run
 /// hooks.
 pub fn buildArgv(
     arena: Allocator,
     binary: []const u8,
-    model: []const u8,
-    resume_session: ?[]const u8,
-    permission_mode: types.PermissionMode,
+    options: ArgvOptions,
 ) ![]const []const u8 {
+    const model = options.model;
+    const permission_mode: types.PermissionMode = if (options.completion_only) .ask else options.permission_mode;
     if (!claude_cli_models.validModel(model)) return error.InvalidClaudeModel;
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, &.{
@@ -213,7 +223,11 @@ pub fn buildArgv(
     if (!std.mem.eql(u8, model, claude_cli_models.default_model)) {
         try argv.appendSlice(arena, &.{ "--model", model });
     }
-    if (resume_session) |session| try argv.appendSlice(arena, &.{ "--resume", session });
+    if (options.completion_only) {
+        try argv.appendSlice(arena, &.{ "--tools", "", "--no-session-persistence" });
+    } else if (options.resume_session) |session| {
+        try argv.appendSlice(arena, &.{ "--resume", session });
+    }
     return argv.toOwnedSlice(arena);
 }
 
@@ -253,6 +267,9 @@ pub const Reducer = struct {
     block: ?BlockKind = null,
     outcome: Outcome = .{},
     saw_stream_text: bool = false,
+    /// Context size of the most recent model call. The final result sums every
+    /// call in the turn, which overstates how full the context is.
+    last_call_usage: ?types.Usage = null,
 
     pub fn init(alloc: Allocator, events: stream_provider.EventSink) Reducer {
         return .{ .arena = .init(alloc), .events = events };
@@ -351,6 +368,14 @@ pub const Reducer = struct {
                 if (block != .tool) return;
                 const partial = stringField(delta, "partial_json") orelse return;
                 try self.tools.items[block.tool].arguments.appendSlice(self.a(), partial);
+            }
+        } else if (std.mem.eql(u8, kind, "message_delta")) {
+            if (objectField(event, "usage")) |usage| {
+                self.last_call_usage = .{
+                    .input_tokens = unsignedField(usage, "input_tokens"),
+                    .cache_read_tokens = unsignedField(usage, "cache_read_input_tokens"),
+                    .cache_write_tokens = unsignedField(usage, "cache_creation_input_tokens"),
+                };
             }
         } else if (std.mem.eql(u8, kind, "content_block_stop")) {
             const block = self.block orelse return;
@@ -455,8 +480,36 @@ pub const Reducer = struct {
             .tool_calls = owned_calls,
             .provider_state_json = state,
             .finish_reason = if (std.mem.eql(u8, self.outcome.stop_reason orelse "", "max_tokens")) .length else .stop,
-            .usage = self.outcome.usage,
+            .usage = self.turnUsage(),
         };
+    }
+
+    /// Output tokens add up over the turn; input and cache describe the last call.
+    fn turnUsage(self: *const Reducer) types.Usage {
+        var usage = self.outcome.usage;
+        if (self.last_call_usage) |last| {
+            usage.input_tokens = last.input_tokens orelse usage.input_tokens;
+            usage.cache_read_tokens = last.cache_read_tokens orelse usage.cache_read_tokens;
+            usage.cache_write_tokens = last.cache_write_tokens orelse usage.cache_write_tokens;
+        }
+        return usage;
+    }
+
+    /// One line naming the tools Claude Code already ran. A failed turn drops its
+    /// tool records, so the failure message carries them instead.
+    pub fn toolSummary(self: *Reducer, alloc: Allocator) !?[]u8 {
+        if (self.tools.items.len == 0) return null;
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        errdefer out.deinit();
+        const shown = @min(self.tools.items.len, 5);
+        try out.writer.writeAll("Before it stopped, Claude Code ran: ");
+        for (self.tools.items[0..shown], 0..) |record, index| {
+            if (index > 0) try out.writer.writeAll(", ");
+            try out.writer.writeAll(record.name);
+        }
+        if (self.tools.items.len > shown) try out.writer.print(", and {d} more", .{self.tools.items.len - shown});
+        try out.writer.writeAll(". Check the workspace for changes.");
+        return try out.toOwnedSlice();
     }
 };
 
@@ -531,7 +584,7 @@ pub const FailureText = struct {
 /// repeat the wait. The CLI's own message, which names the reset time, is the
 /// detail.
 pub fn classifyFailure(text: []const u8) FailureText {
-    const signed_out_needles = [_][]const u8{ "not logged in", "please run /login", "invalid api key", "oauth token", "authentication" };
+    const signed_out_needles = [_][]const u8{ "not logged in", "please run /login", "invalid api key", "oauth token has expired", "authentication_error" };
     for (signed_out_needles) |needle| {
         if (std.ascii.findIgnoreCase(text, needle) != null) {
             return .{ .kind = .unauthorized, .detail = "Claude Code is not signed in. Run `fx login claude` in a terminal." };
@@ -554,9 +607,12 @@ const Watch = struct {
     interrupted: std.atomic.Value(bool) = .init(false),
     thread: ?std.Thread = null,
 
-    fn start(self: *Watch) void {
-        if (comptime builtin.target.os.tag == .windows) return;
-        self.thread = std.Thread.spawn(.{}, run, .{self}) catch null;
+    /// False when the watcher could not start. Windows has no process-group
+    /// signals here, so it runs without one.
+    fn start(self: *Watch) bool {
+        if (comptime builtin.target.os.tag == .windows) return true;
+        self.thread = std.Thread.spawn(.{}, run, .{self}) catch return false;
+        return true;
     }
 
     fn stop(self: *Watch) void {
@@ -690,6 +746,14 @@ const RunResult = struct {
 };
 
 /// The child's environment without variables that would bill an API account.
+/// Claude Code works in the session's workspace, which is not always the
+/// directory fx was started in.
+fn workingDirectory(workspace_root: ?[]const u8) std.process.Child.Cwd {
+    const root = workspace_root orelse return .inherit;
+    if (root.len == 0 or !std.Io.Dir.path.isAbsolute(root)) return .inherit;
+    return .{ .path = root };
+}
+
 /// Failing to copy the environment fails the launch: inheriting it unchanged
 /// could charge the wrong account.
 fn spawnEnvironment(alloc: Allocator) !std.process.Environ.Map {
@@ -710,7 +774,12 @@ fn runOnce(
 ) !RunResult {
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
-    const argv = try buildArgv(arena.allocator(), claude_cli_auth.binaryPath(), request.model, turn.resume_session, request.permission_mode);
+    const argv = try buildArgv(arena.allocator(), claude_cli_auth.binaryPath(), .{
+        .model = request.model,
+        .resume_session = turn.resume_session,
+        .permission_mode = request.permission_mode,
+        .completion_only = turn.completion_only,
+    });
 
     var environment = try spawnEnvironment(alloc);
     defer environment.deinit();
@@ -722,6 +791,7 @@ fn runOnce(
         .stdout = .pipe,
         .stderr = .pipe,
         .environ_map = &environment,
+        .cwd = workingDirectory(request.workspace_root),
         .pgid = if (builtin.target.os.tag == .windows) null else 0,
     }) catch |err| switch (err) {
         error.FileNotFound => return error.ClaudeCliMissing,
@@ -743,7 +813,8 @@ fn runOnce(
     if (child.id) |id| {
         if (comptime builtin.target.os.tag != .windows) watch.process_id.store(@intCast(id), .release);
     }
-    watch.start();
+    // Without the watcher a cancel could not stop the turn, so do not run one.
+    if (!watch.start()) return error.ClaudeCliLaunchFailed;
     defer watch.stop();
 
     request.delivery.markPossiblySent();
@@ -816,10 +887,16 @@ fn runOnce(
             return .{ .resume_missing = true };
         }
         const classified = classifyFailure(text);
-        const detail = if (classified.kind == .provider_error and diagnostics != null)
+        const base_detail = if (classified.kind == .provider_error and diagnostics != null)
             try std.fmt.allocPrint(alloc, "Claude Code failed: {s}", .{classified.detail[0..@min(classified.detail.len, max_diagnostic_detail_bytes)]})
         else
             try alloc.dupe(u8, classified.detail);
+        errdefer alloc.free(base_detail);
+        const detail = if (try reducer.toolSummary(alloc)) |summary| joined: {
+            defer alloc.free(summary);
+            defer alloc.free(base_detail);
+            break :joined try std.fmt.allocPrint(alloc, "{s} {s}", .{ base_detail, summary });
+        } else base_detail;
         return .{ .failure = .{
             .kind = classified.kind,
             .detail = detail,
@@ -842,11 +919,22 @@ fn streamCompletion(
 
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
-    var turn = buildTurn(alloc, arena.allocator(), request.messages, request.model) catch |err| switch (err) {
+    // A request that allows no tools is a plain text completion, such as a
+    // summary: it needs its instructions, no tools, and no saved session.
+    const completion_only = request.tool_choice == .none;
+    const messages = if (completion_only)
+        forgetReplay(arena.allocator(), request.messages) catch return error.OutOfMemory
+    else
+        request.messages;
+    var turn = buildTurn(alloc, arena.allocator(), messages, request.model) catch |err| switch (err) {
         error.EmptyClaudePrompt => return stream_provider.failResult(error.EmptyClaudePrompt),
         else => return err,
     };
     defer turn.deinit(alloc);
+    if (completion_only) {
+        turn.completion_only = true;
+        try prefixInstructions(alloc, &turn, request.instructions, request.response_format);
+    }
 
     var admitted = false;
     var outcome = runOnce(alloc, request, turn, &admitted) catch |err| return mapError(err);
@@ -861,6 +949,39 @@ fn streamCompletion(
     if (outcome.failure) |failure| return .{ .failed = failure };
     const completion = outcome.completion orelse return stream_provider.failResult(error.ClaudeCliFailed);
     return .{ .completed = .{ .completion = completion, .ownership = .owned } };
+}
+
+/// Puts the request's instructions, and the shape of a structured reply, ahead of
+/// the prompt. Only plain completions carry them: for a normal turn Claude Code
+/// has its own instructions and fx's describe fx's tools, which it does not have.
+fn prefixInstructions(
+    alloc: Allocator,
+    turn: *Turn,
+    instructions: []const types.ChatMessage,
+    response_format: ?stream_provider.StructuredResponseFormat,
+) !void {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    var wrote = false;
+    for (instructions) |instruction| {
+        const content = std.mem.trim(u8, instruction.content orelse continue, " \t\r\n");
+        if (content.len == 0) continue;
+        try out.writer.writeAll(content);
+        try out.writer.writeAll("\n\n");
+        wrote = true;
+    }
+    if (response_format) |format| {
+        try out.writer.print("Reply with only JSON that matches the schema \"{s}\": ", .{format.name});
+        try std.json.Stringify.value(format.schema, .{}, &out.writer);
+        try out.writer.writeAll("\n\n");
+        wrote = true;
+    }
+    if (!wrote) return;
+    try out.writer.writeAll("---\n\n");
+    try out.writer.writeAll(turn.prompt);
+    const combined = try out.toOwnedSlice();
+    alloc.free(turn.prompt);
+    turn.prompt = combined;
 }
 
 fn forgetReplay(arena: Allocator, messages: []const types.ChatMessage) ![]const types.ChatMessage {
@@ -1062,7 +1183,7 @@ test "reducer truncates an oversized tool result" {
 test "claude reads no settings files, so repository hooks cannot run" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const argv = try buildArgv(arena.allocator(), "claude", "opus", null, .ask);
+    const argv = try buildArgv(arena.allocator(), "claude", .{ .model = "opus" });
     try std.testing.expect(containsPair(argv, "--setting-sources", ""));
     try std.testing.expect(contains(argv, "--strict-mcp-config"));
     try std.testing.expect(contains(argv, "--disable-slash-commands"));
@@ -1077,7 +1198,7 @@ test "fx permission modes map to Claude Code modes and prompts stay denied" {
         .{ .mode = .yolo, .expected = "bypassPermissions" },
     };
     for (cases) |case| {
-        const argv = try buildArgv(arena.allocator(), "claude", "opus", null, case.mode);
+        const argv = try buildArgv(arena.allocator(), "claude", .{ .model = "opus", .permission_mode = case.mode });
         try std.testing.expect(containsPair(argv, "--permission-mode", case.expected));
         try std.testing.expect(containsPair(argv, "--permission-prompts", "none"));
         try std.testing.expect(containsPair(argv, "--setting-sources", ""));
@@ -1087,18 +1208,18 @@ test "fx permission modes map to Claude Code modes and prompts stay denied" {
 test "argv carries no user text and denies prompts" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const argv = try buildArgv(arena.allocator(), "claude", "opus", null, .ask);
+    const argv = try buildArgv(arena.allocator(), "claude", .{ .model = "opus" });
     try std.testing.expectEqualStrings("claude", argv[0]);
     try std.testing.expect(containsPair(argv, "--model", "opus"));
     try std.testing.expect(containsPair(argv, "--permission-prompts", "none"));
     try std.testing.expect(containsPair(argv, "--permission-mode", "manual"));
     try std.testing.expect(!contains(argv, "--resume"));
 
-    const resumed = try buildArgv(arena.allocator(), "claude", claude_cli_models.default_model, "abc-123", .ask);
+    const resumed = try buildArgv(arena.allocator(), "claude", .{ .model = claude_cli_models.default_model, .resume_session = "abc-123" });
     try std.testing.expect(!contains(resumed, "--model"));
     try std.testing.expect(containsPair(resumed, "--resume", "abc-123"));
 
-    try std.testing.expectError(error.InvalidClaudeModel, buildArgv(arena.allocator(), "claude", "--dangerously-skip-permissions", null, .ask));
+    try std.testing.expectError(error.InvalidClaudeModel, buildArgv(arena.allocator(), "claude", .{ .model = "--dangerously-skip-permissions" }));
 }
 
 fn contains(argv: []const []const u8, needle: []const u8) bool {
@@ -1189,4 +1310,99 @@ test "an empty conversation has nothing to send" {
 test "missing resume sessions are recognised from the CLI message" {
     try std.testing.expect(resumeMissing("No conversation found with session ID: abc"));
     try std.testing.expect(!resumeMissing("Something else"));
+}
+
+test "a plain completion runs with no tools, no saved session, and no resume" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const argv = try buildArgv(arena.allocator(), "claude", .{
+        .model = "opus",
+        .resume_session = "abc-123",
+        .permission_mode = .yolo,
+        .completion_only = true,
+    });
+    try std.testing.expect(containsPair(argv, "--tools", ""));
+    try std.testing.expect(contains(argv, "--no-session-persistence"));
+    try std.testing.expect(!contains(argv, "--resume"));
+    // Whatever the fx mode, a completion has nothing to approve.
+    try std.testing.expect(containsPair(argv, "--permission-mode", "manual"));
+}
+
+test "instructions and a reply schema go ahead of a plain completion's prompt" {
+    const alloc = std.testing.allocator;
+    var turn = Turn{ .prompt = try alloc.dupe(u8, "Summarize this."), .resume_session = null };
+    defer turn.deinit(alloc);
+    const instructions = [_]types.ChatMessage{
+        .{ .role = .system, .content = "You write short summaries." },
+        .{ .role = .system, .content = "   " },
+    };
+    var schema = try std.json.parseFromSlice(std.json.Value, alloc, "{\"type\":\"object\"}", .{});
+    defer schema.deinit();
+    try prefixInstructions(alloc, &turn, &instructions, .{ .name = "summary", .description = "", .schema = schema.value });
+    try std.testing.expect(std.mem.startsWith(u8, turn.prompt, "You write short summaries.\n\n"));
+    try std.testing.expect(std.mem.find(u8, turn.prompt, "schema \"summary\": {\"type\":\"object\"}") != null);
+    try std.testing.expect(std.mem.endsWith(u8, turn.prompt, "---\n\nSummarize this."));
+
+    var plain = Turn{ .prompt = try alloc.dupe(u8, "Just this."), .resume_session = null };
+    defer plain.deinit(alloc);
+    try prefixInstructions(alloc, &plain, &.{}, null);
+    try std.testing.expectEqualStrings("Just this.", plain.prompt);
+}
+
+test "only a real sign-in problem is reported as signed out" {
+    try std.testing.expectEqual(stream_provider.FailureKind.unauthorized, classifyFailure("Invalid API key · Please run /login").kind);
+    try std.testing.expectEqual(stream_provider.FailureKind.unauthorized, classifyFailure("OAuth token has expired").kind);
+    const outage = classifyFailure("API Error: authentication service is unavailable");
+    try std.testing.expectEqual(stream_provider.FailureKind.provider_error, outage.kind);
+    try std.testing.expectEqualStrings("API Error: authentication service is unavailable", outage.detail);
+}
+
+test "usage reports the last call's context and the whole turn's output" {
+    var sink: TestSink = .{};
+    defer sink.deinit();
+    var reducer = Reducer.init(std.testing.allocator, sink.sink());
+    defer reducer.deinit();
+    try feedAll(&reducer,
+        \\{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":5,"cache_read_input_tokens":1000,"cache_creation_input_tokens":10,"output_tokens":20}}}
+        \\{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":7,"cache_read_input_tokens":1200,"cache_creation_input_tokens":0,"output_tokens":30}}}
+        \\{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":12,"output_tokens":50,"cache_read_input_tokens":2200,"cache_creation_input_tokens":10}}
+    );
+    const completion = try reducer.finish(std.testing.allocator);
+    defer {
+        var owned = stream_provider.Result{ .completed = .{ .completion = completion, .ownership = .owned } };
+        owned.deinit(std.testing.allocator);
+    }
+    try std.testing.expectEqual(@as(?u64, 7), completion.usage.input_tokens);
+    try std.testing.expectEqual(@as(?u64, 1200), completion.usage.cache_read_tokens);
+    try std.testing.expectEqual(@as(?u64, 50), completion.usage.output_tokens);
+}
+
+test "a failed turn names the tools Claude Code already ran" {
+    var sink: TestSink = .{};
+    defer sink.deinit();
+    var reducer = Reducer.init(std.testing.allocator, sink.sink());
+    defer reducer.deinit();
+    try std.testing.expect((try reducer.toolSummary(std.testing.allocator)) == null);
+    for ([_][]const u8{ "Read", "Edit", "Bash", "Write", "Glob", "Grep", "Task" }, 0..) |name, index| {
+        const line = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "{{\"type\":\"stream_event\",\"event\":{{\"type\":\"content_block_start\",\"index\":{d},\"content_block\":{{\"type\":\"tool_use\",\"id\":\"t{d}\",\"name\":\"{s}\"}}}}}}",
+            .{ index, index, name },
+        );
+        defer std.testing.allocator.free(line);
+        try reducer.feedLine(line);
+    }
+    const summary = (try reducer.toolSummary(std.testing.allocator)).?;
+    defer std.testing.allocator.free(summary);
+    try std.testing.expectEqualStrings(
+        "Before it stopped, Claude Code ran: Read, Edit, Bash, Write, Glob, and 2 more. Check the workspace for changes.",
+        summary,
+    );
+}
+
+test "the child works in the session's workspace only when the root is absolute" {
+    try std.testing.expect(workingDirectory(null) == .inherit);
+    try std.testing.expect(workingDirectory("") == .inherit);
+    try std.testing.expect(workingDirectory("relative/dir") == .inherit);
+    try std.testing.expectEqualStrings("/Users/example/project", workingDirectory("/Users/example/project").path);
 }

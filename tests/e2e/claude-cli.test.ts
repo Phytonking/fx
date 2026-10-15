@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupIsolatedTestHome, createIsolatedTestHome, FX_BIN, runFx } from "../evals/eval-helpers";
@@ -24,6 +24,7 @@ printf '%s\\n' "$@" > "$dir/argv.$n"
 cat > "$dir/stdin.$n"
 if [ -n "$ANTHROPIC_API_KEY" ]; then echo present > "$dir/apikey.$n"; else echo absent > "$dir/apikey.$n"; fi
 echo "$$" > "$dir/pid.$n"
+pwd -P > "$dir/cwd.$n"
 if [ -f "$dir/bgerr" ]; then (sleep 8 >/dev/null &); fi
 if [ -f "$dir/stderr" ]; then cat "$dir/stderr" >&2; exit 3; fi
 if [ -f "$dir/stream.$n" ]; then cat "$dir/stream.$n"; else cat "$dir/stream.default"; fi
@@ -142,6 +143,8 @@ describe("claude provider (delegated Claude Code)", () => {
       // The prompt travels on stdin, never in argv.
       expect(argv.join(" ")).not.toContain("Reply with pong");
       expect(f.stdin(1)).toContain("Reply with pong");
+      // Claude Code works in the session's workspace.
+      expect(readFileSync(join(f.dir, "cwd.1"), "utf8").trim()).toBe(realpathSync(f.workspace));
       // A subscription turn must not be billed to an API key from the environment.
       expect(readFileSync(join(f.dir, "apikey.1"), "utf8").trim()).toBe("absent");
     } finally {
