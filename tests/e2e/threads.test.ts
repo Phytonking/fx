@@ -1046,3 +1046,91 @@ test.skipIf(SKIP_TMUX)("/thread status says which threads are still working, for
     gateway.stop();
   }
 }, 180_000);
+
+test.skipIf(SKIP_TMUX)("/thread alone opens a menu to scroll the threads, switch into one, and leave it for main", async () => {
+  const fixture = createFixture("menu");
+  const gateway = startGateway();
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    // With no threads the menu still opens and lists main.
+    await tui.sendText("/thread");
+    await tui.waitForText("this session · you are here", 10000);
+    await tui.sendKeys("Escape");
+    await tui.waitForStableComposer(10000);
+
+    await tui.sendText("/thread write hello for the docs");
+    await tui.waitForText("Started thread write-hello-docs", 20000);
+    await tui.sendText("/thread new second write hello again");
+    await tui.waitForText("Started thread second", 20000);
+    await waitForThreadIdle(tui, "second");
+
+    await tui.sendText("/thread");
+    await tui.waitForText("enter switch", 10000);
+    let grid = (await tui.capturePaneGrid()).join("\n");
+    expect(grid).toContain("Threads");
+    expect(grid).toContain("write-hello-docs");
+    expect(grid).toContain("second");
+    expect(grid).toMatch(/❯ main\s+this session/);
+
+    // Scrolling moves the marker, and Escape closes without switching.
+    await tui.sendKeys("Down");
+    await tui.waitForText("❯ write-hello-docs", 10000);
+    await tui.sendKeys("Escape");
+    await tui.waitForStableComposer(10000);
+    expect((await tui.capturePaneGrid()).join("\n")).not.toContain("enter switch");
+
+    // Enter switches into the selected thread, with its history.
+    await tui.sendText("/thread");
+    await tui.waitForText("enter switch", 10000);
+    await tui.sendKeys("Down");
+    await tui.sendKeys("Enter");
+    await tui.waitForText("Switched to write-hello-docs", 20000);
+    await tui.waitForText("THREAD_ANSWER_OK", 10000);
+
+    // Inside the thread the menu marks where you are and offers main to leave.
+    await tui.sendText("/thread");
+    await tui.waitForText("leave this thread", 10000);
+    grid = (await tui.capturePaneGrid()).join("\n");
+    expect(grid).toMatch(/❯ write-hello-docs\s+you are here/);
+    await tui.sendKeys("Up");
+    await tui.sendKeys("Enter");
+    await tui.waitForText("Switched to main", 20000);
+    await tui.waitForText("MAIN_ANSWER_OK", 10000);
+
+    // Choosing where you already are says so instead of switching.
+    await tui.sendText("/thread");
+    await tui.waitForText("enter switch", 10000);
+    await tui.sendKeys("Enter");
+    await tui.waitForText("You are already in main", 10000);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 180_000);
+
+test.skipIf(SKIP_TMUX)("choosing a thread in the menu while another is running explains why it cannot switch", async () => {
+  const fixture = createFixture("menu-busy");
+  const gateway = startDynamicFakeGateway(
+    async raw => {
+      if (!String(raw).includes("write hello")) return fakeGatewayFinalText("MAIN_ANSWER_OK");
+      await Bun.sleep(10000);
+      return fakeGatewayFinalText("SLOW_DONE");
+    },
+    { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] },
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("/thread new slow write hello");
+    await tui.waitForText("Started thread slow", 20000);
+    await tui.sendText("/thread");
+    await tui.waitForText("running", 10000);
+    await tui.sendKeys("Down");
+    await tui.sendKeys("Enter");
+    await tui.waitForText("still running and would stop", 10000);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 120_000);

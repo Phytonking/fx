@@ -1846,6 +1846,7 @@ pub fn Handlers(comptime App: type) type {
             if (comptime @hasField(InputRuntime, "statusline_menu")) app.input_runtime.statusline_menu.close();
             if (comptime @hasField(InputRuntime, "usage_menu")) closeUsageMenu(app);
             if (comptime @hasField(InputRuntime, "workspace_menu")) app.input_runtime.workspace_menu.close();
+            if (comptime @hasField(InputRuntime, "thread_menu")) app.input_runtime.thread_menu.close(app.alloc);
         }
 
         fn commandCopyLast(ctx: *anyopaque) !void {
@@ -1990,6 +1991,18 @@ pub fn Handlers(comptime App: type) type {
 
         fn commandHandleThread(ctx: *anyopaque, rest: []const u8) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
+            // On its own, /thread opens the menu of threads, as /workspace does.
+            if (std.mem.trim(u8, rest, " \t").len == 0 and comptime @hasField(@TypeOf(app.input_runtime), "thread_menu")) {
+                if (comptime @hasField(App, "skills")) app.skills.closeMenu();
+                if (comptime @hasField(App, "model_cache")) app.model_cache.closeMenu();
+                closeHelpMenuIfPresent(app);
+                app.input_runtime.settings_menu.close();
+                closeInlineCommandMenusIfPresent(app);
+                if (try app_thread_runtime.Runtime(App).openMenu(app)) {
+                    app.shell.render_requests.request(.footer);
+                }
+                return;
+            }
             try app_thread_runtime.Runtime(App).handle(app, rest);
         }
 

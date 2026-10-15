@@ -5032,6 +5032,7 @@ test {
     _ = @import("tools/session/read_tool_result.zig");
     _ = @import("core/threads/thread_registry.zig");
     _ = @import("core/threads/thread_feed.zig");
+    _ = @import("core/threads/thread_menu.zig");
     _ = @import("core/threads/thread_tools.zig");
     _ = @import("core/threads/thread_tool_provider.zig");
     _ = @import("tools/session/thread_read.zig");

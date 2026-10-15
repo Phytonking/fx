@@ -848,6 +848,9 @@ pub fn Runtime(comptime App: type) type {
             syncState(app, event_handlers.tool_lifecycle);
 
             if (comptime @hasField(App, "thread_watch")) app_thread_runtime.Runtime(App).tickWatch(app);
+            if (comptime @hasField(App, "input_runtime")) {
+                if (comptime @hasField(@TypeOf(app.input_runtime), "thread_menu")) app_thread_runtime.Runtime(App).tickMenu(app);
+            }
 
             const now_ms = io_mod.milliTimestamp();
             if (app.shell.worker_status_state().expire_transient(now_ms)) {

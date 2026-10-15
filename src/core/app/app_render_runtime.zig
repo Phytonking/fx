@@ -839,6 +839,7 @@ pub fn Runtime(comptime App: type) type {
                     )
                 else
                     .{},
+                .threads_menu = render_input.threadsMenuProjection(&app.input_runtime.thread_menu),
                 .upgrade_status = upgrade_label,
                 .mcp_status = if (comptime @hasField(App, "mcp")) app.mcp.hostStatusText() else "",
                 .danger_status = if (yolo_warning_active)

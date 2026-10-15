@@ -12,12 +12,15 @@ const app_session_runtime = @import("app_session_runtime.zig");
 const provider_runtime = @import("provider_runtime.zig");
 const subagent_tool_host = @import("../subagent/tool_host.zig");
 const thread_registry = @import("../threads/thread_registry.zig");
+const thread_menu = @import("../threads/thread_menu.zig");
 const thread_feed = @import("../threads/thread_feed.zig");
 const thread_tools = @import("../threads/thread_tools.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const usage = "usage: /thread INSTRUCTIONS | new NAME TASK | list | status | switch NAME | watch NAME [LINES] | send NAME MESSAGE | stop NAME | rename OLD NEW | delete NAME";
+pub const usage = "usage: /thread (menu) | /thread INSTRUCTIONS | new NAME TASK | list | status | switch NAME | watch NAME [LINES] | send NAME MESSAGE | stop NAME | rename OLD NEW | delete NAME";
+const menu_refresh_ms: i64 = 700;
+
 /// Lines a live view keeps on screen; older ones scroll out of it.
 const follow_lines: usize = 12;
 const follow_interval_ms: i64 = 120;
@@ -194,6 +197,124 @@ pub fn Runtime(comptime App: type) type {
                 if (t.session_id.len != 0 and host.managed.hasRunningChild(t.session_id)) return t.name;
             }
             return null;
+        }
+
+        /// Opens the menu of threads. Returns false, after saying why, when the
+        /// session cannot have threads.
+        pub fn openMenu(app: *App) !bool {
+            const rows = (try buildMenuRows(app, true)) orelse return false;
+            app.input_runtime.thread_menu.open(app.alloc, rows, io_mod.milliTimestamp());
+            return true;
+        }
+
+        /// Keeps an open menu current: threads start, finish, and go idle.
+        pub fn tickMenu(app: *App) void {
+            // Only the real app carries thread state; test doubles do not.
+            if (comptime !@hasField(App, "thread_watch")) return;
+            const menu = &app.input_runtime.thread_menu;
+            if (!menu.active) return;
+            const now = io_mod.milliTimestamp();
+            if (now - menu.refreshed_ms < menu_refresh_ms) return;
+            menu.refreshed_ms = now;
+            const rows = (buildMenuRows(app, false) catch return) orelse return;
+            if (rowsEqual(menu.rows, rows)) {
+                for (rows) |row| {
+                    app.alloc.free(row.label);
+                    app.alloc.free(row.info);
+                }
+                app.alloc.free(rows);
+                return;
+            }
+            menu.refresh(app.alloc, rows, now);
+            app.shell.render_requests.request(.footer);
+        }
+
+        fn rowsEqual(a: []const thread_menu.Row, b: []const thread_menu.Row) bool {
+            if (a.len != b.len) return false;
+            for (a, b) |x, y| {
+                if (x.current != y.current or !std.mem.eql(u8, x.label, y.label) or !std.mem.eql(u8, x.info, y.info)) return false;
+            }
+            return true;
+        }
+
+        /// Enter on a row: switch to that thread, or back to main.
+        pub fn selectMenuRow(app: *App) !void {
+            if (comptime !@hasField(App, "thread_watch")) return;
+            const menu = &app.input_runtime.thread_menu;
+            const row = menu.selected() orelse return;
+            const label = try app.alloc.dupe(u8, row.label);
+            defer app.alloc.free(label);
+            const current = row.current;
+            menu.close(app.alloc);
+            app.shell.render_requests.request(.footer);
+            if (current) {
+                try noticeFmt(app, .neutral, "thread", "You are already in {s}.", .{label});
+                return;
+            }
+            const command = try app.alloc.print("switch {s}", .{label});
+            defer app.alloc.free(command);
+            try handle(app, command);
+        }
+
+        /// The menu's rows: `main`, then each thread with its state and what it
+        /// was asked. Null, after telling the user when `announce` is set, if
+        /// this session cannot have threads. Caller owns the rows.
+        fn buildMenuRows(app: *App, announce: bool) !?[]thread_menu.Row {
+            const host = SessionRuntime.subagentHost(app) orelse {
+                if (announce) try notice(app, .@"error", "thread", "Threads need a saved session in the default session format.");
+                return null;
+            };
+            const root_id = SessionRuntime.activeSessionId(app) orelse {
+                if (announce) try notice(app, .@"error", "thread", "No active session.");
+                return null;
+            };
+            const home = io_mod.homeDir() orelse {
+                if (announce) try notice(app, .@"error", "thread", "No home directory for thread state.");
+                return null;
+            };
+            var registry = (thread_registry.loadForThreadSession(app.alloc, home, root_id) catch null) orelse
+                thread_registry.load(app.alloc, home, root_id) catch |err| {
+                if (announce) try noticeFmt(app, .@"error", "thread", "Thread list unreadable: {s}", .{@errorName(err)});
+                return null;
+            };
+            defer registry.deinit(app.alloc);
+            const current_thread: ?[]const u8 = if (registry.findBySession(root_id)) |t| t.name else null;
+
+            var specs: std.ArrayList(thread_menu.RowSpec) = .empty;
+            defer {
+                for (specs.items) |spec| app.alloc.free(spec.info);
+                specs.deinit(app.alloc);
+            }
+            try specs.append(app.alloc, .{
+                .label = thread_registry.root_thread_name,
+                .info = try app.alloc.dupe(u8, if (current_thread == null) "this session · you are here" else "the session the threads stem from · leave this thread"),
+                .current = current_thread == null,
+            });
+            const now = io_mod.milliTimestamp();
+            for (registry.threads.items) |t| {
+                var info: std.Io.Writer.Allocating = .init(app.alloc);
+                errdefer info.deinit();
+                const here = if (current_thread) |c| std.mem.eql(u8, c, t.name) else false;
+                if (here) {
+                    try info.writer.writeAll("you are here");
+                } else if (current_thread != null) {
+                    // Only the session that owns the threads can see them run.
+                    try info.writer.writeAll("saved");
+                } else if (try host.threadStatus(app.alloc, t.agent)) |st| {
+                    defer st.deinit(app.alloc);
+                    var duration_buf: [24]u8 = undefined;
+                    switch (st.phase) {
+                        .running => try info.writer.print("running {s}", .{formatDuration(&duration_buf, if (st.active_since_ms) |since| @intCast(@divTrunc(@max(now - since, 0), 1000)) else 0)}),
+                        .awaiting_approval => try info.writer.writeAll("waiting for approval"),
+                        else => try info.writer.writeAll(thread_tools.phaseLabel(st.phase)),
+                    }
+                } else {
+                    try info.writer.writeAll("not started");
+                }
+                if (t.title.len > 0) try info.writer.print(" · {s}", .{shortTitle(t.title)});
+                try specs.append(app.alloc, .{ .label = t.name, .info = try info.toOwnedSlice(), .current = here });
+            }
+            return try thread_menu.makeRows(app.alloc, specs.items);
         }
 
         pub fn handle(app: *App, rest: []const u8) !void {
