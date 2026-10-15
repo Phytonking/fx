@@ -328,6 +328,17 @@ describe.skipIf(!tmuxAvailable())("claude provider in the terminal UI", () => {
     await session.waitForComposer(15_000);
   }, 60000);
 
+  test("tools Claude ran appear as transcript rows with their main argument", async () => {
+    const f = createFixture({ stream: toolTurn("sess-rows-1") });
+    fixture = f;
+    session = await TmuxSession.create({ cmd: FX_BIN, cwd: f.workspace, env: f.env });
+    await session.waitForComposer(15_000);
+    await session.sendText("Read note.txt");
+    const pane = await session.waitForText("The note says fixture contents.", 30_000);
+    expect(pane).toContain("1 tool call");
+    expect(pane).toContain("Read note.txt");
+  }, 60000);
+
   test("interrupting a turn stops the Claude Code process", async () => {
     // The terminal holds back the trailing block of a stream, so send several
     // paragraphs and wait for an earlier one.
