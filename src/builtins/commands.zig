@@ -180,7 +180,7 @@ pub const top_level_specs = [_]TopLevelSpec{
         .usage = "provider <name>",
         .summary = "Choose the model provider used by fx",
         .details = &.{
-            "The claude provider runs each turn in Claude Code (claude -p) on your Claude subscription. Claude Code runs its own tools, so fx permission modes do not apply and any tool that needs approval is denied.",
+            "The claude provider runs each turn in Claude Code (claude -p) on your Claude subscription. Claude Code runs its own tools. The fx permission mode picks the Claude Code mode: ask denies anything that needs approval, auto uses Claude Code's own reviewed mode, and full-access skips approval. fx does not show Claude Code's own prompts.",
         },
     },
     .{

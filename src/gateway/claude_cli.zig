@@ -163,15 +163,28 @@ pub fn buildTurn(
     return .{ .prompt = prompt, .resume_session = resume_session };
 }
 
+/// The Claude Code permission mode that matches an fx mode. Nobody can answer a
+/// permission prompt in a headless run, so prompts are always denied, which makes
+/// `ask` read-only. `auto` uses Claude Code's own reviewed mode, the counterpart
+/// of fx's automatic review. `full-access` is the user's explicit choice to run
+/// everything without asking.
+pub fn claudePermissionMode(mode: types.PermissionMode) []const u8 {
+    return switch (mode) {
+        .ask => "manual",
+        .auto => "auto",
+        .yolo => "bypassPermissions",
+    };
+}
+
 /// Builds the command line. The prompt travels on stdin, so no user text reaches
-/// argv. Tools that would need a permission prompt are denied: nobody can answer
-/// one in a headless run, and fx does not hand its approvals to Claude Code.
-/// Claude Code reads no settings files, so repository settings cannot run hooks.
+/// argv. Claude Code reads no settings files, so repository settings cannot run
+/// hooks.
 pub fn buildArgv(
     arena: Allocator,
     binary: []const u8,
     model: []const u8,
     resume_session: ?[]const u8,
+    permission_mode: types.PermissionMode,
 ) ![]const []const u8 {
     if (!claude_cli_models.validModel(model)) return error.InvalidClaudeModel;
     var argv: std.ArrayList([]const u8) = .empty;
@@ -183,7 +196,7 @@ pub fn buildArgv(
         "--verbose",
         "--include-partial-messages",
         "--permission-mode",
-        "manual",
+        claudePermissionMode(permission_mode),
         "--permission-prompts",
         "none",
         // No settings files: a repository's own settings can name hooks that run
@@ -686,7 +699,7 @@ fn runOnce(
 ) !RunResult {
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
-    const argv = try buildArgv(arena.allocator(), claude_cli_auth.binaryPath(), request.model, turn.resume_session);
+    const argv = try buildArgv(arena.allocator(), claude_cli_auth.binaryPath(), request.model, turn.resume_session, request.permission_mode);
 
     var environment = try spawnEnvironment(alloc);
     defer environment.deinit();
@@ -1038,27 +1051,43 @@ test "reducer truncates an oversized tool result" {
 test "claude reads no settings files, so repository hooks cannot run" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const argv = try buildArgv(arena.allocator(), "claude", "opus", null);
+    const argv = try buildArgv(arena.allocator(), "claude", "opus", null, .ask);
     try std.testing.expect(containsPair(argv, "--setting-sources", ""));
     try std.testing.expect(contains(argv, "--strict-mcp-config"));
     try std.testing.expect(contains(argv, "--disable-slash-commands"));
 }
 
+test "fx permission modes map to Claude Code modes and prompts stay denied" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cases = [_]struct { mode: types.PermissionMode, expected: []const u8 }{
+        .{ .mode = .ask, .expected = "manual" },
+        .{ .mode = .auto, .expected = "auto" },
+        .{ .mode = .yolo, .expected = "bypassPermissions" },
+    };
+    for (cases) |case| {
+        const argv = try buildArgv(arena.allocator(), "claude", "opus", null, case.mode);
+        try std.testing.expect(containsPair(argv, "--permission-mode", case.expected));
+        try std.testing.expect(containsPair(argv, "--permission-prompts", "none"));
+        try std.testing.expect(containsPair(argv, "--setting-sources", ""));
+    }
+}
+
 test "argv carries no user text and denies prompts" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const argv = try buildArgv(arena.allocator(), "claude", "opus", null);
+    const argv = try buildArgv(arena.allocator(), "claude", "opus", null, .ask);
     try std.testing.expectEqualStrings("claude", argv[0]);
     try std.testing.expect(containsPair(argv, "--model", "opus"));
     try std.testing.expect(containsPair(argv, "--permission-prompts", "none"));
     try std.testing.expect(containsPair(argv, "--permission-mode", "manual"));
     try std.testing.expect(!contains(argv, "--resume"));
 
-    const resumed = try buildArgv(arena.allocator(), "claude", claude_cli_models.default_model, "abc-123");
+    const resumed = try buildArgv(arena.allocator(), "claude", claude_cli_models.default_model, "abc-123", .ask);
     try std.testing.expect(!contains(resumed, "--model"));
     try std.testing.expect(containsPair(resumed, "--resume", "abc-123"));
 
-    try std.testing.expectError(error.InvalidClaudeModel, buildArgv(arena.allocator(), "claude", "--dangerously-skip-permissions", null));
+    try std.testing.expectError(error.InvalidClaudeModel, buildArgv(arena.allocator(), "claude", "--dangerously-skip-permissions", null, .ask));
 }
 
 fn contains(argv: []const []const u8, needle: []const u8) bool {

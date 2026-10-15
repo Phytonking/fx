@@ -128,7 +128,6 @@ describe("claude provider (delegated Claude Code)", () => {
       expect(flagValue(argv, "--output-format")).toBe("stream-json");
       expect(argv).toContain("--include-partial-messages");
       expect(flagValue(argv, "--permission-prompts")).toBe("none");
-      expect(flagValue(argv, "--permission-mode")).toBe("manual");
       expect(argv).not.toContain("--model");
       expect(argv).not.toContain("--resume");
       // No settings files load, so a repository's own settings cannot run hooks.
@@ -140,6 +139,23 @@ describe("claude provider (delegated Claude Code)", () => {
       expect(f.stdin(1)).toContain("Reply with pong");
       // A subscription turn must not be billed to an API key from the environment.
       expect(readFileSync(join(f.dir, "apikey.1"), "utf8").trim()).toBe("absent");
+    } finally {
+      f.cleanup();
+    }
+  }, 30000);
+
+  test.each([
+    ["ask", "manual"],
+    ["auto", "auto"],
+    ["full-access", "bypassPermissions"],
+  ])("fx permission mode %s runs Claude Code in %s mode with prompts denied", async (fxMode, claudeMode) => {
+    const f = createFixture();
+    try {
+      const run = await runFx(["ask", "--no-save", "hello"], { cwd: f.workspace, env: { ...f.env, FX_PERMISSION_MODE: fxMode }, timeoutMs: 20000 });
+      if (run.code !== 0) throw new Error(run.stdout + run.stderr);
+      const argv = f.argv(1);
+      expect(flagValue(argv, "--permission-mode")).toBe(claudeMode);
+      expect(flagValue(argv, "--permission-prompts")).toBe("none");
     } finally {
       f.cleanup();
     }
