@@ -23,6 +23,7 @@ const max_tool_result_bytes: usize = 256 * 1024;
 const max_session_id_bytes = 64;
 const stdout_buffer_bytes: usize = 64 * 1024;
 const watch_interval_ms: u64 = 25;
+const terminate_grace_ms: u64 = 3000;
 const text_separator = "\n\n";
 
 /// Environment variables that make the CLI bill an API account instead of the
@@ -575,7 +576,7 @@ const Watch = struct {
             if (self.cancel_flag.load(.seq_cst) or self.deadlinePassed()) {
                 self.interrupted.store(true, .release);
                 const pid = self.process_id.load(.acquire);
-                if (pid > 0) terminateGroup(pid);
+                if (pid > 0) terminateGracefully(self, pid);
                 return;
             }
             io_mod.sleep(watch_interval_ms * std.time.ns_per_ms);
@@ -583,10 +584,20 @@ const Watch = struct {
     }
 };
 
-/// Stops Claude Code and the commands it started. The child leads its own
-/// process group, so one signal reaches its tools too.
-fn terminateGroup(pid: i32) void {
+/// Stops Claude Code and the commands it started. Claude Code puts each command
+/// in its own process group, so killing fx's group would leave them running.
+/// Asking Claude Code to exit lets it stop its own commands. The group kill is
+/// the fallback for a process that ignores the request.
+fn terminateGracefully(watch: *Watch, pid: i32) void {
     if (comptime builtin.target.os.tag == .windows) return;
+    std.posix.kill(pid, .TERM) catch return;
+    var waited: u64 = 0;
+    while (waited < terminate_grace_ms) : (waited += watch_interval_ms) {
+        // The turn clears the id once it has reaped the process.
+        if (watch.process_id.load(.acquire) == 0) return;
+        io_mod.sleep(watch_interval_ms * std.time.ns_per_ms);
+    }
+    if (watch.process_id.load(.acquire) == 0) return;
     std.posix.kill(-pid, .KILL) catch {
         std.posix.kill(pid, .KILL) catch {};
     };

@@ -27,7 +27,12 @@ echo "$$" > "$dir/pid.$n"
 if [ -f "$dir/bgerr" ]; then (sleep 8 >/dev/null &); fi
 if [ -f "$dir/stderr" ]; then cat "$dir/stderr" >&2; exit 3; fi
 if [ -f "$dir/stream.$n" ]; then cat "$dir/stream.$n"; else cat "$dir/stream.default"; fi
-if [ -f "$dir/hold" ]; then sleep 30; fi
+if [ -f "$dir/hold" ]; then
+  # Like Claude Code, exit cleanly when asked to, so its own commands can stop.
+  trap 'echo term > "$dir/term"; exit 0' TERM
+  sleep 30 &
+  wait
+fi
 `;
 
 const SIGNED_IN = JSON.stringify({ loggedIn: true, authMethod: "claude.ai", email: "person@example.com", orgId: "org-test-1", subscriptionType: "max" });
@@ -420,6 +425,8 @@ describe.skipIf(!tmuxAvailable())("claude provider in the terminal UI", () => {
     const deadline = Date.now() + 15_000;
     while (alive() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
     expect(alive()).toBe(false);
+    // fx asks Claude Code to exit first so it can stop the commands it started.
+    expect(existsSync(join(f.dir, "term"))).toBe(true);
     await session.waitForComposer(15_000);
   }, 90000);
 });
