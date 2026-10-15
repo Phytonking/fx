@@ -317,6 +317,17 @@ describe.skipIf(!tmuxAvailable())("claude provider in the terminal UI", () => {
     fixture = null;
   });
 
+  test("/login claude hands the terminal to claude auth login and then selects Claude", async () => {
+    const f = createFixture({ status: SIGNED_OUT, statusAfterLogin: SIGNED_IN });
+    fixture = f;
+    session = await TmuxSession.create({ cmd: FX_BIN, cwd: f.workspace, env: { ...f.env, FX_PROVIDER: undefined } });
+    await session.waitForComposer(15_000);
+    await session.sendText("/login claude");
+    await session.waitForText("Switched to Claude subscription", 30_000);
+    expect(f.calls()).toEqual(["login"]);
+    await session.waitForComposer(15_000);
+  }, 60000);
+
   test("interrupting a turn stops the Claude Code process", async () => {
     // The terminal holds back the trailing block of a stream, so send several
     // paragraphs and wait for an earlier one.

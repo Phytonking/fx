@@ -11,6 +11,7 @@ const auth_runtime = @import("../auth/auth_runtime.zig");
 const login_flow = @import("../auth/login_flow.zig");
 const chatgpt_oauth = @import("../auth/chatgpt_oauth.zig");
 const grok_oauth = @import("../auth/grok_oauth.zig");
+const claude_cli_auth = @import("../auth/claude_cli_auth.zig");
 const provider_catalog = @import("../auth/provider_catalog.zig");
 const auth_transition = @import("../auth/auth_transition.zig");
 const model_provider = @import("../config/model_provider.zig");
@@ -1100,15 +1101,62 @@ pub fn Runtime(comptime App: type) type {
             }
         }
 
-        /// Claude Code owns its own sign-in, so fx points to the command that
-        /// runs it instead of drawing a sign-in picker.
-        fn writeClaudeSignInNotice(app: *App) !void {
-            cancelPromptRetryAfterAuth(app);
-            try app.writeDomainNotice(.{
-                .topic = "auth",
-                .tone = .warning,
-                .body = "Claude Code is not signed in. Run `fx login claude` in a terminal (install Claude Code first if the claude command is missing), then try again.",
-            }, true);
+        /// Claude Code owns its own sign-in, so fx hands it the terminal for
+        /// `claude auth login` and takes the terminal back when it exits.
+        /// `switch_after` continues a provider switch once the CLI is signed in.
+        fn beginClaudeSignIn(app: *App, switch_after: bool) !void {
+            if (comptime !@hasDecl(App, "runExternalInteractive")) {
+                cancelPromptRetryAfterAuth(app);
+                try app.writeDomainNotice(.{
+                    .topic = "auth",
+                    .tone = .warning,
+                    .body = "Claude Code is not signed in. Run `fx login claude` in a terminal, then try again.",
+                }, true);
+                return;
+            }
+            if (app.stream.active or app.worker.queuedPromptCount() > 0) {
+                cancelPromptRetryAfterAuth(app);
+                try app.writeDomainNotice(.{
+                    .topic = "auth",
+                    .tone = .warning,
+                    .body = "Claude sign-in is unavailable until active and queued work finishes.",
+                }, true);
+                return;
+            }
+            claude_cli_auth.invalidate();
+            if (claude_cli_auth.presence() != .present) {
+                const argv = [_][]const u8{ claude_cli_auth.binaryPath(), "auth", "login" };
+                app.runExternalInteractive(&argv) catch |err| {
+                    cancelPromptRetryAfterAuth(app);
+                    debug_trace.logf("auth", "Claude login failed err={s}", .{@errorName(err)});
+                    try app.writeDomainNotice(.{
+                        .topic = "auth",
+                        .tone = .@"error",
+                        .body = "Claude sign-in did not complete. Install Claude Code if the claude command is missing, then run /login claude again.",
+                    }, true);
+                    return;
+                };
+                claude_cli_auth.invalidate();
+            }
+            if (claude_cli_auth.presence() != .present) {
+                cancelPromptRetryAfterAuth(app);
+                try app.writeDomainNotice(.{
+                    .topic = "auth",
+                    .tone = .warning,
+                    .body = "Claude Code is still not signed in. Run /login claude to try again.",
+                }, true);
+                return;
+            }
+            if (switch_after) {
+                try startProviderSwitch(app, .claude, false, .post_oauth, null);
+            } else {
+                cancelPromptRetryAfterAuth(app);
+                try app.writeDomainNotice(.{
+                    .topic = "auth",
+                    .tone = .neutral,
+                    .body = "Signed in with Claude. Send your message again.",
+                }, true);
+            }
         }
 
         fn beginCodexSignInForProviderSwitch(app: *App) !void {
@@ -1338,7 +1386,7 @@ pub fn Runtime(comptime App: type) type {
                     switch (target) {
                         .codex => try beginCodexSignInForProviderSwitch(app),
                         .grok => try beginGrokSignInForProviderSwitch(app),
-                        .claude => try writeClaudeSignInNotice(app),
+                        .claude => try beginClaudeSignIn(app, true),
                         .gateway, .configured => {},
                     }
                 }
@@ -1944,7 +1992,7 @@ pub fn Runtime(comptime App: type) type {
                 .fx_login => try beginSignIn(app, false),
                 .chatgpt_subscription => try beginChatGptSignIn(app),
                 .grok_subscription => try beginGrokSignIn(app),
-                .claude_cli => try writeClaudeSignInNotice(app),
+                .claude_cli => try beginClaudeSignIn(app, false),
                 .vercel_oidc_token,
                 .ai_gateway_api_key,
                 .stored_key,

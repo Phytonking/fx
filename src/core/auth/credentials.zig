@@ -263,7 +263,7 @@ pub const missing_grok_credential_message = "fx needs a Grok subscription login 
 pub const missing_grok_interactive_credential_message = "Grok needs a subscription login. Run /login, open Connections, then choose Grok subscription.";
 pub const unreadable_store_message = "fx could not read the stored API key from " ++ stored_key_backend_label ++ ". A key may be saved but unreadable. Set FX_TRACE_LOG for the failing step, or set AI_GATEWAY_API_KEY.";
 pub const missing_claude_credential_message = "fx needs a signed-in Claude Code for this model. Run fx login claude; install Claude Code first if the claude command is missing.";
-pub const missing_claude_interactive_credential_message = "Claude needs a signed-in Claude Code. Run `fx login claude` in a terminal; install Claude Code first if the claude command is missing.";
+pub const missing_claude_interactive_credential_message = "Claude needs a signed-in Claude Code. Run /login claude; install Claude Code first if the claude command is missing.";
 pub const host_managed_auth_message = "Authentication is managed by the host.";
 
 test "public credential guidance spells fx lowercase" {
