@@ -855,15 +855,15 @@ test.skipIf(SKIP_TMUX)("/thread with plain instructions starts a thread named fr
   try {
     tui = await launch(fixture, gateway);
     await tui.sendText("/thread write hello for the docs page");
-    await tui.waitForText("Started thread write-hello-for-the-docs", 20000);
+    await tui.waitForText("Started thread write-hello-docs-page", 20000);
 
     await tui.sendText("/thread list");
-    await tui.waitForText("write-hello-for-the-docs", 10000);
+    await tui.waitForText("write-hello-docs-page", 10000);
 
     // The thread was given the instructions as its task and answered them.
     let seen = false;
     for (let attempt = 0; attempt < 20 && !seen; attempt++) {
-      await tui.sendText("/thread watch write-hello-for-the-docs 10");
+      await tui.sendText("/thread watch write-hello-docs-page 10");
       try {
         await tui.waitForText("THREAD_ANSWER_OK", 2000);
         seen = true;
@@ -875,7 +875,7 @@ test.skipIf(SKIP_TMUX)("/thread with plain instructions starts a thread named fr
 
     // The same words again make a second, distinct thread.
     await tui.sendText("/thread write hello for the docs page");
-    await tui.waitForText("Started thread write-hello-for-the-docs-2", 20000);
+    await tui.waitForText("Started thread write-hello-docs-page-2", 20000);
 
     // A command word used wrongly is a usage error and starts nothing.
     await tui.sendText("/thread list everything");
@@ -885,3 +885,39 @@ test.skipIf(SKIP_TMUX)("/thread with plain instructions starts a thread named fr
     gateway.stop();
   }
 }, 120_000);
+
+test.skipIf(SKIP_TMUX)("a thread is found by a short, differently cased name from the command and from @thread: mentions", async () => {
+  const fixture = createFixture("fuzzy");
+  const { gateway, bodies } = startToolGateway(
+    "compare with @thread:RISHAV",
+    "thread_read",
+    { name: "RISHAV" },
+    "thread: write-hello-search-rishav",
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    // Filler words drop out of the generated name.
+    await tui.sendText("/thread write hello and search up more about rishav");
+    await tui.waitForText("Started thread write-hello-search-rishav", 20000);
+    await waitForThreadIdle(tui, "write-hello-search-rishav");
+
+    // The command takes a word of the name, in any case.
+    await tui.sendText("/thread watch RISHAV 5");
+    await tui.waitForText("THREAD_ANSWER_OK", 10000);
+
+    // A mention names it the same loose way and the tool still reads it.
+    await tui.sendText("compare with @thread:RISHAV");
+    await tui.waitForText("TOOL_ROUND_DONE", 30000);
+    expect(bodies.some(b => b.includes("thread: write-hello-search-rishav"))).toBe(true);
+
+    // Two threads that share the word are reported, not guessed.
+    await tui.sendText("/thread write hello and search up more about vercel");
+    await tui.waitForText("Started thread write-hello-search-vercel", 20000);
+    await tui.sendText("/thread watch hello");
+    await tui.waitForText("matches several threads", 10000);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 150_000);

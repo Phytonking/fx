@@ -56,11 +56,48 @@ pub const Registry = struct {
         self.* = undefined;
     }
 
+    /// The thread whose name is exactly `name`, ignoring case.
     pub fn find(self: *const Registry, name: []const u8) ?*const Thread {
         for (self.threads.items) |*t| {
-            if (std.mem.eql(u8, t.name, name)) return t;
+            if (std.ascii.eqlIgnoreCase(t.name, name)) return t;
         }
         return null;
+    }
+
+    pub const Ambiguous = struct {
+        /// Up to four of the matching names.
+        names: [4][]const u8 = undefined,
+        /// How many threads matched in all.
+        count: usize = 0,
+    };
+
+    pub const Resolution = union(enum) {
+        found: *const Thread,
+        none,
+        ambiguous: Ambiguous,
+    };
+
+    /// Finds a thread from what a person typed. Tries the whole name, then a
+    /// name that starts with the text, then a name with a word equal to it,
+    /// then a name that contains it, ignoring case. The first step with a
+    /// single match wins; a step with several is ambiguous rather than a guess.
+    pub fn resolve(self: *const Registry, query: []const u8) Resolution {
+        if (query.len == 0) return .none;
+        if (self.find(query)) |t| return .{ .found = t };
+        const steps = [_]MatchKind{ .prefix, .word, .contains };
+        for (steps) |kind| {
+            var ambiguous = Ambiguous{};
+            var first: ?*const Thread = null;
+            for (self.threads.items) |*t| {
+                if (!nameMatches(t.name, query, kind)) continue;
+                if (ambiguous.count < ambiguous.names.len) ambiguous.names[ambiguous.count] = t.name;
+                ambiguous.count += 1;
+                if (first == null) first = t;
+            }
+            if (ambiguous.count == 1) return .{ .found = first.? };
+            if (ambiguous.count > 1) return .{ .ambiguous = ambiguous };
+        }
+        return .none;
     }
 
     pub fn add(self: *Registry, alloc: Allocator, name: []const u8, agent: []const u8, now_ms: i64) !void {
@@ -112,11 +149,34 @@ pub const Registry = struct {
 
     fn indexOf(self: *const Registry, name: []const u8) ?usize {
         for (self.threads.items, 0..) |t, i| {
-            if (std.mem.eql(u8, t.name, name)) return i;
+            if (std.ascii.eqlIgnoreCase(t.name, name)) return i;
         }
         return null;
     }
 };
+
+const MatchKind = enum { prefix, word, contains };
+
+fn nameMatches(name: []const u8, query: []const u8, kind: MatchKind) bool {
+    switch (kind) {
+        .prefix => return name.len >= query.len and std.ascii.eqlIgnoreCase(name[0..query.len], query),
+        .word => {
+            var words = std.mem.tokenizeAny(u8, name, "-_");
+            while (words.next()) |word| {
+                if (std.ascii.eqlIgnoreCase(word, query)) return true;
+            }
+            return false;
+        },
+        .contains => {
+            if (query.len > name.len) return false;
+            var at: usize = 0;
+            while (at + query.len <= name.len) : (at += 1) {
+                if (std.ascii.eqlIgnoreCase(name[at .. at + query.len], query)) return true;
+            }
+            return false;
+        },
+    }
+}
 
 /// Names are mention-safe: `@thread:NAME` must parse without quoting.
 pub fn validateName(name: []const u8) Error!void {
@@ -129,6 +189,21 @@ pub fn validateName(name: []const u8) Error!void {
 }
 
 const suggest_max_words: usize = 5;
+
+/// Words that carry no meaning in a name, so `search up more about rishav`
+/// is named `search-rishav` and `@thread:rishav` finds it.
+fn isFillerWord(word: []const u8) bool {
+    const filler = [_][]const u8{
+        "a",    "an", "the",  "of",   "to", "for",  "and",    "or",   "about", "up",
+        "more", "on", "in",   "with", "me", "my",   "please", "can",  "you",   "could",
+        "i",    "it", "is",   "are",  "be", "this", "that",   "some", "any",   "also",
+        "just", "go", "then", "so",   "at", "from", "into",   "out",  "over",  "do",
+    };
+    for (filler) |f| {
+        if (std.mem.eql(u8, word, f)) return true;
+    }
+    return false;
+}
 
 /// A thread name for free-form instructions: the first few words as a slug,
 /// made unique among `registry`'s threads and never `main`. Caller owns the
@@ -154,6 +229,7 @@ pub fn suggestName(alloc: Allocator, registry: *const Registry, instructions: []
         }
         while (len > 0 and word[len - 1] == '-') len -= 1;
         if (len == 0) continue;
+        if (isFillerWord(word[0..len])) continue;
         const separator: usize = if (base.items.len == 0) 0 else 1;
         if (base.items.len + separator + len > max_name_bytes) break;
         if (separator == 1) try base.append(alloc, '-');
@@ -376,7 +452,11 @@ test "suggested names are a slug of the first words and stay valid" {
 
     const plain = try suggestName(alloc, &registry, "Fix the login bug after a token refresh");
     defer alloc.free(plain);
-    try std.testing.expectEqualStrings("fix-the-login-bug-after", plain);
+    try std.testing.expectEqualStrings("fix-login-bug-after-token", plain);
+
+    const filler = try suggestName(alloc, &registry, "search up more about rishav");
+    defer alloc.free(filler);
+    try std.testing.expectEqualStrings("search-rishav", filler);
     try validateName(plain);
 
     const punctuated = try suggestName(alloc, &registry, "  ...Add `foo.bar` & tests!!  ");
@@ -398,19 +478,42 @@ test "suggested names avoid taken names and main" {
     const alloc = std.testing.allocator;
     var registry = try Registry.init(alloc, "root1");
     defer registry.deinit(alloc);
-    try registry.add(alloc, "fix-the-bug", "th-1-fix-the-bug", 1);
+    try registry.add(alloc, "fix-bug", "th-1-fix-bug", 1);
 
     const second = try suggestName(alloc, &registry, "fix the bug");
     defer alloc.free(second);
-    try std.testing.expectEqualStrings("fix-the-bug-2", second);
+    try std.testing.expectEqualStrings("fix-bug-2", second);
     try registry.add(alloc, second, "th-2-x", 2);
 
     const third = try suggestName(alloc, &registry, "fix the bug");
     defer alloc.free(third);
-    try std.testing.expectEqualStrings("fix-the-bug-3", third);
+    try std.testing.expectEqualStrings("fix-bug-3", third);
 
     const main_named = try suggestName(alloc, &registry, "main");
     defer alloc.free(main_named);
     try std.testing.expectEqualStrings("main-2", main_named);
     try validateName(main_named);
+}
+
+test "threads resolve from what a person types, ignoring case, by prefix, word, or part" {
+    const alloc = std.testing.allocator;
+    var registry = try Registry.init(alloc, "root1");
+    defer registry.deinit(alloc);
+    try registry.add(alloc, "search-up-more-about-rishav", "th-1-a", 1);
+    try registry.add(alloc, "fix-login-bug", "th-2-b", 2);
+    try registry.add(alloc, "fix-logout", "th-3-c", 3);
+
+    try std.testing.expectEqualStrings("search-up-more-about-rishav", registry.resolve("RISHAV").found.name);
+    try std.testing.expectEqualStrings("search-up-more-about-rishav", registry.resolve("rishav").found.name);
+    try std.testing.expectEqualStrings("search-up-more-about-rishav", registry.resolve("SEARCH").found.name);
+    try std.testing.expectEqualStrings("fix-login-bug", registry.resolve("Fix-Login-Bug").found.name);
+    try std.testing.expectEqualStrings("fix-login-bug", registry.resolve("bug").found.name);
+    try std.testing.expectEqualStrings("search-up-more-about-rishav", registry.resolve("ishav").found.name);
+
+    // Several matches are reported, not guessed.
+    const fix = registry.resolve("fix").ambiguous;
+    try std.testing.expectEqual(@as(usize, 2), fix.count);
+    try std.testing.expectEqualStrings("fix-login-bug", fix.names[0]);
+    try std.testing.expect(registry.resolve("nothing") == .none);
+    try std.testing.expect(registry.resolve("") == .none);
 }

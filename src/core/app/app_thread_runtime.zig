@@ -214,7 +214,7 @@ pub fn Runtime(comptime App: type) type {
             const target: []const u8 = if (std.mem.eql(u8, name, thread_registry.root_thread_name))
                 registry.root_id
             else blk: {
-                const t = registry.find(name) orelse return missing(app, name);
+                const t = (try resolveThread(app, registry, name)) orelse return;
                 if (t.session_id.len == 0) {
                     try noticeFmt(app, .@"error", "thread", "Thread {s} has not started yet.", .{name});
                     return;
@@ -315,7 +315,7 @@ pub fn Runtime(comptime App: type) type {
             name: []const u8,
             message: []const u8,
         ) !void {
-            const t = registry.find(name) orelse return missing(app, name);
+            const t = (try resolveThread(app, registry, name)) orelse return;
             var id_buf: [96]u8 = undefined;
             const outcome = try host.sendThread(app.alloc, t.agent, message, executeOptions(app, root_id, invocationId(&id_buf, "send")));
             defer outcome.deinit(app.alloc);
@@ -330,10 +330,11 @@ pub fn Runtime(comptime App: type) type {
             app: *App,
             host: *subagent_tool_host.Runtime,
             registry: *const thread_registry.Registry,
-            name: []const u8,
+            typed_name: []const u8,
             lines: ?usize,
         ) !void {
-            const t = registry.find(name) orelse return missing(app, name);
+            const t = (try resolveThread(app, registry, typed_name)) orelse return;
+            const name = t.name;
             const status = (try host.threadStatus(app.alloc, t.agent)) orelse {
                 try noticeFmt(app, .@"error", "thread", "Thread {s} has not started.", .{name});
                 return;
@@ -441,7 +442,7 @@ pub fn Runtime(comptime App: type) type {
             registry: *const thread_registry.Registry,
             name: []const u8,
         ) !void {
-            const t = registry.find(name) orelse return missing(app, name);
+            const t = (try resolveThread(app, registry, name)) orelse return;
             const status = (try host.threadStatus(app.alloc, t.agent)) orelse {
                 try noticeFmt(app, .neutral, "thread", "Thread {s} is not running.", .{name});
                 return;
@@ -458,7 +459,10 @@ pub fn Runtime(comptime App: type) type {
             try noticeFmt(app, .success, "thread", "Stopping {s}.", .{name});
         }
 
-        fn rename(app: *App, registry: *thread_registry.Registry, home: []const u8, old: []const u8, new: []const u8) !void {
+        fn rename(app: *App, registry: *thread_registry.Registry, home: []const u8, old_typed: []const u8, new: []const u8) !void {
+            const found = (try resolveThread(app, registry, old_typed)) orelse return;
+            const old = try app.alloc.dupe(u8, found.name);
+            defer app.alloc.free(old);
             registry.rename(app.alloc, old, new) catch |err| switch (err) {
                 error.ThreadNotFound => return missing(app, old),
                 error.DuplicateThreadName => {
@@ -482,7 +486,7 @@ pub fn Runtime(comptime App: type) type {
             home: []const u8,
             name: []const u8,
         ) !void {
-            const t = registry.find(name) orelse return missing(app, name);
+            const t = (try resolveThread(app, registry, name)) orelse return;
             if (try host.threadStatus(app.alloc, t.agent)) |status| {
                 defer status.deinit(app.alloc);
                 if (status.phase == .running or status.phase == .awaiting_approval) {
@@ -514,6 +518,27 @@ pub fn Runtime(comptime App: type) type {
             try registry.remove(app.alloc, name);
             try thread_registry.save(app.alloc, home, registry);
             try noticeFmt(app, .success, "thread", "Deleted thread {s} and its saved session.", .{name});
+        }
+
+        /// The thread `name` points at, or null after telling the user why not.
+        fn resolveThread(app: *App, registry: *const thread_registry.Registry, name: []const u8) !?*const thread_registry.Thread {
+            switch (registry.resolve(name)) {
+                .found => |t| return t,
+                .none => {
+                    try missing(app, name);
+                    return null;
+                },
+                .ambiguous => |a| {
+                    var out: std.Io.Writer.Allocating = .init(app.alloc);
+                    defer out.deinit();
+                    for (a.names[0..@min(a.count, a.names.len)], 0..) |candidate, index| {
+                        try out.writer.print("{s}{s}", .{ if (index == 0) "" else ", ", candidate });
+                    }
+                    if (a.count > a.names.len) try out.writer.print(", and {d} more", .{a.count - a.names.len});
+                    try noticeFmt(app, .@"error", "thread", "{s} matches several threads: {s}. Use more of the name.", .{ name, out.written() });
+                    return null;
+                },
+            }
         }
 
         fn missing(app: *App, name: []const u8) !void {

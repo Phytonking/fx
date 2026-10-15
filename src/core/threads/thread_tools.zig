@@ -271,16 +271,20 @@ fn readOne(
     if (std.mem.eql(u8, name, thread_registry.root_thread_name)) {
         return fail(alloc, "main is the current session, not a thread. Omit name to list the threads.", .{});
     }
-    const t = registry.find(name) orelse return unknownThread(alloc, registry, name);
+    const t = switch (registry.resolve(name)) {
+        .found => |found| found,
+        .none => return unknownThread(alloc, registry, name),
+        .ambiguous => |a| return ambiguousThread(alloc, name, a),
+    };
     const status = (try host.threadStatus(alloc, t.agent)) orelse
-        return fail(alloc, "Thread {s} has not started.", .{name});
+        return fail(alloc, "Thread {s} has not started.", .{t.name});
     defer status.deinit(alloc);
     const idle = idleSeconds(host, status.child_id);
     const feed = host.feedFor(status.child_id) orelse
-        return ok(try formatRead(alloc, name, status.phase, idle, null, lines));
+        return ok(try formatRead(alloc, t.name, status.phase, idle, null, lines));
     const read = try feed.readSince(alloc, 0);
     defer read.deinit(alloc);
-    return ok(try formatRead(alloc, name, status.phase, idle, read.lines, lines));
+    return ok(try formatRead(alloc, t.name, status.phase, idle, read.lines, lines));
 }
 
 fn sendOne(
@@ -295,14 +299,27 @@ fn sendOne(
         return fail(alloc, "main is the current session, not a thread. thread_send only reaches existing threads.", .{});
     }
     // Only a registered thread is reachable, so a send can never create one.
-    const t = registry.find(name) orelse return unknownThread(alloc, registry, name);
+    const t = switch (registry.resolve(name)) {
+        .found => |found| found,
+        .none => return unknownThread(alloc, registry, name),
+        .ambiguous => |a| return ambiguousThread(alloc, name, a),
+    };
     const outcome = try host.sendThread(alloc, t.agent, message, options);
     defer outcome.deinit(alloc);
     return switch (outcome) {
-        .started => ok(try alloc.print("Sent to thread {s}. It started a new turn on the message and runs on its own. Read its progress with thread_read.", .{name})),
-        .steered => ok(try alloc.print("Sent to thread {s}. It was mid-turn, so the message joins that turn.", .{name})),
+        .started => ok(try alloc.print("Sent to thread {s}. It started a new turn on the message and runs on its own. Read its progress with thread_read.", .{t.name})),
+        .steered => ok(try alloc.print("Sent to thread {s}. It was mid-turn, so the message joins that turn.", .{t.name})),
         .rejected => |code| fail(alloc, "Could not send to thread {s}: {s}", .{ name, code }),
     };
+}
+
+fn ambiguousThread(alloc: Allocator, typed: []const u8, a: thread_registry.Registry.Ambiguous) !Result {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    try out.writer.print("{s} matches {d} threads:", .{ typed, a.count });
+    for (a.names[0..@min(a.count, a.names.len)]) |candidate| try out.writer.print(" {s}", .{candidate});
+    try out.writer.writeAll(". Use the full name of one.");
+    return .{ .status = .failure, .body = try out.toOwnedSlice() };
 }
 
 fn unknownThread(alloc: Allocator, registry: *const thread_registry.Registry, name: []const u8) !Result {
