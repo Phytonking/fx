@@ -104,13 +104,16 @@ pub const top_level_specs = [_]TopLevelSpec{
     .{
         .kind = .login,
         .token = "login",
-        .usage = "login [vercel|codex|grok]",
+        .usage = "login [vercel|codex|grok|claude]",
         .summary = "Sign in to Vercel or a selected provider",
+        .details = &.{
+            "claude signs in through the Claude Code CLI (claude auth login) and fx stores no Claude credential. Install Claude Code first.",
+        },
     },
     .{
         .kind = .logout,
         .token = "logout",
-        .usage = "logout [vercel|codex|grok]",
+        .usage = "logout [vercel|codex|grok|claude]",
         .summary = "Sign out of Vercel or a selected provider session",
     },
     .{
@@ -176,6 +179,9 @@ pub const top_level_specs = [_]TopLevelSpec{
         .token = "provider",
         .usage = "provider <name>",
         .summary = "Choose the model provider used by fx",
+        .details = &.{
+            "The claude provider runs each turn in Claude Code (claude -p) on your Claude subscription. Claude Code runs its own tools, so fx permission modes do not apply and any tool that needs approval is denied.",
+        },
     },
     .{
         .kind = .doctor,
@@ -316,8 +322,8 @@ pub const top_level_help_groups = [_]TopLevelHelpGroup{
         .{ .usage = "session recover <id>", .summary = "Copy a recoverable corrupt session" },
     } },
     .{ .entries = &.{
-        .{ .kind = .login, .usage = "login [vercel|codex|grok]", .summary = "Sign in to a model provider" },
-        .{ .kind = .logout, .usage = "logout [vercel|codex|grok]", .summary = "Sign out of a model provider" },
+        .{ .kind = .login, .usage = "login [vercel|codex|grok|claude]", .summary = "Sign in to a model provider" },
+        .{ .kind = .logout, .usage = "logout [vercel|codex|grok|claude]", .summary = "Sign out of a model provider" },
         .{ .kind = .provider, .usage = "provider <name>", .summary = "Choose the active model provider" },
         .{ .kind = .models, .usage = "models" },
     } },
@@ -357,7 +363,7 @@ pub const top_level_flags = [_]TopLevelFlag{
     },
     .{
         .usage = "--provider <name>",
-        .description = "Override the model provider for an interactive session (gateway, codex, grok, or a configured name)",
+        .description = "Override the model provider for an interactive session (gateway, codex, grok, claude, or a configured name)",
     },
     .{
         .usage = "--model <id>",
@@ -470,7 +476,7 @@ pub const slash_specs = [_]SlashSpec{
 
     .{ .kind = .rename_session, .command = "/rename", .help_entry = "/rename <title>", .completion_description = "rename the current session", .presentation_category = .session, .has_args = true, .accepts_payload = true },
     .{ .kind = .login, .command = "/login", .help_entry = "/login", .completion_description = "choose the model provider and how it signs in", .presentation_category = .account, .has_args = true },
-    .{ .kind = .logout, .command = "/logout", .help_entry = "/logout [vercel|codex|grok]", .completion_description = "sign out of a provider session", .presentation_category = .account, .has_args = true, .accepts_payload = true },
+    .{ .kind = .logout, .command = "/logout", .help_entry = "/logout [vercel|codex|grok|claude]", .completion_description = "sign out of a provider session", .presentation_category = .account, .has_args = true, .accepts_payload = true },
     .{ .kind = .provider, .command = "/provider", .aliases = &.{"/setup"}, .help_entry = "/provider (/setup)", .completion_description = "choose the model provider and how it signs in", .presentation_category = .account, .has_args = true },
     .{ .kind = .stats, .command = "/stats", .help_entry = "/stats", .completion_description = "show token and turn statistics", .presentation_category = .account },
     .{ .kind = .usage, .command = "/usage", .aliases = &.{}, .help_entry = "/usage", .completion_description = "show your provider's usage and spend", .presentation_category = .account },

@@ -340,7 +340,7 @@ fn prepareResolvedCredential(
     };
     resolution.credential = null;
 
-    const blocked = (credential.token.len == 0 and !(provider == .configured and credential.source == .configured)) or
+    const blocked = (credential.token.len == 0 and !credentials.sourceMayBeTokenless(credential.source)) or
         !model_provider.authorizesCredential(provider, credential.source) or
         credential.needsRefreshAt(now_ms) or
         (credential.source == .fx_login and
@@ -1562,6 +1562,10 @@ pub const StatusSnapshot = struct {
             .grok_subscription => switch (surface) {
                 .cli => credentials.missing_grok_credential_message,
                 .interactive => credentials.missing_grok_interactive_credential_message,
+            },
+            .claude_cli => switch (surface) {
+                .cli => credentials.missing_claude_credential_message,
+                .interactive => credentials.missing_claude_interactive_credential_message,
             },
             .host_managed => automatic_help,
             .configured => "The configured provider credential is unavailable. Check its auth environment variable in settings.json; no other provider was selected.",

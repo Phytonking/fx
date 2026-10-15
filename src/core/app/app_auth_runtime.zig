@@ -180,6 +180,7 @@ pub fn Runtime(comptime App: type) type {
                         .gateway => credentials.missing_interactive_credential_message,
                         .codex => credentials.missing_chatgpt_interactive_credential_message,
                         .grok => credentials.missing_grok_interactive_credential_message,
+                        .claude => credentials.missing_claude_interactive_credential_message,
                         .configured => "Configured provider authentication is unavailable. Check settings.json and its environment variable.",
                     },
                 }, true),
@@ -272,7 +273,7 @@ pub fn Runtime(comptime App: type) type {
                     try writeAuthNotice(app, .{
                         .topic = "",
                         .tone = .warning,
-                        .body = "usage: /logout [vercel|codex|grok]",
+                        .body = "usage: /logout [vercel|codex|grok|claude]",
                     });
                     return;
                 };
@@ -291,6 +292,16 @@ pub fn Runtime(comptime App: type) type {
                 .active_source = app.auth.credentialSource(),
                 .available_sources = provider_inventory,
             });
+            if (logout_provider == .claude) {
+                // The Claude CLI owns this sign-in and shares it with every other
+                // Claude Code session, so fx leaves it alone.
+                try writeAuthNotice(app, .{
+                    .topic = "auth",
+                    .tone = .neutral,
+                    .body = "fx does not store a Claude login. Run `claude auth logout` to sign out of Claude Code.",
+                });
+                return;
+            }
             const hold_turn_start = logout_provider.eql(selected_provider) and logout_provider != .gateway;
             if (hold_turn_start and (app.stream.active or !app.worker.tryHoldTurnStart())) {
                 try writeAuthNotice(app, .{
@@ -1089,6 +1100,17 @@ pub fn Runtime(comptime App: type) type {
             }
         }
 
+        /// Claude Code owns its own sign-in, so fx points to the command that
+        /// runs it instead of drawing a sign-in picker.
+        fn writeClaudeSignInNotice(app: *App) !void {
+            cancelPromptRetryAfterAuth(app);
+            try app.writeDomainNotice(.{
+                .topic = "auth",
+                .tone = .warning,
+                .body = "Claude Code is not signed in. Run `fx login claude` in a terminal (install Claude Code first if the claude command is missing), then try again.",
+            }, true);
+        }
+
         fn beginCodexSignInForProviderSwitch(app: *App) !void {
             try app.flushBeforeBlockingExternalWork();
             const started = app.auth.openChatGptSignInPickerForProviderSwitch(app.alloc);
@@ -1316,6 +1338,7 @@ pub fn Runtime(comptime App: type) type {
                     switch (target) {
                         .codex => try beginCodexSignInForProviderSwitch(app),
                         .grok => try beginGrokSignInForProviderSwitch(app),
+                        .claude => try writeClaudeSignInNotice(app),
                         .gateway, .configured => {},
                     }
                 }
@@ -1323,7 +1346,7 @@ pub fn Runtime(comptime App: type) type {
                     try app.writeDomainNotice(.{
                         .topic = "provider",
                         .tone = .warning,
-                        .body = if (intent == .post_oauth) "Subscription sign-in completed, but its saved credential is unavailable. The current provider is unchanged." else if (target == .codex) "Run fx login codex, then try switching again." else if (target == .grok) "Run fx login grok, then try switching again." else credentials.missing_interactive_credential_message,
+                        .body = if (intent == .post_oauth) "Subscription sign-in completed, but its saved credential is unavailable. The current provider is unchanged." else if (target == .codex) "Run fx login codex, then try switching again." else if (target == .grok) "Run fx login grok, then try switching again." else if (target == .claude) "Run fx login claude, then try switching again." else credentials.missing_interactive_credential_message,
                     }, true);
                 }
                 return false;
@@ -1921,6 +1944,7 @@ pub fn Runtime(comptime App: type) type {
                 .fx_login => try beginSignIn(app, false),
                 .chatgpt_subscription => try beginChatGptSignIn(app),
                 .grok_subscription => try beginGrokSignIn(app),
+                .claude_cli => try writeClaudeSignInNotice(app),
                 .vercel_oidc_token,
                 .ai_gateway_api_key,
                 .stored_key,
@@ -2263,7 +2287,7 @@ test "interactive subscription sign-in rejects active and queued work before OAu
             switch (provider) {
                 .codex => try Runtime(BusySignInApp).beginChatGptSignIn(&app),
                 .grok => try Runtime(BusySignInApp).beginGrokSignIn(&app),
-                .gateway, .configured => unreachable,
+                .gateway, .claude, .configured => unreachable,
             }
 
             try std.testing.expectEqual(@as(usize, 0), app.auth.start_count);
