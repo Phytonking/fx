@@ -168,7 +168,11 @@ pub fn loadDetail(
 
     var registry = try loadRegistry(parent, home, root_id);
     defer registry.deinit(parent);
-    const thread = registry.find(name) orelse return error.ThreadNotFound;
+    const thread = switch (registry.resolve(name)) {
+        .found => |found| found,
+        // An unknown or ambiguous name is the same answer here: nothing to show.
+        .none, .ambiguous => return error.ThreadNotFound,
+    };
     var children = try child_state.Store.load(.{ .backend = .{ .v1 = store }, .parent_id = root_id }, parent);
     defer children.deinit(parent);
 

@@ -921,3 +921,43 @@ test.skipIf(SKIP_TMUX)("a thread is found by a short, differently cased name fro
     gateway.stop();
   }
 }, 150_000);
+
+test.skipIf(SKIP_TMUX)("a thread is found by longer, looser text: word order, typos, and what it was asked", async () => {
+  const fixture = createFixture("smart-search");
+  const gateway = startGateway();
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("/thread write hello and research rishav portfolio pricing page");
+    await tui.waitForText("Started thread write-hello-research-rishav", 20000);
+    await waitForThreadIdle(tui, "write-hello-research-rishav");
+    await tui.sendText("/thread new second write hello about vercel edge functions");
+    await tui.waitForText("Started thread second", 20000);
+
+    // The list says what each thread was asked, so a name is easy to place.
+    await tui.sendText("/thread list");
+    await tui.waitForText("\"write hello about vercel edge functions\"", 10000);
+
+    // Word order, a typo, and words that only the instructions hold all find it.
+    for (const query of ["portfolio rishav", "rishva", "pricing"]) {
+      await tui.sendText(`/thread watch ${query} 3`);
+      await tui.waitForText("THREAD_ANSWER_OK", 10000);
+    }
+    // A name beats a thread that only mentions the words in its instructions.
+    await tui.sendText("/thread watch write hello 3");
+    await tui.waitForText("THREAD_ANSWER_OK", 10000);
+    // Several equally good matches are reported, not guessed.
+    await tui.sendText("/thread new research-a write hello");
+    await tui.waitForText("Started thread research-a", 20000);
+    await tui.sendText("/thread new research-b write hello");
+    await tui.waitForText("Started thread research-b", 20000);
+    await tui.sendText("/thread watch research");
+    await tui.waitForText("matches several threads", 10000);
+    // Something unrelated finds nothing.
+    await tui.sendText("/thread watch kubernetes");
+    await tui.waitForText("No thread named kubernetes", 10000);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 150_000);

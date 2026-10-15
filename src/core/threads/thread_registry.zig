@@ -9,6 +9,7 @@
 const std = @import("std");
 const io_mod = @import("../shared/io.zig");
 const profile_paths = @import("../shared/profile_paths.zig");
+const text_utils = @import("../shared/text_utils.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -33,6 +34,9 @@ pub const Thread = struct {
     agent: []u8,
     /// The thread's saved session. Empty until the thread has started.
     session_id: []u8,
+    /// The start of the instructions it was given, on one line. Empty for
+    /// threads saved before this was kept. Names are searched alongside it.
+    title: []u8,
     created_at_ms: i64,
 };
 
@@ -50,6 +54,7 @@ pub const Registry = struct {
             alloc.free(t.name);
             alloc.free(t.agent);
             alloc.free(t.session_id);
+            alloc.free(t.title);
         }
         self.threads.deinit(alloc);
         alloc.free(self.root_id);
@@ -69,6 +74,11 @@ pub const Registry = struct {
         names: [4][]const u8 = undefined,
         /// How many threads matched in all.
         count: usize = 0,
+
+        fn add(self: *Ambiguous, name: []const u8) void {
+            if (self.count < self.names.len) self.names[self.count] = name;
+            self.count += 1;
+        }
     };
 
     pub const Resolution = union(enum) {
@@ -77,11 +87,17 @@ pub const Registry = struct {
         ambiguous: Ambiguous,
     };
 
-    /// Finds a thread from what a person typed. Tries the whole name, then a
-    /// name that starts with the text, then a name with a word equal to it,
-    /// then a name that contains it, ignoring case. The first step with a
-    /// single match wins; a step with several is ambiguous rather than a guess.
-    pub fn resolve(self: *const Registry, query: []const u8) Resolution {
+    /// Finds a thread from what a person typed, tolerant of case, partial
+    /// names, word order, abbreviations, and small typos. Steps run from
+    /// strict to loose and the first step that matches anything decides:
+    /// the whole name, a name that starts with the text, a name with a word
+    /// equal to it, then a name that contains it. After that every word typed
+    /// must match a word of the name or of the instructions the thread was
+    /// given (by prefix, then within a typo or two), and last the letters may
+    /// be an abbreviation of the name. When one thread matches best it wins;
+    /// when several match equally well they are reported, not guessed.
+    pub fn resolve(self: *const Registry, query_text: []const u8) Resolution {
+        const query = std.mem.trim(u8, query_text, " \t");
         if (query.len == 0) return .none;
         if (self.find(query)) |t| return .{ .found = t };
         const steps = [_]MatchKind{ .prefix, .word, .contains };
@@ -90,12 +106,28 @@ pub const Registry = struct {
             var first: ?*const Thread = null;
             for (self.threads.items) |*t| {
                 if (!nameMatches(t.name, query, kind)) continue;
-                if (ambiguous.count < ambiguous.names.len) ambiguous.names[ambiguous.count] = t.name;
-                ambiguous.count += 1;
+                ambiguous.add(t.name);
                 if (first == null) first = t;
             }
             if (ambiguous.count == 1) return .{ .found = first.? };
             if (ambiguous.count > 1) return .{ .ambiguous = ambiguous };
+        }
+        const loose = [_]LooseKind{ .words, .typos, .abbreviation };
+        for (loose) |kind| {
+            var best = Ambiguous{};
+            var best_thread: ?*const Thread = null;
+            var best_score: usize = std.math.maxInt(usize);
+            for (self.threads.items) |*t| {
+                const score = looseScore(t, query, kind) orelse continue;
+                if (score < best_score) {
+                    best_score = score;
+                    best = .{};
+                    best_thread = t;
+                }
+                if (score == best_score) best.add(t.name);
+            }
+            if (best.count == 1) return .{ .found = best_thread.? };
+            if (best.count > 1) return .{ .ambiguous = best };
         }
         return .none;
     }
@@ -109,7 +141,17 @@ pub const Registry = struct {
         errdefer alloc.free(owned_agent);
         const owned_session = try alloc.dupe(u8, "");
         errdefer alloc.free(owned_session);
-        try self.threads.append(alloc, .{ .name = owned_name, .agent = owned_agent, .session_id = owned_session, .created_at_ms = now_ms });
+        const owned_title = try alloc.dupe(u8, "");
+        errdefer alloc.free(owned_title);
+        try self.threads.append(alloc, .{ .name = owned_name, .agent = owned_agent, .session_id = owned_session, .title = owned_title, .created_at_ms = now_ms });
+    }
+
+    /// Records what the thread was asked to do, shortened to one line.
+    pub fn setTitle(self: *Registry, alloc: Allocator, name: []const u8, instructions: []const u8) !void {
+        const index = self.indexOf(name) orelse return error.ThreadNotFound;
+        const owned = try titleFromText(alloc, instructions);
+        alloc.free(self.threads.items[index].title);
+        self.threads.items[index].title = owned;
     }
 
     pub fn setSession(self: *Registry, alloc: Allocator, name: []const u8, session_id: []const u8) !void {
@@ -145,6 +187,7 @@ pub const Registry = struct {
         alloc.free(t.name);
         alloc.free(t.agent);
         alloc.free(t.session_id);
+        alloc.free(t.title);
     }
 
     fn indexOf(self: *const Registry, name: []const u8) ?usize {
@@ -154,6 +197,141 @@ pub const Registry = struct {
         return null;
     }
 };
+
+const LooseKind = enum { words, typos, abbreviation };
+
+const max_title_bytes: usize = 100;
+
+/// One line of `text` for a title: whitespace collapsed, cut on a character
+/// boundary with a trailing ellipsis when it is long. Caller owns the result.
+pub fn titleFromText(alloc: Allocator, text: []const u8) Allocator.Error![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var words = std.mem.tokenizeAny(u8, text, " \t\r\n");
+    var cut = false;
+    while (words.next()) |word| {
+        const separator: usize = if (out.items.len == 0) 0 else 1;
+        if (out.items.len + separator + word.len > max_title_bytes) {
+            // Take what fits of the word, on a character boundary.
+            var fit = max_title_bytes -| (out.items.len + separator);
+            while (fit > 0 and fit < word.len and (word[fit] & 0xC0) == 0x80) fit -= 1;
+            if (fit > 0) {
+                if (separator == 1) try out.append(alloc, ' ');
+                try out.appendSlice(alloc, word[0..fit]);
+            }
+            cut = true;
+            break;
+        }
+        if (separator == 1) try out.append(alloc, ' ');
+        try out.appendSlice(alloc, word);
+    }
+    if (cut) try out.appendSlice(alloc, "…");
+    return out.toOwnedSlice(alloc);
+}
+
+fn isWordByte(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c >= 0x80;
+}
+
+/// Edits (insert, delete, replace, swap two neighbours) between `a` and `b`,
+/// ignoring case. Words past 40 bytes compare on their first 40.
+fn editDistance(a_full: []const u8, b_full: []const u8) usize {
+    const a = a_full[0..@min(a_full.len, 40)];
+    const b = b_full[0..@min(b_full.len, 40)];
+    var rows: [3][41]u8 = undefined;
+    var older = &rows[0];
+    var previous = &rows[1];
+    var current = &rows[2];
+    for (0..b.len + 1) |j| previous[j] = @intCast(j);
+    for (1..a.len + 1) |i| {
+        current[0] = @intCast(i);
+        for (1..b.len + 1) |j| {
+            const x = std.ascii.toLower(a[i - 1]);
+            const y = std.ascii.toLower(b[j - 1]);
+            const cost: u8 = if (x == y) 0 else 1;
+            var best = @min(@min(previous[j] + 1, current[j - 1] + 1), previous[j - 1] + cost);
+            if (i > 1 and j > 1 and x == std.ascii.toLower(b[j - 2]) and std.ascii.toLower(a[i - 2]) == y) {
+                best = @min(best, older[j - 2] + 1);
+            }
+            current[j] = best;
+        }
+        const recycled = older;
+        older = previous;
+        previous = current;
+        current = recycled;
+    }
+    return previous[b.len];
+}
+
+/// How many typos a word of this length may carry and still be the same word.
+fn typoAllowance(len: usize) usize {
+    if (len < 4) return 0;
+    if (len < 8) return 1;
+    return 2;
+}
+
+/// The smallest cost at which `token` matches a word of `text`: 0 when a word
+/// starts with it, or its edit distance when `typos` allows it. Null when no
+/// word matches.
+fn tokenCost(text: []const u8, token: []const u8, typos: bool) ?usize {
+    var best: ?usize = null;
+    var at: usize = 0;
+    while (at < text.len) {
+        while (at < text.len and !isWordByte(text[at])) at += 1;
+        const start = at;
+        while (at < text.len and isWordByte(text[at])) at += 1;
+        const word = text[start..at];
+        if (word.len == 0) continue;
+        if (word.len >= token.len and std.ascii.eqlIgnoreCase(word[0..token.len], token)) return 0;
+        if (!typos) continue;
+        const allowed = typoAllowance(token.len);
+        if (allowed == 0) continue;
+        // A typo in a longer word still counts when its start is close.
+        const compared = word[0..@min(word.len, token.len + 1)];
+        const distance = @min(editDistance(word, token), editDistance(compared, token));
+        if (distance <= allowed and (best == null or distance < best.?)) best = distance;
+    }
+    return best;
+}
+
+/// Lower is a better match; null is no match.
+fn looseScore(t: *const Thread, query: []const u8, kind: LooseKind) ?usize {
+    switch (kind) {
+        .abbreviation => {
+            var letters: [64]u8 = undefined;
+            var count: usize = 0;
+            for (query) |c| {
+                if (!std.ascii.isAlphanumeric(c)) continue;
+                if (count == letters.len) return null;
+                letters[count] = std.ascii.toLower(c);
+                count += 1;
+            }
+            if (count < 3) return null;
+            var next: usize = 0;
+            for (t.name) |c| {
+                if (next < count and std.ascii.toLower(c) == letters[next]) next += 1;
+            }
+            // Shorter names that hold the letters are the tighter fit.
+            return if (next == count) t.name.len else null;
+        },
+        .words, .typos => {
+            const typos = kind == .typos;
+            var total: usize = 0;
+            var tokens: usize = 0;
+            var it = std.mem.tokenizeAny(u8, query, " \t-_.,:;/");
+            while (it.next()) |token| {
+                tokens += 1;
+                // A word in the name is a closer match than one in the instructions.
+                if (tokenCost(t.name, token, typos)) |cost| {
+                    total += cost;
+                } else if (tokenCost(t.title, token, typos)) |cost| {
+                    total += cost + 1;
+                } else return null;
+            }
+            return if (tokens == 0) null else total;
+        },
+    }
+}
 
 const MatchKind = enum { prefix, word, contains };
 
@@ -323,6 +501,9 @@ pub fn load(alloc: Allocator, home: []const u8, root_id: []const u8) !Registry {
         if (stringField(o, "session_id")) |session_id| {
             if (session_id.len > 0) registry.setSession(alloc, name, session_id) catch return error.InvalidRegistry;
         }
+        if (stringField(o, "title")) |title| {
+            if (title.len > 0) registry.setTitle(alloc, name, title) catch return error.InvalidRegistry;
+        }
     }
     return registry;
 }
@@ -332,11 +513,11 @@ pub fn save(alloc: Allocator, home: []const u8, registry: *const Registry) !void
     defer alloc.free(path);
     if (std.Io.Dir.path.dirname(path)) |dir| try io_mod.makeDirRecursive(dir);
 
-    const Row = struct { name: []const u8, agent: []const u8, session_id: []const u8, created_at_ms: i64 };
+    const Row = struct { name: []const u8, agent: []const u8, session_id: []const u8, title: []const u8, created_at_ms: i64 };
     const rows = try alloc.alloc(Row, registry.threads.items.len);
     defer alloc.free(rows);
     for (registry.threads.items, rows) |t, *row| {
-        row.* = .{ .name = t.name, .agent = t.agent, .session_id = t.session_id, .created_at_ms = t.created_at_ms };
+        row.* = .{ .name = t.name, .agent = t.agent, .session_id = t.session_id, .title = t.title, .created_at_ms = t.created_at_ms };
     }
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();
@@ -516,4 +697,72 @@ test "threads resolve from what a person types, ignoring case, by prefix, word, 
     try std.testing.expectEqualStrings("fix-login-bug", fix.names[0]);
     try std.testing.expect(registry.resolve("nothing") == .none);
     try std.testing.expect(registry.resolve("") == .none);
+}
+
+test "titles are one line, bounded, and cut on a character boundary" {
+    const alloc = std.testing.allocator;
+    const short = try titleFromText(alloc, "  fix the\n login   bug ");
+    defer alloc.free(short);
+    try std.testing.expectEqualStrings("fix the login bug", short);
+
+    const long = try titleFromText(alloc, text_utils.repeat("word ", 40));
+    defer alloc.free(long);
+    try std.testing.expect(long.len <= max_title_bytes + "…".len);
+    try std.testing.expect(std.mem.endsWith(u8, long, "…"));
+    try std.testing.expect(std.unicode.utf8ValidateSlice(long));
+
+    const wide = try titleFromText(alloc, text_utils.repeat("é", 80));
+    defer alloc.free(wide);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(wide));
+}
+
+test "edit distance counts typos and swapped letters" {
+    try std.testing.expectEqual(@as(usize, 0), editDistance("rishav", "RISHAV"));
+    try std.testing.expectEqual(@as(usize, 1), editDistance("rishva", "rishav"));
+    try std.testing.expectEqual(@as(usize, 1), editDistance("vercle", "vercel"));
+    try std.testing.expectEqual(@as(usize, 2), editDistance("kitten", "sitten") + 1);
+    try std.testing.expect(editDistance("abc", "xyz") == 3);
+}
+
+test "threads resolve across word order, typos, instructions, and abbreviations" {
+    const alloc = std.testing.allocator;
+    var registry = try Registry.init(alloc, "root1");
+    defer registry.deinit(alloc);
+    try registry.add(alloc, "search-rishav", "th-1-a", 1);
+    try registry.setTitle(alloc, "search-rishav", "search up more about rishav and his projects");
+    try registry.add(alloc, "learn-vercel-edge", "th-2-b", 2);
+    try registry.setTitle(alloc, "learn-vercel-edge", "learn more about vercel edge functions and pricing");
+    try registry.add(alloc, "fix-login-bug", "th-3-c", 3);
+
+    // Words in any order.
+    try std.testing.expectEqualStrings("learn-vercel-edge", registry.resolve("edge vercel").found.name);
+    try std.testing.expectEqualStrings("search-rishav", registry.resolve("rishav search").found.name);
+    // Words that only the instructions hold.
+    try std.testing.expectEqualStrings("learn-vercel-edge", registry.resolve("pricing").found.name);
+    try std.testing.expectEqualStrings("search-rishav", registry.resolve("his projects").found.name);
+    // Typos, in the name or the instructions.
+    try std.testing.expectEqualStrings("search-rishav", registry.resolve("rishva").found.name);
+    try std.testing.expectEqualStrings("learn-vercel-edge", registry.resolve("vercle").found.name);
+    try std.testing.expectEqualStrings("learn-vercel-edge", registry.resolve("princing").found.name);
+    // Abbreviations.
+    try std.testing.expectEqualStrings("fix-login-bug", registry.resolve("flb").found.name);
+    try std.testing.expectEqualStrings("search-rishav", registry.resolve("srchrsh").found.name);
+    // Too far from anything.
+    try std.testing.expect(registry.resolve("kubernetes") == .none);
+    try std.testing.expect(registry.resolve("zz") == .none);
+}
+
+test "equally good fuzzy matches are reported, not guessed" {
+    const alloc = std.testing.allocator;
+    var registry = try Registry.init(alloc, "root1");
+    defer registry.deinit(alloc);
+    try registry.add(alloc, "alpha-docs", "th-1-a", 1);
+    try registry.add(alloc, "beta-docs", "th-2-b", 2);
+    try registry.setTitle(alloc, "alpha-docs", "write the api reference");
+    try registry.setTitle(alloc, "beta-docs", "write the api guide");
+    const r = registry.resolve("api").ambiguous;
+    try std.testing.expectEqual(@as(usize, 2), r.count);
+    // One thread that names it is a better match than one that only mentions it.
+    try registry.add(alloc, "api-client", "th-3-c", 3);
+    try std.testing.expectEqualStrings("api-client", registry.resolve("api").found.name);
 }

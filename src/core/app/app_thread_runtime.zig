@@ -77,28 +77,39 @@ pub fn parse(rest: []const u8) ParseError!Action {
         if (name.len == 0 or task.len == 0) return error.InvalidThreadCommand;
         return .{ .new = .{ .name = name, .task = task } };
     }
+    // A thread is found by what you type, which may be several words. Where
+    // nothing follows the name, the whole phrase is the name; where more text
+    // follows, quote a name of several words.
     if (std.mem.eql(u8, verb, "send")) {
-        const name, const message = splitWord(tail);
+        const name, const message = splitName(tail);
         if (name.len == 0 or message.len == 0) return error.InvalidThreadCommand;
         return .{ .send = .{ .name = name, .message = message } };
     }
     if (std.mem.eql(u8, verb, "watch")) {
-        const name, const count = splitWord(tail);
+        // A trailing number is how many lines to print once; the rest is the name.
+        var name = unquote(tail);
+        var lines: ?usize = null;
+        if (std.mem.findScalarLast(u8, tail, ' ')) |space| {
+            const last = tail[space + 1 ..];
+            if (last.len > 0 and allDigits(last) and std.mem.trim(u8, tail[0..space], " \t").len > 0) {
+                const count = std.fmt.parseInt(usize, last, 10) catch return error.InvalidThreadCommand;
+                if (count == 0 or count > thread_feed.default_max_lines) return error.InvalidThreadCommand;
+                lines = count;
+                name = unquote(std.mem.trim(u8, tail[0..space], " \t"));
+            }
+        }
         if (name.len == 0) return error.InvalidThreadCommand;
-        if (count.len == 0) return .{ .watch = .{ .name = name, .lines = null } };
-        const lines = std.fmt.parseInt(usize, count, 10) catch return error.InvalidThreadCommand;
-        if (lines == 0 or lines > thread_feed.default_max_lines) return error.InvalidThreadCommand;
         return .{ .watch = .{ .name = name, .lines = lines } };
     }
     if (std.mem.eql(u8, verb, "stop") or std.mem.eql(u8, verb, "delete") or std.mem.eql(u8, verb, "switch")) {
-        const name, const extra = splitWord(tail);
-        if (name.len == 0 or extra.len != 0) return error.InvalidThreadCommand;
+        const name = unquote(tail);
+        if (name.len == 0) return error.InvalidThreadCommand;
         if (std.mem.eql(u8, verb, "stop")) return .{ .stop = name };
         if (std.mem.eql(u8, verb, "delete")) return .{ .delete = name };
         return .{ .@"switch" = name };
     }
     if (std.mem.eql(u8, verb, "rename")) {
-        const old, const new_tail = splitWord(tail);
+        const old, const new_tail = splitName(tail);
         const new, const extra = splitWord(new_tail);
         if (old.len == 0 or new.len == 0 or extra.len != 0) return error.InvalidThreadCommand;
         return .{ .rename = .{ .old = old, .new = new } };
@@ -107,6 +118,34 @@ pub fn parse(rest: []const u8) ParseError!Action {
     // Command words always parse as commands, so a typo such as `/thread stop`
     // reports its usage instead of starting a model run.
     return .{ .start = trimmed };
+}
+
+fn allDigits(text: []const u8) bool {
+    for (text) |c| {
+        if (!std.ascii.isDigit(c)) return false;
+    }
+    return text.len > 0;
+}
+
+/// `text` without one pair of surrounding double quotes.
+fn unquote(text: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, text, " \t");
+    if (trimmed.len >= 2 and trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') {
+        return std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t");
+    }
+    return trimmed;
+}
+
+/// A name and what follows it. A name that starts with a quote runs to the
+/// closing quote, so it can hold several words.
+fn splitName(text: []const u8) struct { []const u8, []const u8 } {
+    const trimmed = std.mem.trim(u8, text, " \t");
+    if (trimmed.len > 0 and trimmed[0] == '"') {
+        if (std.mem.findScalarPos(u8, trimmed, 1, '"')) |close| {
+            return .{ std.mem.trim(u8, trimmed[1..close], " \t"), std.mem.trim(u8, trimmed[close + 1 ..], " \t") };
+        }
+    }
+    return splitWord(trimmed);
 }
 
 fn splitWord(text: []const u8) struct { []const u8, []const u8 } {
@@ -271,6 +310,7 @@ pub fn Runtime(comptime App: type) type {
                         if (last > 0) try out.writer.print("  active {d}s ago", .{@divTrunc(@max(now - last, 0), 1000)});
                     };
                 }
+                if (t.title.len > 0) try out.writer.print("  \"{s}\"", .{shortTitle(t.title)});
                 try out.writer.writeByte('\n');
             }
             try out.writer.writeAll("\nMention one in a prompt with @thread:NAME. Follow one with /thread watch NAME.");
@@ -541,6 +581,15 @@ pub fn Runtime(comptime App: type) type {
             }
         }
 
+        /// The first part of a thread's instructions, enough to tell threads apart.
+        fn shortTitle(title: []const u8) []const u8 {
+            const limit: usize = 48;
+            if (title.len <= limit) return title;
+            var end: usize = limit;
+            while (end > 0 and (title[end] & 0xC0) == 0x80) end -= 1;
+            return title[0..end];
+        }
+
         fn missing(app: *App, name: []const u8) !void {
             try noticeFmt(app, .@"error", "thread", "No thread named {s}. List them with /thread list.", .{name});
         }
@@ -610,13 +659,27 @@ test "thread command parses each verb" {
     try std.testing.expect((try parse("watch a")).watch.lines == null);
     try std.testing.expectEqual(@as(usize, 5), (try parse("watch a 5")).watch.lines.?);
     try std.testing.expectEqualStrings("a", (try parse("stop a")).stop);
+    // Several words are one name where nothing else follows.
+    try std.testing.expectEqualStrings("web research", (try parse("stop web research")).stop);
+    try std.testing.expectEqualStrings("web research", (try parse("switch \"web research\"")).@"switch");
+    const multi = (try parse("watch web research 5")).watch;
+    try std.testing.expectEqualStrings("web research", multi.name);
+    try std.testing.expectEqual(@as(usize, 5), multi.lines.?);
+    try std.testing.expectEqualStrings("web research", (try parse("watch web research")).watch.name);
+    try std.testing.expect((try parse("watch web research")).watch.lines == null);
+    // A number alone is a name, not a line count.
+    try std.testing.expectEqualStrings("42", (try parse("watch 42")).watch.name);
+    const quoted = (try parse("send \"web research\" also check pricing")).send;
+    try std.testing.expectEqualStrings("web research", quoted.name);
+    try std.testing.expectEqualStrings("also check pricing", quoted.message);
+    try std.testing.expectEqualStrings("web research", (try parse("rename \"web research\" docs")).rename.old);
     try std.testing.expectEqualStrings("b", (try parse("rename a b")).rename.new);
     try std.testing.expectEqualStrings("a", (try parse("delete a")).delete);
     try std.testing.expectEqualStrings("a", (try parse("switch a")).@"switch");
 }
 
 test "thread command rejects malformed input" {
-    for ([_][]const u8{ "new", "new a", "send a", "watch", "watch a 0", "watch a x", "stop", "stop a b", "rename a", "list x" }) |bad| {
+    for ([_][]const u8{ "new", "new a", "send a", "watch", "watch a 0", "stop", "rename a", "list x" }) |bad| {
         try std.testing.expectError(error.InvalidThreadCommand, parse(bad));
     }
 }
