@@ -1645,9 +1645,9 @@ pub fn loadStatusSnapshotForProvider(
         },
     };
     const resolved_source = if (resolution.credential) |credential| credential.source else null;
-    var gateway_connected = resolved_source != null and resolved_source != .chatgpt_subscription and resolved_source != .grok_subscription and resolved_source != .configured;
-    const gateway_probe_required = (provider != null and (provider.? == .codex or provider.? == .grok)) or
-        resolved_source == .chatgpt_subscription or resolved_source == .grok_subscription;
+    var gateway_connected = resolved_source != null and resolved_source != .chatgpt_subscription and resolved_source != .grok_subscription and resolved_source != .claude_cli and resolved_source != .configured;
+    const gateway_probe_required = (provider != null and (provider.? == .codex or provider.? == .grok or provider.? == .claude)) or
+        resolved_source == .chatgpt_subscription or resolved_source == .grok_subscription or resolved_source == .claude_cli;
     if (gateway_probe_required) {
         for ([_]credentials.Source{ .vercel_oidc_token, .ai_gateway_api_key, .fx_login, .stored_key }) |source| {
             if (credentials.sourceExists(alloc, secret_store, source) catch |err| switch (err) {

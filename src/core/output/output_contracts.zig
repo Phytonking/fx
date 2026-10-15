@@ -813,7 +813,7 @@ pub const StatusSnapshot = struct {
     fn writeConnections(self: StatusSnapshot, writer: *std.Io.Writer) !void {
         if (self.provider == .configured and self.auth.active_source == .configured) {
             try writer.writeAll(self.provider.label());
-            if (!gatewayProviderConnected(self.auth) and !chatGptProviderConnected(self.auth) and !grokProviderConnected(self.auth)) return;
+            if (!gatewayProviderConnected(self.auth) and !chatGptProviderConnected(self.auth) and !grokProviderConnected(self.auth) and !claudeProviderConnected(self.auth)) return;
             try writer.writeAll(", ");
         }
         try writeConnectedProvidersText(writer, self.auth);
@@ -884,6 +884,11 @@ pub const StatusSnapshot = struct {
             if (grokProviderConnected(self.auth)) {
                 if (wrote_provider) try writer.writeByte(',');
                 try std.json.Stringify.value("grok", .{}, writer);
+                wrote_provider = true;
+            }
+            if (claudeProviderConnected(self.auth)) {
+                if (wrote_provider) try writer.writeByte(',');
+                try std.json.Stringify.value("claude", .{}, writer);
             }
             try writer.writeByte(']');
         }
@@ -2405,6 +2410,25 @@ test "status distinguishes the selected model route from connected providers" {
     try std.testing.expect(std.mem.find(u8, json, "\"model_source\":\"Codex subscription\"") != null);
     try std.testing.expect(std.mem.find(u8, json, "\"connected_providers\":[\"vercel-ai-gateway\",\"codex\"]") != null);
     try std.testing.expect(std.mem.find(u8, json, "model_origin") == null);
+}
+
+test "status lists Claude as connected without reporting the gateway" {
+    const snapshot = StatusSnapshot{
+        .provider = .claude,
+        .model = "sonnet",
+        .auth = .{ .active_source = .claude_cli },
+        .permission_mode = .auto,
+        .workspace_root = "/Users/example/project",
+        .history_turns = 0,
+        .session_permission_grants = 0,
+        .agent_step_limit = 24,
+    };
+    const text = try snapshot.renderText(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.find(u8, text, "connected_providers=Claude\n") != null);
+    const json = try snapshot.renderJson(std.testing.allocator);
+    defer std.testing.allocator.free(json);
+    try std.testing.expect(std.mem.find(u8, json, "\"connected_providers\":[\"claude\"]") != null);
 }
 
 test "status reports where the model came from alongside the model" {
