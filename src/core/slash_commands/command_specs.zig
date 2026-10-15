@@ -794,6 +794,7 @@ const workspace_arg_completions = [_][]const u8{
 /// but `list` takes a name or text next.
 const thread_arg_completions = [_][]const u8{
     "/thread list",
+    "/thread status",
     "/thread new",
     "/thread watch",
     "/thread send",
@@ -978,7 +979,7 @@ pub fn threadArgCompletionPrefix(prefix: []const u8) ?[]const u8 {
 
 fn threadCompletionHasArgs(command: []const u8) bool {
     for (thread_arg_completions) |completion| {
-        if (std.mem.eql(u8, completion, command)) return !std.mem.eql(u8, command, "/thread list");
+        if (std.mem.eql(u8, completion, command)) return !(std.mem.eql(u8, command, "/thread list") or std.mem.eql(u8, command, "/thread status"));
     }
     return false;
 }
@@ -2127,10 +2128,10 @@ test "allowlist staged completions with more arguments append space on tab" {
 }
 
 test "thread completions offer each verb and keep name verbs open" {
-    try std.testing.expectEqual(@as(usize, 8), slashCompletionCount(testSlashRegistry(), "/thread "));
+    try std.testing.expectEqual(@as(usize, 9), slashCompletionCount(testSlashRegistry(), "/thread "));
     try std.testing.expectEqualStrings("/thread switch", nthSlashCompletion(testSlashRegistry(), "/thread sw", 0).?);
     try std.testing.expectEqualStrings("switch", nthSlashCompletionLabel(testSlashRegistry(), "/thread sw", 0).?);
-    try std.testing.expectEqual(@as(usize, 3), slashCompletionCount(testSlashRegistry(), "/thread s"));
+    try std.testing.expectEqual(@as(usize, 4), slashCompletionCount(testSlashRegistry(), "/thread s"));
     try std.testing.expect(slashCompletionHasArgs(testSlashRegistry(), "/thread new"));
     try std.testing.expect(slashCompletionHasArgs(testSlashRegistry(), "/thread delete"));
     try std.testing.expect(!slashCompletionHasArgs(testSlashRegistry(), "/thread list"));

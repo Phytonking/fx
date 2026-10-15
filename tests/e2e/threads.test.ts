@@ -961,3 +961,88 @@ test.skipIf(SKIP_TMUX)("a thread is found by longer, looser text: word order, ty
     gateway.stop();
   }
 }, 150_000);
+
+test.skipIf(SKIP_TMUX)("/thread status says which threads are still working, for how long, and what each did last", async () => {
+  const fixture = createFixture("status");
+  const encoder = new TextEncoder();
+  const gateway = startDynamicFakeGateway(
+    raw => {
+      const body = String(raw);
+      if (body.includes("slow job")) {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            async start(controller) {
+              for (let step = 1; step <= 40; step++) {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "text-delta", id: "a", delta: `working on step ${step}\n` })}\n\n`));
+                await Bun.sleep(300);
+              }
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+                type: "finish",
+                finishReason: { unified: "stop", raw: "stop" },
+                usage: { inputTokens: { total: 3 }, outputTokens: { total: 5 } },
+              })}\n\ndata: [DONE]\n\n`));
+              controller.close();
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      if (body.includes("quick job")) return fakeGatewayFinalText("QUICK_DONE");
+      return fakeGatewayFinalText("MAIN_ANSWER_OK");
+    },
+    { models: [{ id: MODEL, type: "language", tags: ["tool-use"] }] },
+  );
+  let tui: TmuxSession | undefined;
+  try {
+    tui = await launch(fixture, gateway);
+    await tui.sendText("/thread status");
+    await tui.waitForText("No threads yet", 10000);
+
+    await tui.sendText("/thread new quick quick job");
+    await tui.waitForText("Started thread quick", 20000);
+    await waitForThreadIdle(tui, "quick");
+    await tui.sendText("/thread status");
+    await tui.waitForText("No thread is working. All idle.", 10000);
+    await tui.waitForText("quick  idle · last active", 10000);
+
+    await tui.sendText("/thread new slow slow job please");
+    await tui.waitForText("Started thread slow", 20000);
+    let working = false;
+    for (let attempt = 0; attempt < 20 && !working; attempt++) {
+      await tui.sendText("/thread status");
+      try {
+        await tui.waitForText("last: working on step", 1500);
+        working = true;
+      } catch {
+        // No output yet.
+      }
+    }
+    expect(working).toBe(true);
+    const pane = (await tui.capturePaneGrid()).join("\n");
+    expect(pane).toContain("1 working, 1 idle");
+    expect(pane).toMatch(/slow {2}running \d+s/);
+    expect(pane).toContain("quick  idle");
+
+    // Stopping it brings the summary back to all idle.
+    await tui.sendText("/thread stop slow");
+    await tui.waitForText("Stopping slow", 10000);
+    let settled = false;
+    for (let attempt = 0; attempt < 30 && !settled; attempt++) {
+      await tui.sendText("/thread status");
+      try {
+        await tui.waitForText("No thread is working", 1500);
+        settled = true;
+      } catch {
+        // Still stopping.
+      }
+    }
+    expect(settled).toBe(true);
+
+    // Status takes no arguments, and it is a command word, not a new thread.
+    await tui.sendText("/thread status of everything");
+    await tui.waitForText("usage: /thread", 10000);
+  } finally {
+    await tui?.kill();
+    gateway.stop();
+  }
+}, 180_000);

@@ -672,6 +672,8 @@ pub const Runtime = struct {
         last_outcome: ?child_state.Outcome,
         /// Present while a turn is queued or running. Owned.
         active_message: ?[]u8,
+        /// When the turn that is queued or running was admitted.
+        active_since_ms: ?i64 = null,
 
         pub fn deinit(self: ThreadStatus, alloc: Allocator) void {
             alloc.free(self.child_id);
@@ -692,6 +694,7 @@ pub const Runtime = struct {
             .phase = child.phase,
             .last_outcome = child.last_outcome,
             .active_message = message,
+            .active_since_ms = if (child.active) |active| active.created_at_ms else null,
         };
     }
 

@@ -17,7 +17,7 @@ const thread_tools = @import("../threads/thread_tools.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const usage = "usage: /thread INSTRUCTIONS | new NAME TASK | list | switch NAME | watch NAME [LINES] | send NAME MESSAGE | stop NAME | rename OLD NEW | delete NAME";
+pub const usage = "usage: /thread INSTRUCTIONS | new NAME TASK | list | status | switch NAME | watch NAME [LINES] | send NAME MESSAGE | stop NAME | rename OLD NEW | delete NAME";
 /// Lines a live view keeps on screen; older ones scroll out of it.
 const follow_lines: usize = 12;
 const follow_interval_ms: i64 = 120;
@@ -49,6 +49,8 @@ pub const WatchState = struct {
 
 pub const Action = union(enum) {
     list,
+    /// Which threads are still working, and what each last did.
+    status,
     /// Free-form instructions: start a thread named from them.
     start: []const u8,
     new: struct { name: []const u8, task: []const u8 },
@@ -63,6 +65,17 @@ pub const Action = union(enum) {
 
 pub const ParseError = error{InvalidThreadCommand};
 
+/// `secs` as `42s`, `1m 12s`, or `1h 05m`, written into `buf`.
+fn formatDuration(buf: []u8, secs: u64) []const u8 {
+    const text = if (secs < 60)
+        std.mem.print(buf, "{d}s", .{secs})
+    else if (secs < 3600)
+        std.mem.print(buf, "{d}m {d:0>2}s", .{ secs / 60, secs % 60 })
+    else
+        std.mem.print(buf, "{d}h {d:0>2}m", .{ secs / 3600, (secs % 3600) / 60 });
+    return text catch "";
+}
+
 /// Borrows from `rest`.
 pub fn parse(rest: []const u8) ParseError!Action {
     const trimmed = std.mem.trim(u8, rest, " \t");
@@ -71,6 +84,10 @@ pub fn parse(rest: []const u8) ParseError!Action {
     if (std.mem.eql(u8, verb, "list")) {
         if (tail.len != 0) return error.InvalidThreadCommand;
         return .list;
+    }
+    if (std.mem.eql(u8, verb, "status")) {
+        if (tail.len != 0) return error.InvalidThreadCommand;
+        return .status;
     }
     if (std.mem.eql(u8, verb, "new")) {
         const name, const task = splitWord(tail);
@@ -207,12 +224,13 @@ pub fn Runtime(comptime App: type) type {
 
             switch (action) {
                 .list => try list(app, host, &registry, current_thread),
+                .status => try showStatus(app, host, &registry, current_thread),
                 .@"switch" => |name| try switchTo(app, host, &registry, current_thread, name),
                 .rename => |a| try rename(app, &registry, home, a.old, a.new),
                 else => {},
             }
             switch (action) {
-                .list, .@"switch", .rename => return,
+                .list, .status, .@"switch", .rename => return,
                 else => {},
             }
             if (current_thread) |name| {
@@ -230,8 +248,97 @@ pub fn Runtime(comptime App: type) type {
                 .watch => |a| try watch(app, host, &registry, a.name, a.lines),
                 .stop => |name| try stop(app, host, &registry, name),
                 .delete => |name| try remove(app, host, &registry, home, name),
-                .list, .@"switch", .rename => unreachable,
+                .list, .status, .@"switch", .rename => unreachable,
             }
+        }
+
+        /// A quick look at whether threads are still working: how many, for how
+        /// long, and the last thing each did.
+        fn showStatus(
+            app: *App,
+            host: *subagent_tool_host.Runtime,
+            registry: *const thread_registry.Registry,
+            current_thread: ?[]const u8,
+        ) !void {
+            if (registry.threads.items.len == 0) {
+                try notice(app, .neutral, "thread", "No threads yet. Start one with /thread INSTRUCTIONS.");
+                return;
+            }
+            if (current_thread != null) {
+                try notice(app, .neutral, "thread", "Live status is shown from main, where the threads run. Run /thread switch main.");
+                return;
+            }
+            var out: std.Io.Writer.Allocating = .init(app.alloc);
+            defer out.deinit();
+            var running: usize = 0;
+            var waiting: usize = 0;
+            var idle: usize = 0;
+            const now = io_mod.milliTimestamp();
+            for (registry.threads.items) |t| {
+                const st = try host.threadStatus(app.alloc, t.agent);
+                defer if (st) |s| s.deinit(app.alloc);
+                try out.writer.print("\n{s}  ", .{t.name});
+                const s = st orelse {
+                    try out.writer.writeAll("not started");
+                    continue;
+                };
+                const last = lastLine(app.alloc, host.feedFor(s.child_id)) catch null;
+                defer if (last) |text| app.alloc.free(text);
+                var duration_buf: [24]u8 = undefined;
+                const elapsed = if (s.active_since_ms) |since| formatDuration(&duration_buf, @intCast(@divTrunc(@max(now - since, 0), 1000))) else "";
+                switch (s.phase) {
+                    .running => {
+                        running += 1;
+                        try out.writer.print("running {s}", .{elapsed});
+                    },
+                    .awaiting_approval => {
+                        waiting += 1;
+                        try out.writer.print("waiting for approval {s} (answer it in the prompt)", .{elapsed});
+                    },
+                    .idle, .finished => {
+                        idle += 1;
+                        try out.writer.writeAll("idle");
+                        if (host.feedFor(s.child_id)) |feed| {
+                            const at = feed.lastActivityMs();
+                            if (at > 0) {
+                                var ago_buf: [24]u8 = undefined;
+                                try out.writer.print(" · last active {s} ago", .{formatDuration(&ago_buf, @intCast(@divTrunc(@max(now - at, 0), 1000)))});
+                            }
+                        }
+                    },
+                    .interrupted => {
+                        idle += 1;
+                        try out.writer.writeAll("interrupted · send it a message to continue");
+                    },
+                }
+                if (last) |text| {
+                    if (s.phase == .running or s.phase == .awaiting_approval) try out.writer.print("\n    last: {s}", .{text});
+                }
+            }
+            var header: std.Io.Writer.Allocating = .init(app.alloc);
+            defer header.deinit();
+            if (running == 0 and waiting == 0) {
+                try header.writer.writeAll("No thread is working. All idle.");
+            } else {
+                try header.writer.print("{d} working", .{running + waiting});
+                if (waiting > 0) try header.writer.print(", {d} waiting for approval", .{waiting});
+                if (idle > 0) try header.writer.print(", {d} idle", .{idle});
+            }
+            try out.writer.writeAll("\n\nFollow one live with /thread watch NAME.");
+            const body = try std.mem.concat(app.alloc, u8, &.{ header.written(), out.written() });
+            defer app.alloc.free(body);
+            try notice(app, .neutral, "threads", body);
+        }
+
+        /// The newest line a thread has produced, shortened. Caller owns it.
+        fn lastLine(alloc: Allocator, feed: ?*thread_feed.Feed) !?[]u8 {
+            const f = feed orelse return null;
+            const tail = try f.tail(alloc, 1);
+            defer tail.deinit(alloc);
+            if (tail.lines.len == 0) return null;
+            const line = std.mem.trim(u8, tail.lines[0], " \t");
+            if (line.len == 0) return null;
+            return try alloc.dupe(u8, shortTitle(line));
         }
 
         fn switchTo(
@@ -635,6 +742,20 @@ fn nameProblem(err: anyerror) []const u8 {
         error.ReservedThreadName => "main is the current session and cannot be a thread name.",
         else => "Thread names use lowercase letters, digits, - and _, start with a letter or digit, and stay within 32 characters.",
     };
+}
+
+test "durations read as short human text" {
+    var buf: [24]u8 = undefined;
+    try std.testing.expectEqualStrings("0s", formatDuration(&buf, 0));
+    try std.testing.expectEqualStrings("42s", formatDuration(&buf, 42));
+    try std.testing.expectEqualStrings("1m 12s", formatDuration(&buf, 72));
+    try std.testing.expectEqualStrings("10m 00s", formatDuration(&buf, 600));
+    try std.testing.expectEqualStrings("1h 05m", formatDuration(&buf, 3900));
+}
+
+test "status takes no arguments and is a command word" {
+    try std.testing.expect((try parse("status")) == .status);
+    try std.testing.expectError(error.InvalidThreadCommand, parse("status of everything"));
 }
 
 test "thread command treats text that is not a command as instructions" {
